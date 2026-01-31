@@ -51,16 +51,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             DisableThreadLibraryCalls(hModule);
             LogStartup("Thread Library Calls Disabled");
             
-            // Initialize logging first
-            if (!Logger::Instance().Initialize(DLSS4_LOG_FILE)) {
-                LogStartup("Logger Init Failed");
-                OutputDebugStringA("DLSS4 Proxy: Failed to initialize logger\n");
-            } else {
-                LogStartup("Logger Initialized");
-            }
-            
-            LOG_INFO("============================================");
-            LOG_INFO("DLSS 4 Proxy DLL Loaded");
+            LogStartup("Logger deferred until first DXGI call");
             
             LogStartup("DLL_PROCESS_ATTACH Exit");
             break;
@@ -71,7 +62,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             
         case DLL_PROCESS_DETACH:
             LogStartup("DLL_PROCESS_DETACH Entry");
-            LOG_INFO("DLSS 4 Proxy DLL Unloading...");
+            LogStartup("DLSS 4 Proxy DLL Unloading...");
             
             // Cleanup in reverse order
             DLSS4_Shutdown();

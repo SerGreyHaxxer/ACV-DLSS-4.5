@@ -1,7 +1,6 @@
 #pragma once
 #include <windows.h>
 #include <string>
-#include <mutex> // Added
 
 class OverlayUI {
 public:
@@ -14,7 +13,6 @@ public:
     // New FPS & Vignette
     void ToggleFPS(); 
     void ToggleVignette();
-    void ToggleDebugMode(); // New
     bool IsVisible() const { return m_visible; }
 
 private:
@@ -27,22 +25,26 @@ private:
     void CreateOverlayWindow();
     void CreateFPSWindow(); 
     void CreateVignetteWindow();
-    void CreateDebugWindow(); // New
     void DrawFPSOverlay();  
     void DrawVignette();
     void UpdateControls(); 
-    void UpdateDebugWindow(); // New
 
     HMODULE m_hModule = nullptr;
     HWND m_hwnd = nullptr;     // Main Menu
     HWND m_hwndFPS = nullptr;  // FPS Counter
     HWND m_hwndVignette = nullptr; // Signature Effect
-    HWND m_hwndDebug = nullptr; // Debug Window
-    HWND m_hTextDebug = nullptr; // Debug Text Box
     HANDLE m_hThread = nullptr;
+    
+    // UI Resources (GDI)
+    HBRUSH m_brBack = nullptr;
+    HBRUSH m_brHeader = nullptr;
+    HBRUSH m_brButton = nullptr;
+    HFONT m_hFontUI = nullptr;
+    HFONT m_hFontHeader = nullptr;
     
     // Controls
     HWND m_hComboDLSS = nullptr;
+    HWND m_hComboPreset = nullptr;
     HWND m_hCheckFG = nullptr;
     HWND m_hSliderSharpness = nullptr;
     HWND m_hSliderLOD = nullptr;
@@ -57,13 +59,8 @@ private:
     bool m_visible = false;
     bool m_showFPS = false;
     bool m_showVignette = false; 
-    bool m_showDebug = false; // New
     bool m_expanded = false; 
     bool m_initialized = false;
     
     float m_cachedTotalFPS = 0.0f;
-    int m_vignetteAlpha = 80;
-
-    std::mutex m_debugMutex;
-    std::string m_pendingDebugInfo;
 };

@@ -12,6 +12,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <stdint.h>
+#include "vtable_utils.h"
 
 // We can't include dxgi.h directly because it conflicts with our exports.
 // Instead, we define what we need manually.
@@ -148,6 +149,18 @@ static bool g_FrameGenAvailable = false;
 static UINT g_DisplayWidth = 0;
 static UINT g_DisplayHeight = 0;
 
+static void SafeReleaseCom(void* obj, const char* label) {
+    if (!obj) return;
+    void** vtable = nullptr;
+    void** entry = nullptr;
+    if (!ResolveVTableEntry(obj, 2, &vtable, &entry)) {
+        LOG_ERROR("Release failed for %s: invalid vtable", label ? label : "object");
+        return;
+    }
+    typedef ULONG(STDMETHODCALLTYPE* PFN_Release)(void*);
+    ((PFN_Release)(*entry))(obj);
+}
+
 // ============================================================================
 // NGX LOADING
 // ============================================================================
@@ -264,22 +277,27 @@ HRESULT STDMETHODCALLTYPE HookedResizeBuffers(void* pThis, UINT BufferCount,
 // ============================================================================
 
 bool HookVTable(void* pObject, int index, void* pHook, void** ppOriginal) {
-    if (!pObject) return false;
-    
-    void** vtable = *reinterpret_cast<void***>(pObject);
-    if (!vtable) return false;
-    
-    *ppOriginal = vtable[index];
-    
-    DWORD oldProtect;
-    if (!VirtualProtect(&vtable[index], sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+    if (!pObject || !pHook || !ppOriginal || index < 0) {
+        LOG_ERROR("HookVTable invalid params");
+        return false;
+    }
+    void** vtable = nullptr;
+    void** entry = nullptr;
+    if (!ResolveVTableEntry(pObject, index, &vtable, &entry)) {
+        LOG_ERROR("HookVTable invalid vtable entry (index %d)", index);
+        return false;
+    }
+    *ppOriginal = *entry;
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(entry, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
         LOG_ERROR("VirtualProtect failed");
         return false;
     }
-    
-    vtable[index] = pHook;
-    VirtualProtect(&vtable[index], sizeof(void*), oldProtect, &oldProtect);
-    
+    *entry = pHook;
+    DWORD restoreProtect = 0;
+    if (!VirtualProtect(entry, sizeof(void*), oldProtect, &restoreProtect)) {
+        LOG_ERROR("VirtualProtect restore failed");
+    }
     LOG_INFO("Hooked vtable[%d]: %p -> %p", index, *ppOriginal, pHook);
     return true;
 }
@@ -327,8 +345,15 @@ void InstallHooksWithFactory(void* pFactory) {
     
     // Get factory4
     typedef HRESULT(STDMETHODCALLTYPE* PFN_QI)(void*, REFIID, void**);
-    void** factoryVtable = *reinterpret_cast<void***>(pFactory);
-    PFN_QI pfnQI = (PFN_QI)factoryVtable[0];  // QueryInterface is always index 0
+    void** factoryVtable = nullptr;
+    void** qiEntry = nullptr;
+    if (!ResolveVTableEntry(pFactory, 0, &factoryVtable, &qiEntry)) {
+        LOG_ERROR("Invalid factory vtable");
+        DestroyWindow(hwnd);
+        LeaveCriticalSection(&g_HookCS);
+        return;
+    }
+    PFN_QI pfnQI = (PFN_QI)(*qiEntry);  // QueryInterface is always index 0
     
     void* pFactory4 = nullptr;
     HRESULT hr = pfnQI(pFactory, IID_IDXGIFactory4, &pFactory4);
@@ -345,16 +370,23 @@ void InstallHooksWithFactory(void* pFactory) {
     if (FAILED(hr) || !pDevice) {
         LOG_ERROR("D3D12CreateDevice failed: 0x%08X", hr);
         // Release factory4
-        void** f4Vtable = *reinterpret_cast<void***>(pFactory4);
-        typedef ULONG(STDMETHODCALLTYPE* PFN_Release)(void*);
-        ((PFN_Release)f4Vtable[2])(pFactory4);
+        SafeReleaseCom(pFactory4, "IDXGIFactory4");
         DestroyWindow(hwnd);
         LeaveCriticalSection(&g_HookCS);
         return;
     }
     
     // Create command queue
-    void** deviceVtable = *reinterpret_cast<void***>(pDevice);
+    void** deviceVtable = nullptr;
+    void** cqEntry = nullptr;
+    if (!ResolveVTableEntry(pDevice, 8, &deviceVtable, &cqEntry)) {
+        LOG_ERROR("Invalid device vtable");
+        SafeReleaseCom(pDevice, "ID3D12Device");
+        SafeReleaseCom(pFactory4, "IDXGIFactory4");
+        DestroyWindow(hwnd);
+        LeaveCriticalSection(&g_HookCS);
+        return;
+    }
     struct D3D12_COMMAND_QUEUE_DESC { 
         D3D12_COMMAND_LIST_TYPE Type; 
         int Priority; 
@@ -363,25 +395,32 @@ void InstallHooksWithFactory(void* pFactory) {
     } queueDesc = { D3D12_COMMAND_LIST_TYPE_DIRECT, 0, 0, 0 };
     
     typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateCQ)(void*, const D3D12_COMMAND_QUEUE_DESC*, REFIID, void**);
-    PFN_CreateCQ pfnCreateCQ = (PFN_CreateCQ)deviceVtable[8];  // CreateCommandQueue
+    PFN_CreateCQ pfnCreateCQ = (PFN_CreateCQ)(*cqEntry);  // CreateCommandQueue
     
     void* pQueue = nullptr;
     hr = pfnCreateCQ(pDevice, &queueDesc, IID_ID3D12CommandQueue, &pQueue);
     if (FAILED(hr) || !pQueue) {
         LOG_ERROR("CreateCommandQueue failed: 0x%08X", hr);
         // Cleanup...
-        void** dVtable = *reinterpret_cast<void***>(pDevice);
-        typedef ULONG(STDMETHODCALLTYPE* PFN_Release)(void*);
-        ((PFN_Release)dVtable[2])(pDevice);
-        void** f4Vtable = *reinterpret_cast<void***>(pFactory4);
-        ((PFN_Release)f4Vtable[2])(pFactory4);
+        SafeReleaseCom(pDevice, "ID3D12Device");
+        SafeReleaseCom(pFactory4, "IDXGIFactory4");
         DestroyWindow(hwnd);
         LeaveCriticalSection(&g_HookCS);
         return;
     }
     
     // Create swap chain (using raw COM calls)
-    void** f4Vtable = *reinterpret_cast<void***>(pFactory4);
+    void** f4Vtable = nullptr;
+    void** scEntry = nullptr;
+    if (!ResolveVTableEntry(pFactory4, 15, &f4Vtable, &scEntry)) {
+        LOG_ERROR("Invalid factory4 vtable");
+        SafeReleaseCom(pQueue, "ID3D12CommandQueue");
+        SafeReleaseCom(pDevice, "ID3D12Device");
+        SafeReleaseCom(pFactory4, "IDXGIFactory4");
+        DestroyWindow(hwnd);
+        LeaveCriticalSection(&g_HookCS);
+        return;
+    }
     
     struct DXGI_SAMPLE_DESC { UINT Count; UINT Quality; };
     struct DXGI_SWAP_CHAIN_DESC1 {
@@ -407,17 +446,16 @@ void InstallHooksWithFactory(void* pFactory) {
     scDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     
     typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateSC)(void*, void*, HWND, const void*, const void*, void*, void**);
-    PFN_CreateSC pfnCreateSC = (PFN_CreateSC)f4Vtable[15];  // CreateSwapChainForHwnd
+    PFN_CreateSC pfnCreateSC = (PFN_CreateSC)(*scEntry);  // CreateSwapChainForHwnd
     
     void* pSwapChain = nullptr;
     hr = pfnCreateSC(pFactory4, pQueue, hwnd, &scDesc, nullptr, nullptr, &pSwapChain);
     if (FAILED(hr) || !pSwapChain) {
         LOG_ERROR("CreateSwapChainForHwnd failed: 0x%08X", hr);
         // Cleanup
-        typedef ULONG(STDMETHODCALLTYPE* PFN_Release)(void*);
-        ((PFN_Release)(*(void***)pQueue)[2])(pQueue);
-        ((PFN_Release)(*(void***)pDevice)[2])(pDevice);
-        ((PFN_Release)f4Vtable[2])(pFactory4);
+        SafeReleaseCom(pQueue, "ID3D12CommandQueue");
+        SafeReleaseCom(pDevice, "ID3D12Device");
+        SafeReleaseCom(pFactory4, "IDXGIFactory4");
         DestroyWindow(hwnd);
         LeaveCriticalSection(&g_HookCS);
         return;
@@ -439,11 +477,10 @@ void InstallHooksWithFactory(void* pFactory) {
     LoadNGXModules();
     
     // Cleanup
-    typedef ULONG(STDMETHODCALLTYPE* PFN_Release)(void*);
-    ((PFN_Release)(*(void***)pSwapChain)[2])(pSwapChain);
-    ((PFN_Release)(*(void***)pQueue)[2])(pQueue);
-    ((PFN_Release)(*(void***)pDevice)[2])(pDevice);
-    ((PFN_Release)f4Vtable[2])(pFactory4);
+    SafeReleaseCom(pSwapChain, "IDXGISwapChain");
+    SafeReleaseCom(pQueue, "ID3D12CommandQueue");
+    SafeReleaseCom(pDevice, "ID3D12Device");
+    SafeReleaseCom(pFactory4, "IDXGIFactory4");
     DestroyWindow(hwnd);
     UnregisterClassW(L"DLSS4Hook", wc.hInstance);
     
@@ -470,6 +507,10 @@ bool LoadOriginalDXGI() {
     g_pfnCreateDXGIFactory = (PFN_CreateDXGIFactory)GetProcAddress(g_hOriginalDXGI, "CreateDXGIFactory");
     g_pfnCreateDXGIFactory1 = (PFN_CreateDXGIFactory1)GetProcAddress(g_hOriginalDXGI, "CreateDXGIFactory1");
     g_pfnCreateDXGIFactory2 = (PFN_CreateDXGIFactory2)GetProcAddress(g_hOriginalDXGI, "CreateDXGIFactory2");
+    if (!g_pfnCreateDXGIFactory || !g_pfnCreateDXGIFactory1 || !g_pfnCreateDXGIFactory2) {
+        LOG_ERROR("Failed to load critical DXGI exports");
+        return false;
+    }
     
     LOG_INFO("Original DXGI loaded");
     return true;

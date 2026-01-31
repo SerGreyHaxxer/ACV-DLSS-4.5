@@ -90,8 +90,8 @@ if exist "%GAME_PATH%\dxgi.dll" (
     echo ========================================================
     echo HOW TO USE:
     echo 1. Launch Game
-    echo 2. Press F1 for Control Panel
-    echo 3. Press F2 for FPS Counter
+    echo 2. Press F5 for Control Panel
+    echo 3. Press F6 for FPS Counter
     echo ========================================================
 ) else (
     echo [ERROR] Installation failed. Could not copy files.

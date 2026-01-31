@@ -220,7 +220,10 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12Device::CreateCommandList(
         hr = pWrapper->QueryInterface(riid, ppCommandList);
         pWrapper->Release(); // QueryInterface added ref
         pRealList->Release(); // Wrapper holds ref
-        LOG_INFO("Wrapped CommandList created: %p (Real: %p)", *ppCommandList, pRealList);
+        if (FAILED(hr) && ppCommandList) {
+            *ppCommandList = nullptr;
+        }
+        LOG_INFO("Wrapped CommandList created: %p (Real: %p)", ppCommandList ? *ppCommandList : nullptr, pRealList);
     } else {
         // Return raw for bundles/others if not needed
         hr = pRealList->QueryInterface(riid, ppCommandList);

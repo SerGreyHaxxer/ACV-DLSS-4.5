@@ -16,6 +16,7 @@
 #include <dxgi1_4.h>
 #include <vector>
 #include <string>
+#include "vtable_utils.h"
 
 // Undefine to allow our exports
 #undef CreateDXGIFactory
@@ -162,6 +163,11 @@ bool LoadNGXModules() {
         Log("NGX_Init: %p", g_pfnNGXInit);
         Log("NGX_CreateFeature: %p", g_pfnNGXCreateFeature);
         Log("NGX_EvaluateFeature: %p", g_pfnNGXEvaluateFeature);
+        if (!g_pfnNGXInit || !g_pfnNGXCreateFeature || !g_pfnNGXEvaluateFeature) {
+            Log("ERROR: Missing required NGX exports");
+            g_DLSS4Initialized = false;
+            return false;
+        }
     }
     
     return g_hDLSS != nullptr || g_hDLSSG != nullptr;
@@ -345,16 +351,30 @@ void HookSwapChain(IUnknown* pFactoryUnk) {
     Log("Dummy swap chain created: %p", pSwapChain1);
     
     // Get VTable and hook Present (index 8)
-    void** vtable = *reinterpret_cast<void***>(pSwapChain1);
-    g_oPresent = (Present_t)vtable[8];
+    void** vtable = nullptr;
+    void** entry = nullptr;
+    if (!ResolveVTableEntry(pSwapChain1, 8, &vtable, &entry)) {
+        Log("Invalid swapchain vtable");
+        pSwapChain1->Release();
+        pQueue->Release();
+        pDevice->Release();
+        pFactory4->Release();
+        DestroyWindow(hwnd);
+        UnregisterClassW(L"DLSS4DummyWnd", wc.hInstance);
+        return;
+    }
+    g_oPresent = (Present_t)(*entry);
     
     Log("Original Present: %p", g_oPresent);
     
     // Modify VTable
     DWORD oldProtect;
-    if (VirtualProtect(&vtable[8], sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        vtable[8] = (void*)Hooked_Present;
-        VirtualProtect(&vtable[8], sizeof(void*), oldProtect, &oldProtect);
+    if (VirtualProtect(entry, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        *entry = (void*)Hooked_Present;
+        DWORD restoreProtect = 0;
+        if (!VirtualProtect(entry, sizeof(void*), oldProtect, &restoreProtect)) {
+            Log("VirtualProtect restore failed");
+        }
         Log("Present HOOKED -> %p", Hooked_Present);
         g_HooksInstalled = true;
     } else {
@@ -385,6 +405,10 @@ extern "C" {
 
 __declspec(dllexport) HRESULT WINAPI CreateDXGIFactory(REFIID riid, void** ppFactory) {
     Log("CreateDXGIFactory intercepted");
+    if (!oCreateDXGIFactory) {
+        Log("ERROR: CreateDXGIFactory export missing");
+        return E_FAIL;
+    }
     HRESULT hr = oCreateDXGIFactory(riid, ppFactory);
     if (SUCCEEDED(hr)) HookSwapChain((IUnknown*)*ppFactory);
     return hr;
@@ -392,6 +416,10 @@ __declspec(dllexport) HRESULT WINAPI CreateDXGIFactory(REFIID riid, void** ppFac
 
 __declspec(dllexport) HRESULT WINAPI CreateDXGIFactory1(REFIID riid, void** ppFactory) {
     Log("CreateDXGIFactory1 intercepted");
+    if (!oCreateDXGIFactory1) {
+        Log("ERROR: CreateDXGIFactory1 export missing");
+        return E_FAIL;
+    }
     HRESULT hr = oCreateDXGIFactory1(riid, ppFactory);
     if (SUCCEEDED(hr)) HookSwapChain((IUnknown*)*ppFactory);
     return hr;
@@ -399,6 +427,10 @@ __declspec(dllexport) HRESULT WINAPI CreateDXGIFactory1(REFIID riid, void** ppFa
 
 __declspec(dllexport) HRESULT WINAPI CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFactory) {
     Log("CreateDXGIFactory2 intercepted");
+    if (!oCreateDXGIFactory2) {
+        Log("ERROR: CreateDXGIFactory2 export missing");
+        return E_FAIL;
+    }
     HRESULT hr = oCreateDXGIFactory2(Flags, riid, ppFactory);
     if (SUCCEEDED(hr)) HookSwapChain((IUnknown*)*ppFactory);
     return hr;
@@ -455,6 +487,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             Log("Target: RTX 5080 OFA 4x Frame Generation");
             Log("==============================================");
             Log("Original DXGI: %p", g_hOrigDXGI);
+            if (!oCreateDXGIFactory || !oCreateDXGIFactory1 || !oCreateDXGIFactory2) {
+                Log("ERROR: Failed to load critical DXGI exports");
+            }
         }
     }
     else if (ul_reason_for_call == DLL_PROCESS_DETACH) {

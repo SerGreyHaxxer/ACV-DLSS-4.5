@@ -225,6 +225,9 @@ bool DLSS4_Initialize(ID3D12Device* pDevice, ID3D12CommandQueue* pCommandQueue,
         LOG_ERROR("Failed to find critical NGX functions in _nvngx.dll");
         return false;
     }
+    if (!s_pfnShutdown || !s_pfnGetParameters || !s_pfnReleaseFeature) {
+        LOG_WARN("Missing optional NGX exports (Shutdown/GetParameters/ReleaseFeature)");
+    }
     
     // 3. Initialize NGX
     NVSDK_NGX_Result res = s_pfnInit(1337, L"./", pDevice, nullptr, nullptr);
@@ -273,6 +276,10 @@ void DLSS4_Shutdown() {
     if (s_pfnShutdown) {
         s_pfnShutdown();
     }
+    if (s_hNGX_DLSSG) { FreeLibrary(s_hNGX_DLSSG); s_hNGX_DLSSG = nullptr; }
+    if (s_hNGX_DLSS) { FreeLibrary(s_hNGX_DLSS); s_hNGX_DLSS = nullptr; }
+    if (s_hNGX) { FreeLibrary(s_hNGX); s_hNGX = nullptr; }
+    s_pParameters = nullptr;
     g_DLSS4State.initialized = false;
 }
 

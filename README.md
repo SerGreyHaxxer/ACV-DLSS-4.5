@@ -15,7 +15,7 @@ This open-source project injects **NVIDIA DLSS 3 / 4.5** into the AnvilNext engi
 *   **Massive FPS Boost:** Go from **60 FPS -> 240 FPS** with 4x Frame Generation.
 *   **Fix Stuttering:** Includes **NVIDIA Reflex** Low Latency mode to smooth out gameplay.
 *   **Better Graphics:** Replaces blurry native anti-aliasing with crisp **DLAA** or **True DLSS Scaling**.
-*   **In-Game Menu (F1):** Customize settings live without restarting.
+*   **In-Game Menu (F5):** Customize settings live without restarting.
 *   **Completely Free:** No paywalls, no Patreon. Open source for the community.
 
 ---
@@ -36,15 +36,15 @@ This open-source project injects **NVIDIA DLSS 3 / 4.5** into the AnvilNext engi
 
 ## 🎮 Controls
 
-*   **F1:** Open the **DLSS Control Panel**.
-*   **F2:** Toggle **Real FPS Counter** (Gold Text).
-*   **F3:** Toggle **Orange Vignette** overlay.
+*   **F5:** Open the **DLSS Control Panel**.
+*   **F6:** Toggle **Real FPS Counter** (Gold Text).
+*   **F7:** Toggle **Orange Vignette** overlay.
 
 ---
 
 ## ⚙️ Best Settings for Max FPS
 
-1.  Open the F1 Menu.
+1.  Open the F5 Menu.
 2.  Set **Frame Gen** to **4x**.
 3.  Set **DLSS Mode** to **Performance**.
 4.  **Important:** Go to Game Settings -> Screen -> **Resolution Scale**.
@@ -56,7 +56,7 @@ This open-source project injects **NVIDIA DLSS 3 / 4.5** into the AnvilNext engi
 ## ⚠️ Troubleshooting
 
 *   **Game Crashing?** Disable Ubisoft Connect Overlay or RivaTuner.
-*   **Laggy Mouse?** Verify **NVIDIA Reflex** is checked in the F1 Advanced menu.
+*   **Laggy Mouse?** Verify **NVIDIA Reflex** is checked in the F5 Advanced menu.
 *   **Menu Stuck?** Use **Borderless Windowed** mode in game settings.
 
 ---

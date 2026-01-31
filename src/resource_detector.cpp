@@ -17,6 +17,12 @@ void ResourceDetector::NewFrame() {
         m_motionCandidates.clear();
         m_depthCandidates.clear();
         m_colorCandidates.clear();
+        m_bestMotion = nullptr;
+        m_bestDepth = nullptr;
+        m_bestColor = nullptr;
+        m_bestMotionScore = 0.0f;
+        m_bestDepthScore = 0.0f;
+        m_bestColorScore = 0.0f;
         LOG_INFO("Resource detector cache cleared (Frame %llu)", m_frameCount);
     }
 }
@@ -26,6 +32,12 @@ void ResourceDetector::Clear() {
     m_motionCandidates.clear();
     m_depthCandidates.clear();
     m_colorCandidates.clear();
+    m_bestMotion = nullptr;
+    m_bestDepth = nullptr;
+    m_bestColor = nullptr;
+    m_bestMotionScore = 0.0f;
+    m_bestDepthScore = 0.0f;
+    m_bestColorScore = 0.0f;
     LOG_INFO("Resource detector explicitly cleared.");
 }
 
@@ -37,57 +49,81 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
     // Ignore small buffers (likely UI icons or constant buffers)
     if (desc.Width < 64 || desc.Height < 64) return;
 
-    std::lock_guard<std::mutex> lock(m_mutex);
+    uint64_t frameCount = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        frameCount = m_frameCount;
+    }
 
     // Score for Motion Vectors
     float mvScore = ScoreMotionVector(desc);
+
+    // Score for Depth
+    float depthScore = ScoreDepth(desc);
+
+    // Score for Color (Input)
+    float colorScore = ScoreColor(desc);
+    if (mvScore <= 0.5f && depthScore <= 0.5f && colorScore <= 0.5f) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+
     if (mvScore > 0.5f) {
         bool found = false;
         for (auto& cand : m_motionCandidates) {
             if (cand.pResource.Get() == pResource) {
-                cand.lastFrameSeen = m_frameCount;
+                cand.lastFrameSeen = frameCount;
                 found = true;
                 break;
             }
         }
         if (!found) {
-            m_motionCandidates.push_back({pResource, mvScore, desc, m_frameCount});
+            m_motionCandidates.push_back({pResource, mvScore, desc, frameCount});
             LOG_DEBUG("Found MV Candidate: %dx%d Fmt:%d Score:%.2f", 
                 desc.Width, desc.Height, desc.Format, mvScore);
         }
+        if (mvScore >= m_bestMotionScore) {
+            m_bestMotionScore = mvScore;
+            m_bestMotion = pResource;
+        }
     }
 
-    // Score for Depth
-    float depthScore = ScoreDepth(desc);
     if (depthScore > 0.5f) {
         bool found = false;
         for (auto& cand : m_depthCandidates) {
             if (cand.pResource.Get() == pResource) {
-                cand.lastFrameSeen = m_frameCount;
+                cand.lastFrameSeen = frameCount;
                 found = true;
                 break;
             }
         }
         if (!found) {
-            m_depthCandidates.push_back({pResource, depthScore, desc, m_frameCount});
+            m_depthCandidates.push_back({pResource, depthScore, desc, frameCount});
+        }
+        if (depthScore >= m_bestDepthScore) {
+            m_bestDepthScore = depthScore;
+            m_bestDepth = pResource;
         }
     }
 
-    // Score for Color (Input)
-    float colorScore = ScoreColor(desc);
     if (colorScore > 0.5f) {
         bool found = false;
         for (auto& cand : m_colorCandidates) {
             if (cand.pResource.Get() == pResource) {
-                cand.lastFrameSeen = m_frameCount;
+                cand.lastFrameSeen = frameCount;
                 found = true;
                 break;
             }
         }
         if (!found) {
-            m_colorCandidates.push_back({pResource, colorScore, desc, m_frameCount});
+            m_colorCandidates.push_back({pResource, colorScore, desc, frameCount});
             LOG_DEBUG("Found Color Candidate: %dx%d Fmt:%d Score:%.2f", 
                 desc.Width, desc.Height, desc.Format, colorScore);
+        }
+        if (colorScore >= m_bestColorScore) {
+            m_bestColorScore = colorScore;
+            m_bestColor = pResource;
         }
     }
 }
@@ -140,44 +176,17 @@ float ResourceDetector::ScoreColor(const D3D12_RESOURCE_DESC& desc) {
 
 ID3D12Resource* ResourceDetector::GetBestMotionVectorCandidate() {
     std::lock_guard<std::mutex> lock(m_mutex);
-    ID3D12Resource* best = nullptr;
-    float bestScore = 0.0f;
-    
-    for (const auto& cand : m_motionCandidates) {
-        if (cand.score > bestScore) {
-            bestScore = cand.score;
-            best = cand.pResource.Get();
-        }
-    }
-    return best;
+    return m_bestMotion;
 }
 
 ID3D12Resource* ResourceDetector::GetBestDepthCandidate() {
     std::lock_guard<std::mutex> lock(m_mutex);
-    ID3D12Resource* best = nullptr;
-    float bestScore = 0.0f;
-    
-    for (const auto& cand : m_depthCandidates) {
-        if (cand.score > bestScore) {
-            bestScore = cand.score;
-            best = cand.pResource.Get();
-        }
-    }
-    return best;
+    return m_bestDepth;
 }
 
 ID3D12Resource* ResourceDetector::GetBestColorCandidate() {
     std::lock_guard<std::mutex> lock(m_mutex);
-    ID3D12Resource* best = nullptr;
-    float bestScore = 0.0f;
-    
-    for (const auto& cand : m_colorCandidates) {
-        if (cand.score > bestScore) {
-            bestScore = cand.score;
-            best = cand.pResource.Get();
-        }
-    }
-    return best;
+    return m_bestColor;
 }
 
 void ResourceDetector::AnalyzeCommandList(ID3D12GraphicsCommandList* pCmdList) {

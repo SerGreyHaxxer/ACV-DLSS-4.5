@@ -6,6 +6,7 @@
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <stdio.h> // Added for startup logging
+#include <atomic>
 
 // Simple startup logger to debug early crashes (Duplicated from main.cpp)
 // Force C linkage to be safe
@@ -25,31 +26,40 @@ DXGIProxyState g_ProxyState;
 // ============================================================================
 
 static CRITICAL_SECTION s_InitCS;
-static bool s_CSInited = false;
+static std::atomic<bool> s_CSInited(false);
+static std::atomic<bool> s_LoggerInitAttempted(false);
 
 void InitProxyGlobal() {
-    if (!s_CSInited) {
+    bool expected = false;
+    if (s_CSInited.compare_exchange_strong(expected, true)) {
         InitializeCriticalSection(&s_InitCS);
-        s_CSInited = true;
     }
 }
 
 void CleanupProxyGlobal() {
-    if (s_CSInited) {
+    bool expected = true;
+    if (s_CSInited.compare_exchange_strong(expected, false)) {
         DeleteCriticalSection(&s_InitCS);
-        s_CSInited = false;
     }
 }
 
 bool InitializeProxy() {
     LogStartup("InitializeProxy Entry");
-    if (!s_CSInited) {
+    if (!s_CSInited.load()) {
         LogStartup("CRITICAL: Proxy Global CS not initialized!");
         return false;
     }
 
     EnterCriticalSection(&s_InitCS);
     LogStartup("InitializeProxy Lock Acquired");
+    if (!s_LoggerInitAttempted.exchange(true)) {
+        if (!Logger::Instance().Initialize(DLSS4_LOG_FILE)) {
+            LogStartup("Logger Init Failed");
+            OutputDebugStringA("DLSS4 Proxy: Failed to initialize logger\n");
+        } else {
+            LogStartup("Logger Initialized");
+        }
+    }
 
     if (g_ProxyState.initialized) {
         LeaveCriticalSection(&s_InitCS);
@@ -111,6 +121,14 @@ bool InitializeProxy() {
     g_ProxyState.pfnSetAppCompatStringPointer = GetProcAddress(g_ProxyState.hOriginalDXGI, "SetAppCompatStringPointer");
     
     LogStartup("GetProcAddress End");
+    if (!g_ProxyState.pfnDXGIDeclareAdapterRemovalSupport) LOG_INFO("Optional export missing: DXGIDeclareAdapterRemovalSupport");
+    if (!g_ProxyState.pfnDXGIGetDebugInterface1) LOG_INFO("Optional export missing: DXGIGetDebugInterface1");
+    if (!g_ProxyState.pfnApplyCompatResolutionQuirking) LOG_INFO("Optional export missing: ApplyCompatResolutionQuirking");
+    if (!g_ProxyState.pfnCompatString) LOG_INFO("Optional export missing: CompatString");
+    if (!g_ProxyState.pfnCompatValue) LOG_INFO("Optional export missing: CompatValue");
+    if (!g_ProxyState.pfnDXGIDumpJournal) LOG_INFO("Optional export missing: DXGIDumpJournal");
+    if (!g_ProxyState.pfnDXGIReportAdapterConfiguration) LOG_INFO("Optional export missing: DXGIReportAdapterConfiguration");
+    if (!g_ProxyState.pfnDXGIDisableVBlankVirtualization) LOG_INFO("Optional export missing: DXGIDisableVBlankVirtualization");
     
     // Verify critical functions loaded
     if (!g_ProxyState.pfnCreateDXGIFactory || 
@@ -118,6 +136,8 @@ bool InitializeProxy() {
         !g_ProxyState.pfnCreateDXGIFactory2) {
         LogStartup("Failed to get critical pointers!");
         LOG_ERROR("Failed to get critical DXGI function pointers!");
+        FreeLibrary(g_ProxyState.hOriginalDXGI);
+        g_ProxyState.hOriginalDXGI = nullptr;
         LeaveCriticalSection(&s_InitCS);
         return false;
     }
@@ -235,7 +255,7 @@ HRESULT WINAPI DXGIGetDebugInterface1(UINT Flags, REFIID riid, void** pDebug) {
 typedef HRESULT (WINAPI *PFN_Generic)(void* a, void* b, void* c, void* d);
 
 HRESULT WINAPI GenericForward(void* func, void* a, void* b, void* c, void* d) {
-    if (!func) return S_OK;
+    if (!func) return E_NOINTERFACE;
     return ((PFN_Generic)func)(a, b, c, d);
 }
 

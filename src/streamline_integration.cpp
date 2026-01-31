@@ -28,6 +28,8 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
     m_dlssPreset = (sl::DLSSPreset)cfg.dlssPreset;
     m_mvecScaleX = cfg.mvecScaleX;
     m_mvecScaleY = cfg.mvecScaleY;
+    m_reflexEnabled = cfg.reflexEnabled;
+    m_hudFixEnabled = cfg.hudFixEnabled;
     
     LOG_INFO("Initializing NVIDIA Streamline...");
 
@@ -84,18 +86,15 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
     }
 
     m_dlssEnabled = DLSS4_ENABLE_SUPER_RESOLUTION != 0;
-    m_frameGenMultiplier = DLSS4_FRAME_GEN_MULTIPLIER; // Init from config
     m_rayReconstructionEnabled = DLSS4_ENABLE_RAY_RECONSTRUCTION != 0;
-    m_useMfg = DLSS4_FRAME_GEN_MULTIPLIER > 2;
-
-    switch (DLSS4_SR_QUALITY_MODE) {
-    case 0: m_dlssMode = sl::DLSSMode::eMaxPerformance; break;
-    case 1: m_dlssMode = sl::DLSSMode::eBalanced; break;
-    case 2: m_dlssMode = sl::DLSSMode::eMaxQuality; break;
-    case 3: m_dlssMode = sl::DLSSMode::eUltraQuality; break;
-    case 4: m_dlssMode = sl::DLSSMode::eDLAA; break;
-    default: m_dlssMode = sl::DLSSMode::eDLAA; break; // Default to Max
+    if (m_frameGenMultiplier <= 0) m_frameGenMultiplier = DLSS4_FRAME_GEN_MULTIPLIER;
+    if (m_dlssMode < sl::DLSSMode::eOff || m_dlssMode > sl::DLSSMode::eDLAA) {
+        m_dlssMode = sl::DLSSMode::eDLAA;
     }
+    if (m_dlssPreset < sl::DLSSPreset::eDefault || m_dlssPreset > sl::DLSSPreset::ePresetG) {
+        m_dlssPreset = sl::DLSSPreset::eDefault;
+    }
+    m_useMfg = m_frameGenMultiplier > 2;
 
     return true;
 }
@@ -131,8 +130,7 @@ void StreamlineIntegration::NewFrame(IDXGISwapChain* pSwapChain) {
     if (depth) TagDepthBuffer(depth);
     if (mvec) TagMotionVectors(mvec);
 
-    UpdateOptions(); // Update options with new resolution data from tags
-    TagResources();
+    // Defer UpdateOptions/TagResources until Evaluate to ensure a frame token is available
 }
 
 void StreamlineIntegration::TagColorBuffer(ID3D12Resource* pResource) { if (m_initialized && pResource) m_colorBuffer = pResource; }
@@ -161,6 +159,9 @@ void StreamlineIntegration::SetCameraData(const float* view, const float* proj, 
 
 void StreamlineIntegration::EvaluateDLSS(ID3D12GraphicsCommandList* pCmdList) {
     if (!m_initialized || !m_dlssSupported || !m_dlssEnabled || !pCmdList) return;
+    if (!EnsureFrameToken()) return;
+    if (m_optionsDirty) UpdateOptions();
+    TagResources();
     const sl::BaseStructure* inputs[] = { &m_viewport };
     sl::slEvaluateFeature(sl::kFeatureDLSS, *m_frameToken, inputs, 1, pCmdList);
     if (m_rayReconstructionEnabled && m_rayReconstructionSupported) {
@@ -171,13 +172,14 @@ void StreamlineIntegration::EvaluateDLSS(ID3D12GraphicsCommandList* pCmdList) {
 void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain* pSwapChain) {
     if (!m_initialized || m_frameGenMultiplier < 2) return;
     UpdateSwapChain(pSwapChain);
-    // UpdateOptions called in NewFrame now to catch res changes
     if (!EnsureFrameToken()) return;
     EnsureCommandList();
     if (!m_pCommandList || !m_pCommandAllocator || !m_pCommandQueue) return;
 
     m_pCommandAllocator->Reset();
     m_pCommandList->Reset(m_pCommandAllocator.Get(), nullptr);
+    if (m_optionsDirty) UpdateOptions();
+    TagResources();
     EvaluateDLSS(m_pCommandList.Get());
 
     const sl::BaseStructure* inputs[] = { &m_viewport };
@@ -199,6 +201,35 @@ void StreamlineIntegration::SetDLSSMode(int mode) {
         ConfigManager::Get().Data().dlssMode = mode;
         ConfigManager::Get().Save();
     } 
+}
+void StreamlineIntegration::SetDLSSModeIndex(int modeIndex) {
+    static const sl::DLSSMode kUiToMode[] = {
+        sl::DLSSMode::eOff,
+        sl::DLSSMode::eMaxPerformance,
+        sl::DLSSMode::eBalanced,
+        sl::DLSSMode::eMaxQuality,
+        sl::DLSSMode::eUltraQuality,
+        sl::DLSSMode::eDLAA
+    };
+    if (modeIndex < 0 || modeIndex >= (int)(sizeof(kUiToMode) / sizeof(kUiToMode[0]))) {
+        return;
+    }
+    m_dlssMode = kUiToMode[modeIndex];
+    m_optionsDirty = true;
+    ConfigManager::Get().Data().dlssMode = static_cast<int>(m_dlssMode);
+    ConfigManager::Get().Save();
+}
+int StreamlineIntegration::GetDLSSModeIndex() const {
+    switch (m_dlssMode) {
+    case sl::DLSSMode::eOff: return 0;
+    case sl::DLSSMode::eMaxPerformance: return 1;
+    case sl::DLSSMode::eBalanced: return 2;
+    case sl::DLSSMode::eMaxQuality: return 3;
+    case sl::DLSSMode::eUltraQuality: return 4;
+    case sl::DLSSMode::eDLAA: return 5;
+    case sl::DLSSMode::eUltraPerformance: return 1;
+    default: return 3;
+    }
 }
 void StreamlineIntegration::SetDLSSPreset(int preset) {
     if(m_initialized) {
@@ -242,11 +273,21 @@ void StreamlineIntegration::SetMVecScale(float x, float y) {
     ConfigManager::Get().Data().mvecScaleY = y;
     ConfigManager::Get().Save();
 }
+void StreamlineIntegration::SetReflexEnabled(bool enabled) {
+    m_reflexEnabled = enabled;
+    ConfigManager::Get().Data().reflexEnabled = enabled;
+    ConfigManager::Get().Save();
+}
+void StreamlineIntegration::SetHUDFixEnabled(bool enabled) {
+    m_hudFixEnabled = enabled;
+    ConfigManager::Get().Data().hudFixEnabled = enabled;
+    ConfigManager::Get().Save();
+}
 
 void StreamlineIntegration::CycleDLSSMode() {
-    int current = (int)m_dlssMode;
+    int current = GetDLSSModeIndex();
     current = (current + 1) % 6; // 0-5
-    SetDLSSMode(current);
+    SetDLSSModeIndex(current);
 }
 void StreamlineIntegration::CycleDLSSPreset() {
     int current = (int)m_dlssPreset;
@@ -369,9 +410,9 @@ void StreamlineIntegration::UpdateOptions() {
         sl::slSetFeatureOptions(sl::kFeatureDLSS, &dlssOptions);
     }
 
-    if (m_frameGenMultiplier >= 2) {
+    if (m_frameGenMultiplier >= 2 && m_reflexEnabled) {
         sl::ReflexOptions reflexOptions = {};
-        reflexOptions.mode = sl::ReflexMode::eLowLatency;
+        reflexOptions.mode = sl::ReflexMode::eLowLatencyWithBoost;
         reflexOptions.useMarkersToOptimize = true;
         sl::slSetFeatureOptions(sl::kFeatureReflex, &reflexOptions);
 

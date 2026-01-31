@@ -41,4 +41,10 @@ private:
     std::vector<ResourceCandidate> m_colorCandidates;
     
     uint64_t m_frameCount = 0;
+    ID3D12Resource* m_bestMotion = nullptr;
+    ID3D12Resource* m_bestDepth = nullptr;
+    ID3D12Resource* m_bestColor = nullptr;
+    float m_bestMotionScore = 0.0f;
+    float m_bestDepthScore = 0.0f;
+    float m_bestColorScore = 0.0f;
 };

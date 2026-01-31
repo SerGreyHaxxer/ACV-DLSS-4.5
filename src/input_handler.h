@@ -16,9 +16,17 @@ public:
     static InputHandler& Get();
     
     void RegisterHotkey(int vKey, std::function<void()> callback, const char* name);
+    
+    // Global Hook
+    void InstallHook();
+    void UninstallHook();
     void ProcessInput();
+    
+    // Internal
+    void HandleKey(int vKey);
 
 private:
     InputHandler() = default;
     std::vector<KeyCallback> m_callbacks;
+    HHOOK m_hHook = nullptr;
 };

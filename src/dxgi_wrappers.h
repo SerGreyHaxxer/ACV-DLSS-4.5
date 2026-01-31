@@ -82,6 +82,7 @@ private:
 public:
     WrappedIDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice);
     virtual ~WrappedIDXGISwapChain();
+    bool IsInitialized() const { return m_initialized; }
 
     // IUnknown
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override;

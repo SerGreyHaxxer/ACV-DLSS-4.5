@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include "input_handler.h"
 #include "overlay.h"
+#include "vtable_utils.h"
 
 extern "C" void LogStartup(const char* msg);
 
@@ -31,16 +32,27 @@ static std::atomic<uint64_t> g_FrameCount(0);
 // ============================================================================
 
 bool HookVirtualMethod(void* pObject, int index, void* pHook, void** ppOriginal) {
-    if (!pObject) return false;
-    void** vtable = *reinterpret_cast<void***>(pObject);
-    if (!vtable) return false;
-    *ppOriginal = vtable[index];
-    DWORD oldProtect;
-    if (!VirtualProtect(&vtable[index], sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+    if (!pObject || !pHook || !ppOriginal || index < 0) {
+        LOG_ERROR("HookVirtualMethod invalid params");
         return false;
     }
-    vtable[index] = pHook;
-    VirtualProtect(&vtable[index], sizeof(void*), oldProtect, &oldProtect);
+    void** vtable = nullptr;
+    void** entry = nullptr;
+    if (!ResolveVTableEntry(pObject, index, &vtable, &entry)) {
+        LOG_ERROR("HookVirtualMethod invalid vtable entry (index %d)", index);
+        return false;
+    }
+    *ppOriginal = *entry;
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(entry, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        LOG_ERROR("HookVirtualMethod VirtualProtect failed");
+        return false;
+    }
+    *entry = pHook;
+    DWORD restoreProtect = 0;
+    if (!VirtualProtect(entry, sizeof(void*), oldProtect, &restoreProtect)) {
+        LOG_ERROR("HookVirtualMethod VirtualProtect restore failed");
+    }
     return true;
 }
 
@@ -58,9 +70,14 @@ HRESULT WINAPI Hooked_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Mi
         HMODULE hD3D12 = LoadLibraryW(L"d3d12.dll");
         if (hD3D12) {
             g_OriginalD3D12CreateDevice = (PFN_D3D12CreateDevice)GetProcAddress(hD3D12, "D3D12CreateDevice");
+        } else {
+            LOG_ERROR("Failed to load d3d12.dll");
         }
     }
-    if (!g_OriginalD3D12CreateDevice) return E_FAIL;
+    if (!g_OriginalD3D12CreateDevice) {
+        LOG_ERROR("D3D12CreateDevice not found");
+        return E_FAIL;
+    }
 
     ID3D12Device* pRealDevice = nullptr;
     HRESULT hr = g_OriginalD3D12CreateDevice(pAdapter, MinimumFeatureLevel, __uuidof(ID3D12Device), (void**)&pRealDevice);
@@ -116,11 +133,12 @@ HRESULT STDMETHODCALLTYPE HookedPresent1(IDXGISwapChain1* pThis, UINT SyncInterv
 
 HRESULT STDMETHODCALLTYPE HookedResizeBuffers(IDXGISwapChain* pThis, UINT BufferCount, 
     UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
-    if (SUCCEEDED(g_OriginalResizeBuffers(pThis, BufferCount, Width, Height, NewFormat, SwapChainFlags))) {
+    HRESULT hr = g_OriginalResizeBuffers(pThis, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    if (SUCCEEDED(hr)) {
         g_SwapChainState.width = Width;
         g_SwapChainState.height = Height;
     }
-    return S_OK;
+    return hr;
 }
 
 #include "pattern_scanner.h"
@@ -134,6 +152,7 @@ void HookFactoryIfNeeded(void* pFactory) {
     std::lock_guard<std::mutex> lock(g_HookMutex);
     
     if (g_HooksInitialized) return;
+    if (!pFactory) return;
     
     LOG_INFO("Scanning for Camera Data...");
     auto jitterOffset = PatternScanner::Scan("ACValhalla.exe", "F3 0F 10 ?? ?? ?? ?? ?? 0F 28 ?? F3 0F 11 ?? ?? ?? ?? ??");
@@ -148,18 +167,42 @@ void HookFactoryIfNeeded(void* pFactory) {
     HWND dummyHwnd = CreateWindowExW(0, L"DLSS4ProxyDummy", L"", WS_OVERLAPPED, 0, 0, 100, 100, nullptr, nullptr, wc.hInstance, nullptr);
     
     IDXGIFactory4* pFactory4 = nullptr;
-    ((IUnknown*)pFactory)->QueryInterface(__uuidof(IDXGIFactory4), (void**)&pFactory4);
+    if (FAILED(((IUnknown*)pFactory)->QueryInterface(__uuidof(IDXGIFactory4), (void**)&pFactory4)) || !pFactory4) {
+        DestroyWindow(dummyHwnd);
+        UnregisterClassW(L"DLSS4ProxyDummy", wc.hInstance);
+        return;
+    }
     
     IDXGIAdapter1* pAdapter = nullptr;
-    pFactory4->EnumAdapters1(0, &pAdapter);
+    if (FAILED(pFactory4->EnumAdapters1(0, &pAdapter)) || !pAdapter) {
+        pFactory4->Release();
+        DestroyWindow(dummyHwnd);
+        UnregisterClassW(L"DLSS4ProxyDummy", wc.hInstance);
+        return;
+    }
     
     ID3D12Device* pDevice = nullptr;
-    D3D12CreateDevice(pAdapter, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), (void**)&pDevice);
+    HRESULT hr = D3D12CreateDevice(pAdapter, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), (void**)&pDevice);
+    if (FAILED(hr) || !pDevice) {
+        pAdapter->Release();
+        pFactory4->Release();
+        DestroyWindow(dummyHwnd);
+        UnregisterClassW(L"DLSS4ProxyDummy", wc.hInstance);
+        return;
+    }
     
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     ID3D12CommandQueue* pCommandQueue = nullptr;
-    pDevice->CreateCommandQueue(&queueDesc, __uuidof(ID3D12CommandQueue), (void**)&pCommandQueue);
+    hr = pDevice->CreateCommandQueue(&queueDesc, __uuidof(ID3D12CommandQueue), (void**)&pCommandQueue);
+    if (FAILED(hr) || !pCommandQueue) {
+        pDevice->Release();
+        pAdapter->Release();
+        pFactory4->Release();
+        DestroyWindow(dummyHwnd);
+        UnregisterClassW(L"DLSS4ProxyDummy", wc.hInstance);
+        return;
+    }
     
     DXGI_SWAP_CHAIN_DESC1 scDesc = {};
     scDesc.Width = 100; scDesc.Height = 100; scDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -167,10 +210,28 @@ void HookFactoryIfNeeded(void* pFactory) {
     scDesc.BufferCount = 2; scDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     
     IDXGISwapChain1* pSwapChain1 = nullptr;
-    pFactory4->CreateSwapChainForHwnd(pCommandQueue, dummyHwnd, &scDesc, nullptr, nullptr, &pSwapChain1);
+    hr = pFactory4->CreateSwapChainForHwnd(pCommandQueue, dummyHwnd, &scDesc, nullptr, nullptr, &pSwapChain1);
+    if (FAILED(hr) || !pSwapChain1) {
+        pCommandQueue->Release();
+        pDevice->Release();
+        pAdapter->Release();
+        pFactory4->Release();
+        DestroyWindow(dummyHwnd);
+        UnregisterClassW(L"DLSS4ProxyDummy", wc.hInstance);
+        return;
+    }
     
     // Only hook Command Queue, leave SwapChain to Wrapper
-    HookVirtualMethod(pCommandQueue, 10, HookedExecuteCommandLists, (void**)&g_OriginalExecuteCommandLists);
+    if (!HookVirtualMethod(pCommandQueue, 10, HookedExecuteCommandLists, (void**)&g_OriginalExecuteCommandLists)) {
+        pSwapChain1->Release();
+        pCommandQueue->Release();
+        pDevice->Release();
+        pAdapter->Release();
+        pFactory4->Release();
+        DestroyWindow(dummyHwnd);
+        UnregisterClassW(L"DLSS4ProxyDummy", wc.hInstance);
+        return;
+    }
     
     g_HooksInitialized = true;
     

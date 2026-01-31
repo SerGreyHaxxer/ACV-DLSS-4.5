@@ -53,6 +53,13 @@ public:
     void SetSharpness(float sharpness); // 0.0 to 1.0
     void SetLODBias(float bias); // 0.0 to -3.0
     void SetMVecScale(float x, float y);
+    void SetReflexEnabled(bool enabled);
+    void SetHUDFixEnabled(bool enabled);
+
+    // DLSS mode mapping (UI index to SDK enum)
+    void SetDLSSModeIndex(int modeIndex);
+    int GetDLSSModeIndex() const;
+    int GetDLSSPresetIndex() const { return static_cast<int>(m_dlssPreset); }
 
     // Runtime Toggles (For Hotkeys)
     void CycleDLSSMode();
@@ -111,6 +118,8 @@ private:
     int m_frameGenMultiplier = 4; // Default 4x
     bool m_dlssEnabled = true;
     bool m_rayReconstructionEnabled = true;
+    bool m_reflexEnabled = true;
+    bool m_hudFixEnabled = false;
     
     float m_sharpness = 0.5f; // Default sharpness
     float m_lodBias = -1.0f;  // Default Sharper Textures

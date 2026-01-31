@@ -232,6 +232,11 @@ bool LoadNGXCore() {
     LOG_INFO("  GetParameters: %p", g_pfnGetParameters);
     LOG_INFO("  CreateFeature: %p", g_pfnCreateFeature);
     LOG_INFO("  EvaluateFeature: %p", g_pfnEvaluateFeature);
+
+    if (!g_pfnInit || !g_pfnCreateFeature || !g_pfnEvaluateFeature) {
+        LOG_ERROR("Missing required NGX exports");
+        return false;
+    }
     
     return (g_hNGX_DLSS != nullptr) || (g_hNGX_DLSSG != nullptr);
 }
@@ -373,6 +378,10 @@ bool LoadOriginalDXGI() {
     g_pfnCreateDXGIFactory = (PFN_CreateDXGIFactory)GetProcAddress(g_hOriginalDXGI, "CreateDXGIFactory");
     g_pfnCreateDXGIFactory1 = (PFN_CreateDXGIFactory1)GetProcAddress(g_hOriginalDXGI, "CreateDXGIFactory1");
     g_pfnCreateDXGIFactory2 = (PFN_CreateDXGIFactory2)GetProcAddress(g_hOriginalDXGI, "CreateDXGIFactory2");
+    if (!g_pfnCreateDXGIFactory || !g_pfnCreateDXGIFactory1 || !g_pfnCreateDXGIFactory2) {
+        LOG_ERROR("Failed to load critical DXGI exports");
+        return false;
+    }
     
     LOG_INFO("System DXGI loaded successfully");
     return true;
