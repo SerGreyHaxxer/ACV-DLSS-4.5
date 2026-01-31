@@ -56,6 +56,7 @@ ULONG STDMETHODCALLTYPE WrappedIDXGIFactory::Release() {
 }
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::EnumAdapters(UINT A, IDXGIAdapter** P) { 
+    InstallD3D12Hooks();
     HookFactoryIfNeeded(m_pReal); return m_pReal->EnumAdapters(A, P); 
 }
 HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::MakeWindowAssociation(HWND H, UINT F) { return m_pReal->MakeWindowAssociation(H, F); }
@@ -67,6 +68,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::GetPrivateData(REFGUID N, UINT* S
 HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::GetParent(REFIID R, void** P) { return m_pReal->GetParent(R, P); }
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::EnumAdapters1(UINT A, IDXGIAdapter1** P) { 
+    InstallD3D12Hooks();
     ScopedInterface<IDXGIFactory1> real(m_pReal); return real ? real->EnumAdapters1(A, P) : E_NOINTERFACE; 
 }
 BOOL STDMETHODCALLTYPE WrappedIDXGIFactory::IsCurrent() { 
@@ -120,6 +122,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::UnregisterAdaptersChangedEvent(DW
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChain(IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc, IDXGISwapChain** ppSwapChain) {
     LogStartup("WrappedFactory::CreateSwapChain");
+    InstallD3D12Hooks();
     HookFactoryIfNeeded(m_pReal);
     HRESULT hr = m_pReal->CreateSwapChain(pDevice, pDesc, ppSwapChain);
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
@@ -211,6 +214,14 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present(UINT SyncInterval, UINT
         InputHandler::Get().RegisterHotkey(VK_F5, [](){ MessageBeep(MB_OK); OverlayUI::Get().ToggleVisibility(); }, "Toggle Menu");
         InputHandler::Get().RegisterHotkey(VK_F6, [](){ MessageBeep(MB_OK); OverlayUI::Get().ToggleFPS(); }, "Toggle FPS");
         InputHandler::Get().RegisterHotkey(VK_F7, [](){ MessageBeep(MB_OK); OverlayUI::Get().ToggleVignette(); }, "Toggle Vignette");
+        InputHandler::Get().RegisterHotkey(VK_F8, [](){
+            float jx = 0.0f, jy = 0.0f;
+            StreamlineIntegration::Get().GetLastCameraJitter(jx, jy);
+            bool hasCam = StreamlineIntegration::Get().HasCameraData();
+            LOG_INFO("F8 Debug: Camera=%s Jitter=(%.4f, %.4f)", hasCam ? "OK" : "MISSING", jx, jy);
+            OverlayUI::Get().SetCameraStatus(hasCam, jx, jy);
+            MessageBeep(hasCam ? MB_OK : MB_ICONHAND);
+        }, "Debug Camera Status");
         
         InputHandler::Get().InstallHook(); // Global Hook
     }
@@ -229,6 +240,11 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present(UINT SyncInterval, UINT
         lastTime = currentTime; frameCount = 0;
     }
 
+    if (!StreamlineIntegration::Get().HasCameraData()) {
+        float jx = 0.0f, jy = 0.0f;
+        StreamlineIntegration::Get().GetLastCameraJitter(jx, jy);
+        OverlayUI::Get().SetCameraStatus(false, jx, jy);
+    }
     StreamlineIntegration::Get().NewFrame(m_pReal);
     StreamlineIntegration::Get().EvaluateFrameGen(m_pReal);
     return m_pReal->Present(0, Flags | DXGI_PRESENT_ALLOW_TEARING);
@@ -242,11 +258,24 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present1(UINT Sync, UINT Flags,
         InputHandler::Get().RegisterHotkey(VK_F5, [](){ MessageBeep(MB_OK); OverlayUI::Get().ToggleVisibility(); }, "Toggle Menu");
         InputHandler::Get().RegisterHotkey(VK_F6, [](){ MessageBeep(MB_OK); OverlayUI::Get().ToggleFPS(); }, "Toggle FPS");
         InputHandler::Get().RegisterHotkey(VK_F7, [](){ MessageBeep(MB_OK); OverlayUI::Get().ToggleVignette(); }, "Toggle Vignette");
+        InputHandler::Get().RegisterHotkey(VK_F8, [](){
+            float jx = 0.0f, jy = 0.0f;
+            StreamlineIntegration::Get().GetLastCameraJitter(jx, jy);
+            bool hasCam = StreamlineIntegration::Get().HasCameraData();
+            LOG_INFO("F8 Debug: Camera=%s Jitter=(%.4f, %.4f)", hasCam ? "OK" : "MISSING", jx, jy);
+            OverlayUI::Get().SetCameraStatus(hasCam, jx, jy);
+            MessageBeep(hasCam ? MB_OK : MB_ICONHAND);
+        }, "Debug Camera Status");
         
         InputHandler::Get().InstallHook(); // Global Hook
     }
     InputHandler::Get().ProcessInput();
 
+    if (!StreamlineIntegration::Get().HasCameraData()) {
+        float jx = 0.0f, jy = 0.0f;
+        StreamlineIntegration::Get().GetLastCameraJitter(jx, jy);
+        OverlayUI::Get().SetCameraStatus(false, jx, jy);
+    }
     StreamlineIntegration::Get().NewFrame(m_pReal);
     StreamlineIntegration::Get().EvaluateFrameGen(m_pReal);
     ScopedInterface<IDXGISwapChain1> real(m_pReal); return real ? real->Present1(0, Flags | DXGI_PRESENT_ALLOW_TEARING, p) : E_NOINTERFACE;

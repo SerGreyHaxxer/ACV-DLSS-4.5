@@ -100,12 +100,14 @@ $buildArgs = @(
     "src\input_handler.cpp",
     "src\config_manager.cpp",
     "src\overlay.cpp",
+    "src\iat_utils.cpp",
     "/link",
     "d3d12.lib",
     "dxgi.lib",
     "dxguid.lib",
     "user32.lib",
     "gdi32.lib",
+    "shell32.lib",
     "/DEF:dxgi.def",
     "/DLL"
 )

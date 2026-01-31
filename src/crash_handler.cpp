@@ -5,10 +5,23 @@
 #include <vector>
 #include <string>
 #include <sstream>
+#include <shellapi.h>
+#include <atomic>
 
 #pragma comment(lib, "dbghelp.lib")
 
 static PVOID g_Handler = nullptr;
+static std::atomic<bool> g_LogOpened(false);
+
+void OpenCrashLog() {
+    if (g_LogOpened.exchange(true)) return;
+    ShellExecuteA(nullptr, "open", "dlss4_crash.log", nullptr, nullptr, SW_SHOW);
+}
+
+void OpenMainLog() {
+    if (g_LogOpened.exchange(true)) return;
+    ShellExecuteA(nullptr, "open", "dlss4_proxy.log", nullptr, nullptr, SW_SHOW);
+}
 
 LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS pExceptionInfo) {
     // Only catch serious errors
@@ -70,6 +83,7 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS pExceptionInfo) {
         }
 
         fclose(fp);
+        OpenCrashLog();
     }
 
     // Don't swallow the exception, let the game/OS handle it (or show the usual error dialog)

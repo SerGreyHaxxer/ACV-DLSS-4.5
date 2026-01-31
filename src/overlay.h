@@ -13,6 +13,7 @@ public:
     // New FPS & Vignette
     void ToggleFPS(); 
     void ToggleVignette();
+    void SetCameraStatus(bool hasCamera, float jitterX, float jitterY);
     bool IsVisible() const { return m_visible; }
 
 private:
@@ -49,6 +50,7 @@ private:
     HWND m_hSliderSharpness = nullptr;
     HWND m_hSliderLOD = nullptr;
     HWND m_hLabelFPS = nullptr;
+    HWND m_hLabelCamera = nullptr;
     
     // Expandable Section
     HWND m_hBtnExpand = nullptr;
@@ -63,4 +65,7 @@ private:
     bool m_initialized = false;
     
     float m_cachedTotalFPS = 0.0f;
+    float m_cachedJitterX = 0.0f;
+    float m_cachedJitterY = 0.0f;
+    bool m_cachedCamera = false;
 };

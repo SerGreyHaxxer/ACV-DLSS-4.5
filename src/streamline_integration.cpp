@@ -69,6 +69,7 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
     }
     
     m_pDevice = pDevice;
+    m_cbvSrvUavDescriptorSize = pDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     m_initialized = true;
 
     sl::FeatureRequirements requirements{};
@@ -96,6 +97,11 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
     }
     m_useMfg = m_frameGenMultiplier > 2;
 
+    LOG_INFO("Streamline ready. DLSS:%s DLSSG:%s MFG:%s RR:%s",
+        m_dlssSupported ? "OK" : "NO",
+        m_dlssgSupported ? "OK" : "NO",
+        m_mfgSupported ? "OK" : "NO",
+        m_rayReconstructionSupported ? "OK" : "NO");
     return true;
 }
 
@@ -138,7 +144,13 @@ void StreamlineIntegration::TagDepthBuffer(ID3D12Resource* pResource) { if (m_in
 void StreamlineIntegration::TagMotionVectors(ID3D12Resource* pResource) { if (m_initialized && pResource) m_motionVectors = pResource; }
 
 void StreamlineIntegration::SetCameraData(const float* view, const float* proj, float jitterX, float jitterY) {
-    if (!m_initialized || !view || !proj) return;
+    if (!m_initialized) return;
+    if (!view || !proj) {
+        // Allow jitter-only updates; skip constants if no matrices yet.
+        m_lastJitterX = jitterX;
+        m_lastJitterY = jitterY;
+        return;
+    }
     sl::Constants consts{};
     for (int i = 0; i < 16; ++i) {
         reinterpret_cast<float*>(&consts.cameraViewToClip)[i] = view[i];
@@ -152,6 +164,9 @@ void StreamlineIntegration::SetCameraData(const float* view, const float* proj, 
     consts.cameraMotionIncluded = sl::Boolean::eTrue;
     consts.motionVectors3D = sl::Boolean::eFalse;
     consts.reset = sl::Boolean::eFalse;
+    m_hasCameraData = true;
+    m_lastJitterX = jitterX;
+    m_lastJitterY = jitterY;
 
     if (!EnsureFrameToken()) return;
     sl::slSetConstants(consts, *m_frameToken, m_viewport);
@@ -160,12 +175,18 @@ void StreamlineIntegration::SetCameraData(const float* view, const float* proj, 
 void StreamlineIntegration::EvaluateDLSS(ID3D12GraphicsCommandList* pCmdList) {
     if (!m_initialized || !m_dlssSupported || !m_dlssEnabled || !pCmdList) return;
     if (!EnsureFrameToken()) return;
+    if (m_lastDlssEvalFrame == m_frameIndex) return;
     if (m_optionsDirty) UpdateOptions();
     TagResources();
     const sl::BaseStructure* inputs[] = { &m_viewport };
     sl::slEvaluateFeature(sl::kFeatureDLSS, *m_frameToken, inputs, 1, pCmdList);
     if (m_rayReconstructionEnabled && m_rayReconstructionSupported) {
         sl::slEvaluateFeature(sl::kFeatureDLSS_RR, *m_frameToken, inputs, 1, pCmdList);
+    }
+    m_lastDlssEvalFrame = m_frameIndex;
+    if (!m_loggedDlssEval) {
+        m_loggedDlssEval = true;
+        LOG_INFO("DLSS evaluated successfully.");
     }
 }
 
@@ -185,8 +206,16 @@ void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain* pSwapChain) {
     const sl::BaseStructure* inputs[] = { &m_viewport };
     if (m_useMfg && m_mfgSupported) {
         sl::slEvaluateFeature(sl::kFeatureDLSS_MFG, *m_frameToken, inputs, 1, m_pCommandList.Get());
+        if (!m_loggedFrameGenEval) {
+            m_loggedFrameGenEval = true;
+            LOG_INFO("DLSS MFG evaluated successfully.");
+        }
     } else if (m_dlssgSupported) {
         sl::slEvaluateFeature(sl::kFeatureDLSS_G, *m_frameToken, inputs, 1, m_pCommandList.Get());
+        if (!m_loggedFrameGenEval) {
+            m_loggedFrameGenEval = true;
+            LOG_INFO("DLSS-G evaluated successfully.");
+        }
     }
     m_pCommandList->Close();
     ID3D12CommandList* lists[] = { m_pCommandList.Get() };
@@ -244,12 +273,21 @@ void StreamlineIntegration::SetFrameGenMultiplier(int multiplier) {
     if (!m_initialized) return;
     m_frameGenMultiplier = multiplier;
     m_optionsDirty = true;
+    m_useMfg = m_frameGenMultiplier > 2;
     ConfigManager::Get().Data().frameGenMultiplier = multiplier;
     ConfigManager::Get().Save();
     LOG_INFO("Frame Gen Multiplier set to: %dx", multiplier);
 }
 void StreamlineIntegration::SetCommandQueue(ID3D12CommandQueue* pQueue) { 
-    if(!m_initialized || !pQueue || m_pCommandQueue.Get() == pQueue) return;
+    if (!pQueue) return;
+    if (!m_initialized) {
+        ID3D12Device* device = nullptr;
+        if (SUCCEEDED(pQueue->GetDevice(__uuidof(ID3D12Device), (void**)&device)) && device) {
+            Initialize(device);
+            device->Release();
+        }
+    }
+    if (!m_initialized || m_pCommandQueue.Get() == pQueue) return;
     
     // ComPtr assignment handles Release/AddRef
     m_pCommandQueue = pQueue;

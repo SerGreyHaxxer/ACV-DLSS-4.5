@@ -15,6 +15,10 @@ class WrappedID3D12Device;
 // We wrap this to inspect ResourceBarriers and RenderTargets
 // This allows us to identify which resources are being used as Color, Depth, and Motion Vectors
 
+// Helper to register CBVs for camera scanning
+void RegisterCbv(ID3D12Resource* pResource, UINT64 size, uint8_t* cpuPtr);
+bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates);
+
 class WrappedID3D12GraphicsCommandList : public ID3D12GraphicsCommandList {
 public:
     WrappedID3D12GraphicsCommandList(ID3D12GraphicsCommandList* pReal, WrappedID3D12Device* pDeviceWrapper);

@@ -84,8 +84,9 @@ cl /LD /EHsc /std:c++17 /O2 ^
     src\hooks.cpp ^
     src\input_handler.cpp ^
     src\pattern_scanner.cpp ^
+    src\iat_utils.cpp ^
     /link ^
-    d3d12.lib dxgi.lib dxguid.lib user32.lib dbghelp.lib gdi32.lib ^
+    d3d12.lib dxgi.lib dxguid.lib user32.lib dbghelp.lib gdi32.lib shell32.lib ^
     ^
     /DEF:dxgi.def ^
     /DLL

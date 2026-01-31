@@ -147,6 +147,9 @@ bool InitializeProxy() {
     LOG_INFO("  CreateDXGIFactory1: 0x%p", g_ProxyState.pfnCreateDXGIFactory1);
     LOG_INFO("  CreateDXGIFactory2: 0x%p", g_ProxyState.pfnCreateDXGIFactory2);
     
+    // Install IAT Hooks for D3D12
+    InstallD3D12Hooks();
+    
     g_ProxyState.initialized = true;
     LogStartup("InitializeProxy Success");
     LeaveCriticalSection(&s_InitCS);

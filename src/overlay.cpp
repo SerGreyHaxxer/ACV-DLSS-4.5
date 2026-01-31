@@ -80,7 +80,7 @@ void OverlayUI::UIThreadLoop() {
 
 void OverlayUI::CreateOverlayWindow() {
     int width = 360;
-    int height = 500;
+    int height = 530;
     int x = 50; int y = 50;
 
     // WS_POPUP only - No standard Windows borders/caption
@@ -134,6 +134,10 @@ void OverlayUI::CreateOverlayWindow() {
     SendMessage(m_hLabelFPS, WM_SETFONT, (WPARAM)m_hFontUI, TRUE);
     cy += 30;
 
+    m_hLabelCamera = CreateWindowW(L"STATIC", L"Camera: ...", WS_VISIBLE | WS_CHILD | SS_CENTER, padding, cy, contentWidth, 20, m_hwnd, NULL, m_hModule, NULL);
+    SendMessage(m_hLabelCamera, WM_SETFONT, (WPARAM)m_hFontUI, TRUE);
+    cy += 30;
+
     // Use OWNERDRAW for Button to style it
     m_hBtnExpand = CreateWindowW(L"BUTTON", L"Advanced Settings >>", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, padding, cy, contentWidth, 30, m_hwnd, (HMENU)ID_BTN_EXPAND, m_hModule, NULL);
     cy += 40;
@@ -180,6 +184,22 @@ void OverlayUI::DrawFPSOverlay() {
 }
 void OverlayUI::SetFPS(float gameFps, float totalFps) { m_cachedTotalFPS = totalFps; DrawFPSOverlay(); 
     if(m_hLabelFPS) { wchar_t buf[64]; swprintf_s(buf, L"%.0f FPS", totalFps); SetWindowTextW(m_hLabelFPS, buf); }
+    if (m_hLabelCamera) {
+        wchar_t buf[128];
+        swprintf_s(buf, L"Camera: %s (J %.3f, %.3f)", m_cachedCamera ? L"OK" : L"Missing", m_cachedJitterX, m_cachedJitterY);
+        SetWindowTextW(m_hLabelCamera, buf);
+    }
+}
+
+void OverlayUI::SetCameraStatus(bool hasCamera, float jitterX, float jitterY) {
+    m_cachedCamera = hasCamera;
+    m_cachedJitterX = jitterX;
+    m_cachedJitterY = jitterY;
+    if (m_hLabelCamera) {
+        wchar_t buf[128];
+        swprintf_s(buf, L"Camera: %s (J %.3f, %.3f)", hasCamera ? L"OK" : L"Missing", jitterX, jitterY);
+        SetWindowTextW(m_hLabelCamera, buf);
+    }
 }
 void OverlayUI::ToggleVisibility() { if(m_hwnd) { m_visible = !m_visible; ShowWindow(m_hwnd, m_visible?SW_SHOW:SW_HIDE); if(m_visible){ SetForegroundWindow(m_hwnd); SetFocus(m_hwnd); } } }
 void OverlayUI::UpdateControls() {
@@ -272,7 +292,7 @@ LRESULT CALLBACK OverlayUI::WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
             int show = ui.m_expanded ? SW_SHOW : SW_HIDE;
             ShowWindow(ui.m_hCheckReflex, show); ShowWindow(ui.m_hCheckHUDFix, show);
             RECT rect; GetWindowRect(ui.m_hwnd, &rect);
-            SetWindowPos(ui.m_hwnd, NULL, 0, 0, rect.right-rect.left, ui.m_expanded ? 580 : 480, SWP_NOMOVE|SWP_NOZORDER);
+            SetWindowPos(ui.m_hwnd, NULL, 0, 0, rect.right-rect.left, ui.m_expanded ? 610 : 510, SWP_NOMOVE|SWP_NOZORDER);
         } else if (id == ID_CHECK_REFLEX && code == BN_CLICKED) {
             bool enabled = SendMessageW(ui.m_hCheckReflex, BM_GETCHECK, 0, 0) == BST_CHECKED;
             StreamlineIntegration::Get().SetReflexEnabled(enabled);

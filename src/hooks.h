@@ -67,4 +67,12 @@ HRESULT STDMETHODCALLTYPE HookedResizeBuffers(IDXGISwapChain* pThis, UINT Buffer
 
 // Initialize/cleanup hooks
 bool InitializeHooks();
+void InstallD3D12Hooks();
 void CleanupHooks();
+
+// Pattern-scanned jitter access
+void SetPatternJitterAddress(uintptr_t address);
+bool TryGetPatternJitter(float& jitterX, float& jitterY);
+
+void NotifyWrappedCommandListUsed();
+bool IsWrappedCommandListUsed();

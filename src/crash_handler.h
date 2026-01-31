@@ -3,3 +3,5 @@
 
 void InstallCrashHandler();
 void UninstallCrashHandler();
+void OpenCrashLog();
+void OpenMainLog();

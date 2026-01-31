@@ -13,7 +13,7 @@ void ResourceDetector::NewFrame() {
     m_frameCount++;
     
     // Periodically clear old candidates to adapt to resolution changes
-    if (m_frameCount % 300 == 0) {
+    if (m_frameCount % 900 == 0) {
         m_motionCandidates.clear();
         m_depthCandidates.clear();
         m_colorCandidates.clear();
@@ -187,6 +187,11 @@ ID3D12Resource* ResourceDetector::GetBestDepthCandidate() {
 ID3D12Resource* ResourceDetector::GetBestColorCandidate() {
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_bestColor;
+}
+
+uint64_t ResourceDetector::GetFrameCount() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_frameCount;
 }
 
 void ResourceDetector::AnalyzeCommandList(ID3D12GraphicsCommandList* pCmdList) {

@@ -22,6 +22,7 @@ public:
     ID3D12Resource* GetBestMotionVectorCandidate();
     ID3D12Resource* GetBestDepthCandidate();
     ID3D12Resource* GetBestColorCandidate();
+    uint64_t GetFrameCount();
 
     std::string GetDebugInfo();
 

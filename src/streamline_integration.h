@@ -71,6 +71,9 @@ public:
 
     // Resource Management
     void ReleaseResources();
+    bool HasCameraData() const { return m_hasCameraData; }
+    void GetLastCameraJitter(float& x, float& y) const { x = m_lastJitterX; y = m_lastJitterY; }
+    UINT GetDescriptorSize() const { return m_cbvSrvUavDescriptorSize; }
 
 private:
     StreamlineIntegration() = default;
@@ -102,6 +105,9 @@ private:
     sl::ViewportHandle m_viewport = sl::ViewportHandle(0);
     sl::FrameToken* m_frameToken = nullptr;
     uint32_t m_frameIndex = 0;
+    uint32_t m_lastDlssEvalFrame = 0;
+    bool m_loggedDlssEval = false;
+    bool m_loggedFrameGenEval = false;
     bool m_optionsDirty = true;
     bool m_needNewFrameToken = true;
 
@@ -120,6 +126,9 @@ private:
     bool m_rayReconstructionEnabled = true;
     bool m_reflexEnabled = true;
     bool m_hudFixEnabled = false;
+    bool m_hasCameraData = false;
+    float m_lastJitterX = 0.0f;
+    float m_lastJitterY = 0.0f;
     
     float m_sharpness = 0.5f; // Default sharpness
     float m_lodBias = -1.0f;  // Default Sharper Textures
@@ -128,6 +137,7 @@ private:
 
     sl::Feature m_featuresToLoad[5] = {};
     uint32_t m_featureCount = 0;
+    UINT m_cbvSrvUavDescriptorSize = 0;
 
     void UpdateSwapChain(IDXGISwapChain* pSwapChain);
     void UpdateOptions();

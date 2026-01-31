@@ -44,8 +44,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             InitProxyGlobal();
             
             // Install crash handler immediately
-            // InstallCrashHandler();
-            // LogStartup("Crash Handler Installed");
+            InstallCrashHandler();
+            LogStartup("Crash Handler Installed");
 
             // Disable thread notifications for performance
             DisableThreadLibraryCalls(hModule);
@@ -81,6 +81,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             
             Logger::Instance().Close();
             LogStartup("Logger Closed");
+            OpenMainLog();
             break;
     }
     
