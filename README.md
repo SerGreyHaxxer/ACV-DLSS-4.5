@@ -38,6 +38,7 @@ This open-source project injects **NVIDIA DLSS 3 / 4.5** into the AnvilNext engi
 
 *   **F1:** Open the **DLSS Control Panel**.
 *   **F2:** Toggle **Real FPS Counter** (Gold Text).
+*   **F3:** Toggle **Orange Vignette** overlay.
 
 ---
 

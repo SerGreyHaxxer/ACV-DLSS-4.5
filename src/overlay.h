@@ -10,8 +10,9 @@ public:
     void ToggleVisibility();
     void SetFPS(float gameFps, float totalFps); 
     
-    // New FPS Overlay
+    // New FPS & Vignette
     void ToggleFPS(); 
+    void ToggleVignette();
     bool IsVisible() const { return m_visible; }
 
 private:
@@ -22,13 +23,16 @@ private:
     void UIThreadLoop();
     
     void CreateOverlayWindow();
-    void CreateFPSWindow(); // Dedicated FPS window
-    void DrawFPSOverlay();  // Drawing logic
+    void CreateFPSWindow(); 
+    void CreateVignetteWindow();
+    void DrawFPSOverlay();  
+    void DrawVignette();
     void UpdateControls(); 
 
     HMODULE m_hModule = nullptr;
     HWND m_hwnd = nullptr;     // Main Menu
     HWND m_hwndFPS = nullptr;  // FPS Counter
+    HWND m_hwndVignette = nullptr; // Signature Effect
     HANDLE m_hThread = nullptr;
     
     // Controls
@@ -46,8 +50,10 @@ private:
     
     bool m_visible = false;
     bool m_showFPS = false;
-    bool m_expanded = false; // Is window expanded?
+    bool m_showVignette = false; 
+    bool m_expanded = false; 
     bool m_initialized = false;
     
     float m_cachedTotalFPS = 0.0f;
+    int m_vignetteAlpha = 80;
 };

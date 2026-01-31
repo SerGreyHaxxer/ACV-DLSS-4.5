@@ -2,6 +2,7 @@
 #include "logger.h"
 #include "dlss4_config.h"
 #include "resource_detector.h"
+#include "config_manager.h" // Added
 #include <string>
 #include <array>
 #include <dxgi1_4.h>
@@ -16,6 +17,14 @@ StreamlineIntegration& StreamlineIntegration::Get() {
 
 bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
     if (m_initialized) return true;
+    
+    // Load Config
+    ConfigManager::Get().Load();
+    ModConfig& cfg = ConfigManager::Get().Data();
+    m_dlssMode = (sl::DLSSMode)cfg.dlssMode;
+    m_frameGenMultiplier = cfg.frameGenMultiplier;
+    m_sharpness = cfg.sharpness;
+    m_lodBias = cfg.lodBias;
     
     LOG_INFO("Initializing NVIDIA Streamline...");
 
@@ -177,11 +186,20 @@ void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain* pSwapChain) {
 }
 
 // Getters/Setters
-void StreamlineIntegration::SetDLSSMode(int mode) { if(m_initialized) { m_dlssMode = static_cast<sl::DLSSMode>(mode); m_optionsDirty = true; } }
+void StreamlineIntegration::SetDLSSMode(int mode) { 
+    if(m_initialized) { 
+        m_dlssMode = static_cast<sl::DLSSMode>(mode); 
+        m_optionsDirty = true;
+        ConfigManager::Get().Data().dlssMode = mode;
+        ConfigManager::Get().Save();
+    } 
+}
 void StreamlineIntegration::SetFrameGenMultiplier(int multiplier) {
     if (!m_initialized) return;
     m_frameGenMultiplier = multiplier;
     m_optionsDirty = true;
+    ConfigManager::Get().Data().frameGenMultiplier = multiplier;
+    ConfigManager::Get().Save();
     LOG_INFO("Frame Gen Multiplier set to: %dx", multiplier);
 }
 void StreamlineIntegration::SetCommandQueue(ID3D12CommandQueue* pQueue) { 
@@ -189,8 +207,17 @@ void StreamlineIntegration::SetCommandQueue(ID3D12CommandQueue* pQueue) {
     if(m_pCommandQueue) m_pCommandQueue->Release();
     m_pCommandQueue = pQueue; m_pCommandQueue->AddRef(); m_optionsDirty = true;
 }
-void StreamlineIntegration::SetSharpness(float sharpness) { m_sharpness = sharpness; m_optionsDirty = true; }
-void StreamlineIntegration::SetLODBias(float bias) { m_lodBias = bias; } // Checked in Sampler hook
+void StreamlineIntegration::SetSharpness(float sharpness) { 
+    m_sharpness = sharpness; 
+    m_optionsDirty = true; 
+    ConfigManager::Get().Data().sharpness = sharpness;
+    ConfigManager::Get().Save();
+}
+void StreamlineIntegration::SetLODBias(float bias) { 
+    m_lodBias = bias; 
+    ConfigManager::Get().Data().lodBias = bias;
+    ConfigManager::Get().Save();
+} // Checked in Sampler hook
 
 void StreamlineIntegration::CycleDLSSMode() {
     int current = (int)m_dlssMode;

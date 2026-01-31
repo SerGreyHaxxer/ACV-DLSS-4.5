@@ -258,8 +258,13 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present(UINT SyncInterval, UINT
             MessageBeep(MB_OK);
             OverlayUI::Get().ToggleFPS(); 
         }, "Toggle FPS");
+
+        InputHandler::Get().RegisterHotkey(VK_F3, [](){ 
+            MessageBeep(MB_OK);
+            OverlayUI::Get().ToggleVignette(); 
+        }, "Toggle Vignette");
         
-        InputHandler::Get().RegisterHotkey(VK_F3, [](){ StreamlineIntegration::Get().SetSharpness(0.0f); }, "Sharpness 0.0");
+        InputHandler::Get().RegisterHotkey(VK_F6, [](){ StreamlineIntegration::Get().SetSharpness(0.0f); }, "Sharpness 0.0");
         InputHandler::Get().RegisterHotkey(VK_F4, [](){ StreamlineIntegration::Get().SetSharpness(0.5f); }, "Sharpness 0.5");
         InputHandler::Get().RegisterHotkey(VK_F5, [](){ StreamlineIntegration::Get().CycleLODBias(); }, "Cycle LOD Bias");
         
@@ -312,6 +317,35 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present(UINT SyncInterval, UINT
 }
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present1(UINT Sync, UINT Flags, const DXGI_PRESENT_PARAMETERS* p) {
+    // --- INPUT & UI HANDLING (fallback for Present1-only apps) ---
+    static bool inputsRegisteredPresent1 = false;
+    if (!inputsRegisteredPresent1) {
+        OverlayUI::Get().Initialize(GetModuleHandleA("dxgi.dll"));
+        
+        InputHandler::Get().RegisterHotkey(VK_F1, [](){ 
+            LOG_INFO("F1 Pressed - Toggling Overlay");
+            MessageBeep(MB_OK); 
+            OverlayUI::Get().ToggleVisibility(); 
+        }, "Toggle Menu");
+        
+        InputHandler::Get().RegisterHotkey(VK_F2, [](){ 
+            MessageBeep(MB_OK);
+            OverlayUI::Get().ToggleFPS(); 
+        }, "Toggle FPS");
+
+        InputHandler::Get().RegisterHotkey(VK_F3, [](){ 
+            MessageBeep(MB_OK);
+            OverlayUI::Get().ToggleVignette(); 
+        }, "Toggle Vignette");
+        
+        InputHandler::Get().RegisterHotkey(VK_F6, [](){ StreamlineIntegration::Get().SetSharpness(0.0f); }, "Sharpness 0.0");
+        InputHandler::Get().RegisterHotkey(VK_F4, [](){ StreamlineIntegration::Get().SetSharpness(0.5f); }, "Sharpness 0.5");
+        InputHandler::Get().RegisterHotkey(VK_F5, [](){ StreamlineIntegration::Get().CycleLODBias(); }, "Cycle LOD Bias");
+        
+        inputsRegisteredPresent1 = true;
+    }
+    InputHandler::Get().ProcessInput();
+
     StreamlineIntegration::Get().NewFrame(m_pReal);
     StreamlineIntegration::Get().EvaluateFrameGen(m_pReal);
     ScopedInterface<IDXGISwapChain1> real(m_pReal); return real ? real->Present1(Sync, Flags, p) : E_NOINTERFACE;

@@ -98,6 +98,7 @@ $buildArgs = @(
     "src\crash_handler.cpp",
     "src\pattern_scanner.cpp",
     "src\input_handler.cpp",
+    "src\config_manager.cpp",
     "src\overlay.cpp",
     "/link",
     "d3d12.lib",
