@@ -1,4 +1,5 @@
 @echo off
+cd /d "%~dp0"
 :: ============================================================================
 :: Assassin's Creed Valhalla - DLSS 4.5 Mod Auto-Installer
 :: ============================================================================
@@ -6,7 +7,7 @@
 :: ============================================================================
 
 echo ========================================================
-echo      DLSS 4.5 & Frame Gen Mod Installer for ACV
+echo      DLSS 4.5 ^& Frame Gen Mod Installer for ACV
 echo ========================================================
 echo.
 
@@ -19,6 +20,9 @@ if %errorLevel% == 0 (
     powershell -Command "Start-Process '%0' -Verb RunAs"
     exit /b
 )
+
+:: Ensure we are still in the correct directory after admin elevation
+cd /d "%~dp0"
 
 :: 2. Find Game Path (Steam & Ubisoft Connect)
 echo.
@@ -47,7 +51,7 @@ echo.
 echo [2/4] Verifying Mod Files...
 if not exist "bin\dxgi.dll" (
     echo [INFO] dxgi.dll not found. Attempting to build...
-    powershell -ExecutionPolicy Bypass -File build.ps1
+    powershell -ExecutionPolicy Bypass -File ".\build.ps1"
     if not exist "bin\dxgi.dll" (
         echo [ERROR] Build failed. Please check Visual Studio installation.
         pause
@@ -68,14 +72,14 @@ if exist "%GAME_PATH%\dxgi.dll" (
 )
 
 :: Copy Mod
-copy /Y "bin\dxgi.dll" "%GAME_PATH%" >nul
+copy /Y "bin\dxgi.dll" "%GAME_PATH%\" >nul
 echo [OK] Copied dxgi.dll (The Proxy)
 
 :: Copy Dependencies (Mocking existence for script completeness)
-if exist "sl.interposer.dll" copy /Y "sl.interposer.dll" "%GAME_PATH%" >nul
-if exist "sl.common.dll" copy /Y "sl.common.dll" "%GAME_PATH%" >nul
-if exist "nvngx_dlss.dll" copy /Y "nvngx_dlss.dll" "%GAME_PATH%" >nul
-if exist "nvngx_dlssg.dll" copy /Y "nvngx_dlssg.dll" "%GAME_PATH%" >nul
+if exist "sl.interposer.dll" copy /Y "sl.interposer.dll" "%GAME_PATH%\" >nul
+if exist "sl.common.dll" copy /Y "sl.common.dll" "%GAME_PATH%\" >nul
+if exist "nvngx_dlss.dll" copy /Y "nvngx_dlss.dll" "%GAME_PATH%\" >nul
+if exist "nvngx_dlssg.dll" copy /Y "nvngx_dlssg.dll" "%GAME_PATH%\" >nul
 
 :: 5. Verification
 echo.
