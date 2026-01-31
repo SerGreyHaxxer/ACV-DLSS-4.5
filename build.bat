@@ -69,16 +69,24 @@ if not exist "bin" mkdir bin
 REM Compile all source files
 cl /LD /EHsc /std:c++17 /O2 ^
     /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX ^
-    /I. /Ithird_party\streamline\include ^
+    /I. ^
     /Fe:bin\dxgi.dll ^
-    dlss4_full_integration.cpp ^
-    src\crash_handler.cpp ^
-    src\resource_detector.cpp ^
-    src\streamline_integration.cpp ^
+    main.cpp ^
+    src\proxy.cpp ^
+    src\dxgi_wrappers.cpp ^
     src\d3d12_wrappers.cpp ^
+    src\streamline_integration.cpp ^
+    src\resource_detector.cpp ^
+    src\crash_handler.cpp ^
+    src\config_manager.cpp ^
+    src\overlay.cpp ^
+    src\ngx_wrapper.cpp ^
+    src\hooks.cpp ^
+    src\input_handler.cpp ^
+    src\pattern_scanner.cpp ^
     /link ^
-    d3d12.lib dxgi.lib dxguid.lib user32.lib dbghelp.lib ^
-    third_party\streamline\lib\sl.interposer.lib ^
+    d3d12.lib dxgi.lib dxguid.lib user32.lib dbghelp.lib gdi32.lib ^
+    ^
     /DEF:dxgi.def ^
     /DLL
 
@@ -98,4 +106,3 @@ if %errorlevel% equ 0 (
     echo.
     echo BUILD FAILED! Check errors above.
 )
-

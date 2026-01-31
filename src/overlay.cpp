@@ -1,9 +1,11 @@
 #include "overlay.h"
 #include "streamline_integration.h"
 #include "logger.h"
+#include "resource_detector.h"
 #include <commctrl.h>
 #include <cmath>
 #include <stdio.h>
+#include <string>
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "msimg32.lib")
@@ -15,6 +17,9 @@
 #define ID_BTN_EXPAND   105
 #define ID_CHECK_REFLEX 106
 #define ID_CHECK_HUD    107
+#define ID_TEXT_DEBUG   108
+
+#define WM_UPDATE_DEBUG_INFO (WM_USER + 1)
 
 static const UINT kVignetteTimerId = 1;
 
@@ -37,7 +42,6 @@ DWORD WINAPI OverlayUI::UIThreadEntry(LPVOID lpParam) {
 }
 
 void OverlayUI::UIThreadLoop() {
-    // 1. Control Panel Class
     WNDCLASSEXW wc = {0};
     wc.cbSize = sizeof(WNDCLASSEXW);
     wc.lpfnWndProc = WindowProc;
@@ -47,7 +51,6 @@ void OverlayUI::UIThreadLoop() {
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     RegisterClassExW(&wc);
     
-    // 2. FPS Counter Class
     WNDCLASSEXW wcFPS = {0};
     wcFPS.cbSize = sizeof(WNDCLASSEXW);
     wcFPS.lpfnWndProc = WindowProc; 
@@ -56,7 +59,6 @@ void OverlayUI::UIThreadLoop() {
     wcFPS.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
     RegisterClassExW(&wcFPS);
 
-    // 3. Vignette Class (Orange Background)
     WNDCLASSEXW wcVig = {0};
     wcVig.cbSize = sizeof(WNDCLASSEXW);
     wcVig.lpfnWndProc = WindowProc;
@@ -64,10 +66,19 @@ void OverlayUI::UIThreadLoop() {
     wcVig.lpszClassName = L"DLSS4ProxyVignette";
     wcVig.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
     RegisterClassExW(&wcVig);
+
+    WNDCLASSEXW wcDbg = {0};
+    wcDbg.cbSize = sizeof(WNDCLASSEXW);
+    wcDbg.lpfnWndProc = WindowProc;
+    wcDbg.hInstance = m_hModule;
+    wcDbg.lpszClassName = L"DLSS4ProxyDebug";
+    wcDbg.hbrBackground = CreateSolidBrush(RGB(20, 20, 20));
+    RegisterClassExW(&wcDbg);
     
     CreateOverlayWindow();
     CreateFPSWindow();
-    CreateVignetteWindow(); 
+    CreateVignetteWindow();
+    CreateDebugWindow();
     
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0)) {
@@ -82,16 +93,12 @@ void OverlayUI::CreateVignetteWindow() {
     int x = GetSystemMetrics(SM_XVIRTUALSCREEN);
     int y = GetSystemMetrics(SM_YVIRTUALSCREEN);
 
-    // Create window covering entire virtual screen
     m_hwndVignette = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE, 
         L"DLSS4ProxyVignette", L"", WS_POPUP, x, y, w, h, NULL, NULL, m_hModule, NULL
     );
     
-    // Alpha Blend: 80/255 (approx 30% opacity)
     SetLayeredWindowAttributes(m_hwndVignette, RGB(0, 0, 0), (BYTE)m_vignetteAlpha, LWA_ALPHA | LWA_COLORKEY); 
-    
-    m_showVignette = false;
     ShowWindow(m_hwndVignette, SW_HIDE);
 }
 
@@ -99,13 +106,9 @@ void OverlayUI::ToggleVignette() {
     m_showVignette = !m_showVignette;
     if (m_hwndVignette) {
         ShowWindow(m_hwndVignette, m_showVignette ? SW_SHOW : SW_HIDE);
-        // Force update just in case
         UpdateWindow(m_hwndVignette);
-        if (m_showVignette) {
-            SetTimer(m_hwndVignette, kVignetteTimerId, 33, NULL);
-        } else {
-            KillTimer(m_hwndVignette, kVignetteTimerId);
-        }
+        if (m_showVignette) SetTimer(m_hwndVignette, kVignetteTimerId, 33, NULL);
+        else KillTimer(m_hwndVignette, kVignetteTimerId);
     }
 }
 
@@ -115,8 +118,7 @@ void OverlayUI::DrawVignette() {
     HDC hdc = BeginPaint(m_hwndVignette, &ps);
     if (!hdc) return;
 
-    RECT rect;
-    GetClientRect(m_hwndVignette, &rect);
+    RECT rect; GetClientRect(m_hwndVignette, &rect);
     int w = rect.right - rect.left;
     int h = rect.bottom - rect.top;
 
@@ -125,8 +127,7 @@ void OverlayUI::DrawVignette() {
 
     const int thickness = 90;
     int alpha = m_vignetteAlpha;
-    if (alpha < 10) alpha = 10;
-    if (alpha > 200) alpha = 200;
+    if (alpha < 10) alpha = 10; if (alpha > 200) alpha = 200;
 
     BLENDFUNCTION bf = { AC_SRC_OVER, 0, (BYTE)alpha, 0 };
 
@@ -146,21 +147,14 @@ void OverlayUI::DrawVignette() {
 
     AlphaBlend(hdc, 0, 0, w, h, memDC, 0, 0, w, h, bf);
 
-    DeleteObject(orangeBrush);
-    SelectObject(memDC, oldBmp);
-    DeleteObject(memBmp);
-    DeleteDC(memDC);
+    DeleteObject(orangeBrush); SelectObject(memDC, oldBmp); DeleteObject(memBmp); DeleteDC(memDC);
     EndPaint(m_hwndVignette, &ps);
 }
 
 void OverlayUI::CreateFPSWindow() {
     m_hwndFPS = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE, 
-        L"DLSS4ProxyFPS",
-        L"",
-        WS_POPUP,
-        20, 20, 400, 80,
-        NULL, NULL, m_hModule, NULL
+        L"DLSS4ProxyFPS", L"", WS_POPUP, 20, 20, 400, 80, NULL, NULL, m_hModule, NULL
     );
     SetLayeredWindowAttributes(m_hwndFPS, 0, 200, LWA_ALPHA);
 }
@@ -200,18 +194,19 @@ void OverlayUI::SetFPS(float gameFps, float totalFps) {
         SetWindowTextW(m_hLabelFPS, buf);
     }
     DrawFPSOverlay();
+    
+    // Update Debug Window if visible
+    if (m_showDebug && m_hwndDebug) {
+        UpdateDebugWindow();
+    }
 }
 
 void OverlayUI::CreateOverlayWindow() {
-    int width = 360;
-    int height = 480;
-    int x = 50; int y = 50;
-
+    int width = 360; int height = 480; int x = 50; int y = 50;
     m_hwnd = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, 
         L"DLSS4ProxyOverlay", L"DLSS 4.5 Control Panel (F1)",
-        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_BORDER,
-        x, y, width, height, NULL, NULL, m_hModule, NULL
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_BORDER, x, y, width, height, NULL, NULL, m_hModule, NULL
     );
 
     int padding = 15; int cy = 15; int contentWidth = width - 2*padding;
@@ -245,6 +240,27 @@ void OverlayUI::CreateOverlayWindow() {
     m_hCheckHUDFix = CreateWindowW(L"BUTTON", L"Experimental HUD Masking", WS_CHILD | BS_AUTOCHECKBOX, padding, cy, contentWidth, 25, m_hwnd, (HMENU)ID_CHECK_HUD, m_hModule, NULL); cy += 30;
 }
 
+void OverlayUI::CreateDebugWindow() {
+    int w = 600; int h = 400;
+    m_hwndDebug = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, 
+        L"DLSS4ProxyDebug", L"Resource Detector Debug (F4)",
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_BORDER | WS_THICKFRAME,
+        100, 100, w, h, NULL, NULL, m_hModule, NULL
+    );
+    
+    // Read-only text area
+    m_hTextDebug = CreateWindowW(
+        L"EDIT", L"Waiting for data...", 
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+        0, 0, w-15, h-40, m_hwndDebug, (HMENU)ID_TEXT_DEBUG, m_hModule, NULL
+    );
+    
+    // Set a monospace font
+    HFONT hFont = CreateFontW(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+    SendMessageW(m_hTextDebug, WM_SETFONT, (WPARAM)hFont, TRUE);
+}
+
 void OverlayUI::ToggleVisibility() {
     if (m_hwnd) {
         m_visible = !m_visible;
@@ -253,10 +269,62 @@ void OverlayUI::ToggleVisibility() {
     }
 }
 
+void OverlayUI::ToggleDebugMode() {
+    m_showDebug = !m_showDebug;
+    if (m_hwndDebug) {
+        ShowWindow(m_hwndDebug, m_showDebug ? SW_SHOW : SW_HIDE);
+        if (m_showDebug) {
+            UpdateDebugWindow(); // Immediate update on toggle
+        }
+    }
+}
+
+void OverlayUI::UpdateDebugWindow() {
+    if (!m_hwndDebug || !m_showDebug) return;
+    
+    // 1. Get string on Render Thread
+    std::string info = ResourceDetector::Get().GetDebugInfo();
+    
+    // 2. Store safely
+    {
+        std::lock_guard<std::mutex> lock(m_debugMutex);
+        m_pendingDebugInfo = info;
+    }
+    
+    // 3. Signal UI Thread
+    PostMessageW(m_hwndDebug, WM_UPDATE_DEBUG_INFO, 0, 0);
+}
+
 void OverlayUI::UpdateControls() {}
 
 LRESULT CALLBACK OverlayUI::WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    if (uMsg == WM_CLOSE) { OverlayUI::Get().ToggleVisibility(); return 0; }
+    if (uMsg == WM_CLOSE) { 
+        if (hwnd == OverlayUI::Get().m_hwndDebug) OverlayUI::Get().ToggleDebugMode();
+        else OverlayUI::Get().ToggleVisibility(); 
+        return 0; 
+    }
+    
+    // Handle Async Debug Update
+    if (uMsg == WM_UPDATE_DEBUG_INFO) {
+        OverlayUI& ui = OverlayUI::Get();
+        std::string info;
+        {
+            std::lock_guard<std::mutex> lock(ui.m_debugMutex);
+            info = ui.m_pendingDebugInfo;
+        }
+        
+        int size_needed = MultiByteToWideChar(CP_UTF8, 0, info.c_str(), (int)info.length(), NULL, 0);
+        std::wstring wstrTo(size_needed, 0);
+        MultiByteToWideChar(CP_UTF8, 0, info.c_str(), (int)info.length(), &wstrTo[0], size_needed);
+        
+        SetWindowTextW(ui.m_hTextDebug, wstrTo.c_str());
+        return 0;
+    }
+    
+    if (uMsg == WM_SIZE && hwnd == OverlayUI::Get().m_hwndDebug) {
+        RECT rc; GetClientRect(hwnd, &rc);
+        SetWindowPos(OverlayUI::Get().m_hTextDebug, NULL, 0, 0, rc.right, rc.bottom, SWP_NOZORDER);
+    }
     
     if (uMsg == WM_CTLCOLORSTATIC) {
         HDC hdc = (HDC)wParam;
@@ -265,11 +333,11 @@ LRESULT CALLBACK OverlayUI::WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
         return (LRESULT)GetStockObject(NULL_BRUSH);
     }
     if (uMsg == WM_CTLCOLORBTN) return (LRESULT)GetStockObject(NULL_BRUSH);
+    
     if (uMsg == WM_TIMER && wParam == kVignetteTimerId) {
         OverlayUI& ui = OverlayUI::Get();
         double t = (double)GetTickCount64() / 1000.0;
-        int baseAlpha = 80;
-        int amp = 30;
+        int baseAlpha = 80; int amp = 30;
         ui.m_vignetteAlpha = baseAlpha + (int)(amp * (0.5 + 0.5 * sin(t * 1.2)));
         if (ui.m_hwndVignette && ui.m_showVignette) {
             SetLayeredWindowAttributes(ui.m_hwndVignette, RGB(0, 0, 0), (BYTE)ui.m_vignetteAlpha, LWA_ALPHA | LWA_COLORKEY);

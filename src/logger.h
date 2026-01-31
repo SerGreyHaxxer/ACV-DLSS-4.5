@@ -4,60 +4,86 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <time.h>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <string>
+#include <atomic>
+#include <vector>
 #include "dlss4_config.h"
 
 // ============================================================================
-// LOGGING UTILITY (Loader-Safe C-Style)
+// ASYNC LOGGING UTILITY
 // ============================================================================
 
 class Logger {
 private:
     FILE* logFile = nullptr;
-    CRITICAL_SECTION logCS;
+    std::mutex queueMutex;
+    std::condition_variable queueCV;
+    std::queue<std::string> logQueue;
+    std::thread loggerThread;
+    std::atomic<bool> running{ false };
     bool initialized = false;
 
-public:
-    Logger() {
-        InitializeCriticalSection(&logCS);
+    void WorkerThread() {
+        while (running) {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            queueCV.wait(lock, [this] { return !logQueue.empty() || !running; });
+
+            while (!logQueue.empty()) {
+                std::string msg = std::move(logQueue.front());
+                logQueue.pop();
+                
+                // Release lock while writing to file to allow other threads to queue faster
+                lock.unlock();
+                
+                if (logFile) {
+                    fprintf(logFile, "%s\n", msg.c_str());
+                }
+                
+                lock.lock();
+            }
+            
+            if (logFile) fflush(logFile);
+        }
     }
+
+public:
+    Logger() = default;
 
     ~Logger() {
         Close();
-        DeleteCriticalSection(&logCS);
     }
 
     static Logger& Instance() {
-        // Use a pointer to avoid "magic static" thread-safe init (which locks)
-        static Logger* instance = new Logger();
-        return *instance;
+        static Logger instance;
+        return instance;
     }
 
     bool Initialize(const char* filename) {
-        EnterCriticalSection(&logCS);
-        if (initialized) {
-            LeaveCriticalSection(&logCS);
-            return true;
-        }
+        std::lock_guard<std::mutex> lock(queueMutex);
+        if (initialized) return true;
         
         if (fopen_s(&logFile, filename, "w") == 0) {
             initialized = true;
+            running = true;
+            loggerThread = std::thread(&Logger::WorkerThread, this);
+
             LogUnsafe("INFO", "==============================================");
-            LogUnsafe("INFO", "DLSS 4 Proxy v%s Initialized", DLSS4_PROXY_VERSION);
+            LogUnsafe("INFO", "DLSS 4 Proxy v%s Initialized (Async)", DLSS4_PROXY_VERSION);
             LogUnsafe("INFO", "Frame Gen Multiplier: %dx", DLSS4_FRAME_GEN_MULTIPLIER);
             LogUnsafe("INFO", "==============================================");
-            LeaveCriticalSection(&logCS);
             return true;
         }
-        
-        LeaveCriticalSection(&logCS);
         return false;
     }
 
     void Log(const char* level, const char* format, ...) {
         if (!initialized || !ENABLE_LOGGING) return;
         
-        EnterCriticalSection(&logCS);
-        
+        // Format message first
         va_list args;
         va_start(args, format);
         
@@ -68,37 +94,66 @@ public:
         char timeBuf[32];
         strftime(timeBuf, 32, "%Y-%m-%d %H:%M:%S", &tm_info);
         
-        fprintf(logFile, "[%s] [%s] ", timeBuf, level);
-        vfprintf(logFile, format, args);
-        fprintf(logFile, "\n");
-        fflush(logFile);
+        // Determine buffer size
+        int size = _vscprintf(format, args) + 1; // +1 for null terminator
+        if (size <= 0) { va_end(args); return; }
         
+        std::vector<char> buffer(size);
+        vsnprintf(buffer.data(), size, format, args);
         va_end(args);
+
+        // Combine into full log line
+        char headerBuf[64];
+        snprintf(headerBuf, sizeof(headerBuf), "[%s] [%s] ", timeBuf, level);
         
-        LeaveCriticalSection(&logCS);
+        std::string fullMessage = std::string(headerBuf) + std::string(buffer.data());
+
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            logQueue.push(std::move(fullMessage));
+        }
+        queueCV.notify_one();
     }
 
     void Close() {
-        EnterCriticalSection(&logCS);
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            if (!running) return;
+            running = false;
+        }
+        queueCV.notify_all();
+        
+        if (loggerThread.joinable()) {
+            loggerThread.join();
+        }
+
+        // Flush remaining queue
+        while (!logQueue.empty()) {
+            if (logFile) fprintf(logFile, "%s\n", logQueue.front().c_str());
+            logQueue.pop();
+        }
+
         if (logFile) {
             fprintf(logFile, "[INFO] Logger shutting down.\n");
             fclose(logFile);
             logFile = nullptr;
         }
         initialized = false;
-        LeaveCriticalSection(&logCS);
     }
 
 private:
+    // Helper for initial logs before thread starts (or inside the thread)
     void LogUnsafe(const char* level, const char* format, ...) {
-        if (!logFile) return;
+        char buffer[1024];
         va_list args;
         va_start(args, format);
-        fprintf(logFile, "[INIT] [%s] ", level);
-        vfprintf(logFile, format, args);
-        fprintf(logFile, "\n");
-        fflush(logFile);
+        vsnprintf(buffer, sizeof(buffer), format, args);
         va_end(args);
+        
+        std::string msg = "[INIT] [" + std::string(level) + "] " + std::string(buffer);
+        
+        // Push directly to queue so the thread handles it uniformly
+        logQueue.push(msg);
     }
 };
 

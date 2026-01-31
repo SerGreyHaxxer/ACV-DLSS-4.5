@@ -8,7 +8,7 @@
 # ============================================================================ 
 
 $ErrorActionPreference = "Stop"
-$StreamlineSDK = "C:\Users\serge\Downloads\streamline-sdk-v2.10.3"
+$StreamlineSDK = $PWD
 
 function Write-Step { param($msg) Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
 function Write-Ok { param($msg) Write-Host " [OK] $msg" -ForegroundColor Green }
@@ -135,31 +135,34 @@ Write-Ok "Copied Proxy DLL to game folder"
 # ============================================================================ 
 Write-Step "Step 4: Installing Streamline SDK" 
 
-if (Test-Path $StreamlineSDK) { 
-    # Interposer 
-    Copy-Item "$StreamlineSDK\bin\x64\sl.interposer.dll" "$GamePath\" -Force 
-    Write-Ok "Copied sl.interposer.dll" 
-    
-    # Common 
-    if (Test-Path "$StreamlineSDK\bin\x64\sl.common.dll") { 
-        Copy-Item "$StreamlineSDK\bin\x64\sl.common.dll" "$GamePath\" -Force 
-        Write-Ok "Copied sl.common.dll" 
-    } 
+function Copy-IfFound {
+    param($filename, $dest)
+    # Check in current directory (repo root)
+    if (Test-Path ".\$filename") {
+        Copy-Item ".\$filename" "$dest\$filename" -Force
+        Write-Ok "Copied $filename (from repo root)"
+        return $true
+    }
+    # Check in SDK bin/x64
+    if (Test-Path "$StreamlineSDK\bin\x64\$filename") {
+        Copy-Item "$StreamlineSDK\bin\x64\$filename" "$dest\$filename" -Force
+        Write-Ok "Copied $filename (from SDK)"
+        return $true
+    }
+    return $false
+}
 
-        # Plugins (DLSS & Frame Gen) - Copy to root to be safe
-        # Note: In this SDK version, they are in bin\x64 directly, not a plugins subdir
-        $plugins = @("sl.dlss.dll", "sl.dlss_g.dll")
-        foreach ($p in $plugins) {
-            $src = "$StreamlineSDK\bin\x64\$p"
-            if (Test-Path $src) {
-                Copy-Item $src "$GamePath\" -Force
-                Write-Ok "Copied plugin: $p"
-            } else {
-                Write-Warn "Missing plugin in SDK: $p"
-            }
-        }} else { 
-    Write-Err "Streamline SDK not found at $StreamlineSDK" 
-    Write-Warn "You will need to manually copy sl.interposer.dll and plugins." 
+$missingFiles = @()
+
+if (-not (Copy-IfFound "sl.interposer.dll" $GamePath)) { $missingFiles += "sl.interposer.dll" }
+if (-not (Copy-IfFound "sl.common.dll" $GamePath)) { $missingFiles += "sl.common.dll" }
+if (-not (Copy-IfFound "sl.dlss.dll" $GamePath)) { $missingFiles += "sl.dlss.dll" }
+if (-not (Copy-IfFound "sl.dlss_g.dll" $GamePath)) { $missingFiles += "sl.dlss_g.dll" }
+
+if ($missingFiles.Count -gt 0) { 
+    Write-Warn "Streamline SDK components missing:"
+    foreach ($m in $missingFiles) { Write-Warn " - $m" }
+    Write-Warn "You will need to manually copy these files to the game folder." 
 } 
 
 # ============================================================================ 

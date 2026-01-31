@@ -2,7 +2,7 @@
 #include "logger.h"
 #include "dlss4_config.h"
 #include "resource_detector.h"
-#include "config_manager.h" // Added
+#include "config_manager.h"
 #include <string>
 #include <array>
 #include <dxgi1_4.h>
@@ -25,6 +25,9 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
     m_frameGenMultiplier = cfg.frameGenMultiplier;
     m_sharpness = cfg.sharpness;
     m_lodBias = cfg.lodBias;
+    m_dlssPreset = (sl::DLSSPreset)cfg.dlssPreset;
+    m_mvecScaleX = cfg.mvecScaleX;
+    m_mvecScaleY = cfg.mvecScaleY;
     
     LOG_INFO("Initializing NVIDIA Streamline...");
 
@@ -100,13 +103,16 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
 void StreamlineIntegration::Shutdown() {
     if (m_initialized) {
         if (m_frameToken) m_frameToken = nullptr;
-        if (m_pSwapChain) { m_pSwapChain->Release(); m_pSwapChain = nullptr; }
-        if (m_backBuffer) { m_backBuffer->Release(); m_backBuffer = nullptr; }
-        if (m_pCommandList) { m_pCommandList->Release(); m_pCommandList = nullptr; }
-        if (m_pCommandAllocator) { m_pCommandAllocator->Release(); m_pCommandAllocator = nullptr; }
-        if (m_pFence) { m_pFence->Release(); m_pFence = nullptr; }
-        if (m_pCommandQueue) { m_pCommandQueue->Release(); m_pCommandQueue = nullptr; }
+        
+        m_backBuffer.Reset();
+        m_pCommandList.Reset();
+        m_pCommandAllocator.Reset();
+        m_pFence.Reset();
+        m_pCommandQueue.Reset();
+        m_pSwapChain.Reset();
+        
         if (m_fenceEvent) { CloseHandle(m_fenceEvent); m_fenceEvent = nullptr; }
+        
         sl::slShutdown();
         m_initialized = false;
     }
@@ -143,7 +149,7 @@ void StreamlineIntegration::SetCameraData(const float* view, const float* proj, 
         reinterpret_cast<float*>(&consts.cameraWorldToView)[i] = proj[i];
     }
     consts.jitterOffset = sl::float2(jitterX, jitterY);
-    consts.mvecScale = sl::float2(1.0f, 1.0f);
+    consts.mvecScale = sl::float2(m_mvecScaleX, m_mvecScaleY); // Use configured scale
     consts.depthInverted = sl::Boolean::eFalse;
     consts.cameraMotionIncluded = sl::Boolean::eTrue;
     consts.motionVectors3D = sl::Boolean::eFalse;
@@ -171,17 +177,17 @@ void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain* pSwapChain) {
     if (!m_pCommandList || !m_pCommandAllocator || !m_pCommandQueue) return;
 
     m_pCommandAllocator->Reset();
-    m_pCommandList->Reset(m_pCommandAllocator, nullptr);
-    EvaluateDLSS(m_pCommandList);
+    m_pCommandList->Reset(m_pCommandAllocator.Get(), nullptr);
+    EvaluateDLSS(m_pCommandList.Get());
 
     const sl::BaseStructure* inputs[] = { &m_viewport };
     if (m_useMfg && m_mfgSupported) {
-        sl::slEvaluateFeature(sl::kFeatureDLSS_MFG, *m_frameToken, inputs, 1, m_pCommandList);
+        sl::slEvaluateFeature(sl::kFeatureDLSS_MFG, *m_frameToken, inputs, 1, m_pCommandList.Get());
     } else if (m_dlssgSupported) {
-        sl::slEvaluateFeature(sl::kFeatureDLSS_G, *m_frameToken, inputs, 1, m_pCommandList);
+        sl::slEvaluateFeature(sl::kFeatureDLSS_G, *m_frameToken, inputs, 1, m_pCommandList.Get());
     }
     m_pCommandList->Close();
-    ID3D12CommandList* lists[] = { m_pCommandList };
+    ID3D12CommandList* lists[] = { m_pCommandList.Get() };
     m_pCommandQueue->ExecuteCommandLists(1, lists);
 }
 
@@ -194,6 +200,15 @@ void StreamlineIntegration::SetDLSSMode(int mode) {
         ConfigManager::Get().Save();
     } 
 }
+void StreamlineIntegration::SetDLSSPreset(int preset) {
+    if(m_initialized) {
+        m_dlssPreset = static_cast<sl::DLSSPreset>(preset);
+        m_optionsDirty = true;
+        ConfigManager::Get().Data().dlssPreset = preset;
+        ConfigManager::Get().Save();
+        LOG_INFO("DLSS Preset set to: %d", preset);
+    }
+}
 void StreamlineIntegration::SetFrameGenMultiplier(int multiplier) {
     if (!m_initialized) return;
     m_frameGenMultiplier = multiplier;
@@ -203,9 +218,11 @@ void StreamlineIntegration::SetFrameGenMultiplier(int multiplier) {
     LOG_INFO("Frame Gen Multiplier set to: %dx", multiplier);
 }
 void StreamlineIntegration::SetCommandQueue(ID3D12CommandQueue* pQueue) { 
-    if(!m_initialized || !pQueue || m_pCommandQueue == pQueue) return;
-    if(m_pCommandQueue) m_pCommandQueue->Release();
-    m_pCommandQueue = pQueue; m_pCommandQueue->AddRef(); m_optionsDirty = true;
+    if(!m_initialized || !pQueue || m_pCommandQueue.Get() == pQueue) return;
+    
+    // ComPtr assignment handles Release/AddRef
+    m_pCommandQueue = pQueue;
+    m_optionsDirty = true;
 }
 void StreamlineIntegration::SetSharpness(float sharpness) { 
     m_sharpness = sharpness; 
@@ -217,12 +234,25 @@ void StreamlineIntegration::SetLODBias(float bias) {
     m_lodBias = bias; 
     ConfigManager::Get().Data().lodBias = bias;
     ConfigManager::Get().Save();
-} // Checked in Sampler hook
+}
+void StreamlineIntegration::SetMVecScale(float x, float y) {
+    m_mvecScaleX = x;
+    m_mvecScaleY = y;
+    ConfigManager::Get().Data().mvecScaleX = x;
+    ConfigManager::Get().Data().mvecScaleY = y;
+    ConfigManager::Get().Save();
+}
 
 void StreamlineIntegration::CycleDLSSMode() {
     int current = (int)m_dlssMode;
     current = (current + 1) % 6; // 0-5
     SetDLSSMode(current);
+}
+void StreamlineIntegration::CycleDLSSPreset() {
+    int current = (int)m_dlssPreset;
+    current = (current + 1) % 7; // 0-6
+    if (current == 0) current = 1; // Skip Default when cycling manually, maybe? No, let's include it.
+    SetDLSSPreset(current);
 }
 void StreamlineIntegration::CycleFrameGen() {
     // Cycle 0 -> 2 -> 3 -> 4 -> 0
@@ -236,24 +266,21 @@ void StreamlineIntegration::CycleFrameGen() {
 void StreamlineIntegration::CycleLODBias() { m_lodBias -= 1.0f; if(m_lodBias < -2.0f) m_lodBias = 0.0f; }
 
 void StreamlineIntegration::ReleaseResources() {
-    if (m_backBuffer) { m_backBuffer->Release(); m_backBuffer = nullptr; }
+    m_backBuffer.Reset();
     m_colorBuffer = nullptr; m_depthBuffer = nullptr; m_motionVectors = nullptr;
     ResourceDetector::Get().Clear();
 }
 
 void StreamlineIntegration::UpdateSwapChain(IDXGISwapChain* pSwapChain) {
     if (!pSwapChain) return;
-    if (m_pSwapChain != pSwapChain) {
-        if (m_pSwapChain) m_pSwapChain->Release();
-        m_pSwapChain = pSwapChain; m_pSwapChain->AddRef();
+    if (m_pSwapChain.Get() != pSwapChain) {
+        m_pSwapChain = pSwapChain; // ComPtr handles ref counting
     }
-    IDXGISwapChain3* sc3 = nullptr;
-    if (SUCCEEDED(pSwapChain->QueryInterface(__uuidof(IDXGISwapChain3), (void**)&sc3))) {
-        if (m_backBuffer) m_backBuffer->Release();
-        pSwapChain->GetBuffer(sc3->GetCurrentBackBufferIndex(), __uuidof(ID3D12Resource), (void**)&m_backBuffer);
-        sc3->Release();
+    Microsoft::WRL::ComPtr<IDXGISwapChain3> sc3;
+    if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3)))) {
+        m_backBuffer.Reset();
+        pSwapChain->GetBuffer(sc3->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&m_backBuffer));
     }
-    // Note: We don't set m_viewportWidth from BackBuffer anymore, we detect it from TagResources
 }
 
 void StreamlineIntegration::TagResources() {
@@ -279,13 +306,12 @@ void StreamlineIntegration::TagResources() {
     colorIn.height = inputHeight;
     colorIn.nativeFormat = inDesc.Format;
 
-    sl::Resource colorOut(sl::ResourceType::eTex2d, m_backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    sl::Resource colorOut(sl::ResourceType::eTex2d, m_backBuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET);
     colorOut.width = m_viewportWidth;
     colorOut.height = m_viewportHeight;
     colorOut.nativeFormat = outDesc.Format;
 
     // Use backbuffer size for MVec/Depth if they match output, otherwise assume input
-    // Usually Depth matches Input
     sl::Resource depth(sl::ResourceType::eTex2d, m_depthBuffer ? m_depthBuffer : m_colorBuffer, D3D12_RESOURCE_STATE_DEPTH_READ);
     if (m_depthBuffer) {
         D3D12_RESOURCE_DESC dDesc = m_depthBuffer->GetDesc();
@@ -317,7 +343,7 @@ void StreamlineIntegration::TagResources() {
 }
 
 void StreamlineIntegration::UpdateOptions() {
-    if (!m_initialized) return; // Note: Dirty check removed to allow dynamic res updates per frame
+    if (!m_initialized) return;
 
     // Get input size from tagged buffer if possible, otherwise default to viewport
     uint32_t renderWidth = m_viewportWidth;
@@ -336,8 +362,9 @@ void StreamlineIntegration::UpdateOptions() {
         dlssOptions.outputHeight = m_viewportHeight;
         dlssOptions.sharpness = m_sharpness;
         dlssOptions.colorBuffersHDR = true;
-        dlssOptions.inputWidth = renderWidth;   // True DLSS Input
-        dlssOptions.inputHeight = renderHeight; // True DLSS Input
+        dlssOptions.inputWidth = renderWidth;
+        dlssOptions.inputHeight = renderHeight;
+        dlssOptions.preset = m_dlssPreset; // Set the Preset
         
         sl::slSetFeatureOptions(sl::kFeatureDLSS, &dlssOptions);
     }
@@ -371,7 +398,7 @@ void StreamlineIntegration::EnsureCommandList() {
         m_pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_pCommandAllocator));
     }
     if (!m_pCommandList) {
-        m_pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_pCommandAllocator, nullptr, IID_PPV_ARGS(&m_pCommandList));
+        m_pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_pCommandAllocator.Get(), nullptr, IID_PPV_ARGS(&m_pCommandList));
         m_pCommandList->Close();
     }
     if (!m_pFence) {
@@ -383,7 +410,7 @@ void StreamlineIntegration::EnsureCommandList() {
 void StreamlineIntegration::WaitForGpu() {
     if (!m_pFence || !m_pCommandQueue || !m_fenceEvent) return;
     const uint64_t fenceValue = ++m_fenceValue;
-    if (SUCCEEDED(m_pCommandQueue->Signal(m_pFence, fenceValue))) {
+    if (SUCCEEDED(m_pCommandQueue->Signal(m_pFence.Get(), fenceValue))) {
         if (m_pFence->GetCompletedValue() < fenceValue) {
             m_pFence->SetEventOnCompletion(fenceValue, m_fenceEvent);
             WaitForSingleObject(m_fenceEvent, 1000);

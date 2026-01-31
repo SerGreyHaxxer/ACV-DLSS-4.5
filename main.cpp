@@ -29,13 +29,7 @@
 #include "src/crash_handler.h"
 
 // Simple startup logger to debug early crashes
-void LogStartup(const char* msg) {
-    FILE* fp;
-    if (fopen_s(&fp, "startup_trace.log", "a") == 0) {
-        fprintf(fp, "%s\n", msg);
-        fclose(fp);
-    }
-}
+extern "C" void LogStartup(const char* msg);
 
 // ============================================================================
 // DLL ENTRY POINT

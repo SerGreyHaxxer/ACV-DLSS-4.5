@@ -10,7 +10,7 @@ param(
 )
 
 # Configuration
-$StreamlineSDK = "C:\Users\serge\Downloads\streamline-sdk-v2.10.3"
+$StreamlineSDK = $PWD
 
 if ($Help) {
     Write-Host @"
@@ -99,48 +99,43 @@ Write-Host "[OK] Installed dxgi.dll" -ForegroundColor Green
 # Step 3.5: Install Streamline SDK
 Write-Host "`nInstalling Streamline SDK..." -ForegroundColor Yellow
 
-if (Test-Path $StreamlineSDK) {
-    # 1. Copy Interposer
-    $slInterposer = "$StreamlineSDK\bin\x64\sl.interposer.dll"
-    if (Test-Path $slInterposer) {
-        Copy-Item $slInterposer "$GamePath\sl.interposer.dll" -Force
-        Write-Host "[OK] Copied sl.interposer.dll" -ForegroundColor Green
-    } else {
-        Write-Host "[MISSING] sl.interposer.dll not found in SDK" -ForegroundColor Red
+# Function to copy if source exists
+function Copy-IfFound {
+    param($filename, $dest)
+    # Check in current directory (repo root)
+    if (Test-Path ".\$filename") {
+        Copy-Item ".\$filename" "$dest\$filename" -Force
+        Write-Host "[OK] Copied $filename (from repo root)" -ForegroundColor Green
+        return $true
     }
-    
-    # 2. Copy Plugins
-    # We will copy plugins to root to ensure loading, as pref.numPathsToPlugins=0
-    # or to 'plugins' if we assume standard loader behavior.
-    # Safe bet: Copy to root for this simple proxy integration if loader supports it,
-    # BUT standard Streamline requires them in specific paths if not configured.
-    # Given we pass 0 paths, it looks alongside interposer usually.
-    
-    $slPluginsSrc = "$StreamlineSDK\bin\x64\plugins"
-    if (Test-Path $slPluginsSrc) {
-        $dlssPlugin = "$slPluginsSrc\sl.dlss.dll"
-        $dlssgPlugin = "$slPluginsSrc\sl.dlss_g.dll"
-        
-        if (Test-Path $dlssPlugin) {
-            Copy-Item $dlssPlugin "$GamePath\sl.dlss.dll" -Force
-            Write-Host "[OK] Copied sl.dlss.dll" -ForegroundColor Green
-        }
-        if (Test-Path $dlssgPlugin) {
-            Copy-Item $dlssgPlugin "$GamePath\sl.dlss_g.dll" -Force
-            Write-Host "[OK] Copied sl.dlss_g.dll" -ForegroundColor Green
-        }
+    # Check in SDK bin/x64
+    if (Test-Path "$StreamlineSDK\bin\x64\$filename") {
+        Copy-Item "$StreamlineSDK\bin\x64\$filename" "$dest\$filename" -Force
+        Write-Host "[OK] Copied $filename (from SDK)" -ForegroundColor Green
+        return $true
     }
-    
-    # 3. Copy Common (if needed)
-    $slCommon = "$StreamlineSDK\bin\x64\sl.common.dll"
-    if (Test-Path $slCommon) {
-        Copy-Item $slCommon "$GamePath\sl.common.dll" -Force
-        Write-Host "[OK] Copied sl.common.dll" -ForegroundColor Green
+    # Check in SDK bin/x64/plugins (for some versions)
+    if (Test-Path "$StreamlineSDK\bin\x64\plugins\$filename") {
+        Copy-Item "$StreamlineSDK\bin\x64\plugins\$filename" "$dest\$filename" -Force
+        Write-Host "[OK] Copied $filename (from SDK plugins)" -ForegroundColor Green
+        return $true
     }
-    
-} else {
-    Write-Host "[WARNING] Streamline SDK not found at $StreamlineSDK" -ForegroundColor Red
-    Write-Host "You must manually copy sl.interposer.dll and plugins to the game folder." -ForegroundColor Yellow
+    return $false
+}
+
+$missingFiles = @()
+
+if (-not (Copy-IfFound "sl.interposer.dll" $GamePath)) { $missingFiles += "sl.interposer.dll" }
+if (-not (Copy-IfFound "sl.common.dll" $GamePath)) { $missingFiles += "sl.common.dll" }
+if (-not (Copy-IfFound "sl.dlss.dll" $GamePath)) { $missingFiles += "sl.dlss.dll" }
+if (-not (Copy-IfFound "sl.dlss_g.dll" $GamePath)) { $missingFiles += "sl.dlss_g.dll" }
+
+if ($missingFiles.Count -gt 0) {
+    Write-Host "`n[WARNING] Some Streamline components were not found:" -ForegroundColor Yellow
+    foreach ($file in $missingFiles) {
+        Write-Host "  - $file" -ForegroundColor Red
+    }
+    Write-Host "Please manually copy them to the game folder from the Streamline SDK." -ForegroundColor Yellow
 }
 
 # Step 4: Check for NVIDIA DLLs

@@ -2,9 +2,11 @@
 #include <d3d12.h>
 #include <vector>
 #include <mutex>
+#include <string>
+#include <wrl/client.h> // Added
 
 struct ResourceCandidate {
-    ID3D12Resource* pResource;
+    Microsoft::WRL::ComPtr<ID3D12Resource> pResource;
     float score;
     D3D12_RESOURCE_DESC desc;
     uint64_t lastFrameSeen;
@@ -20,6 +22,8 @@ public:
     ID3D12Resource* GetBestMotionVectorCandidate();
     ID3D12Resource* GetBestDepthCandidate();
     ID3D12Resource* GetBestColorCandidate();
+
+    std::string GetDebugInfo();
 
     void NewFrame();
     void Clear(); // Clear all candidates

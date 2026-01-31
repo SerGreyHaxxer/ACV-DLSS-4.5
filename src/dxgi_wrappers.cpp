@@ -265,7 +265,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present(UINT SyncInterval, UINT
         }, "Toggle Vignette");
         
         InputHandler::Get().RegisterHotkey(VK_F6, [](){ StreamlineIntegration::Get().SetSharpness(0.0f); }, "Sharpness 0.0");
-        InputHandler::Get().RegisterHotkey(VK_F4, [](){ StreamlineIntegration::Get().SetSharpness(0.5f); }, "Sharpness 0.5");
+        InputHandler::Get().RegisterHotkey(VK_F4, [](){ MessageBeep(MB_OK); OverlayUI::Get().ToggleDebugMode(); }, "Toggle Debug");
         InputHandler::Get().RegisterHotkey(VK_F5, [](){ StreamlineIntegration::Get().CycleLODBias(); }, "Cycle LOD Bias");
         
         inputsRegistered = true;
@@ -288,17 +288,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present(UINT SyncInterval, UINT
         if (mult < 1) mult = 1; // 0 means 1x
         float totalFps = fps * (float)mult;
         
-        // Log to Startup Log for immediate debug
-        char msg[128];
-        sprintf_s(msg, "Game FPS: %.2f | DLSS 4.5 Output FPS: %.2f", fps, totalFps);
-        LogStartup(msg);
-        
-        // Log to CSV for the user
-        FILE* fp;
-        if (fopen_s(&fp, "dlss_stats.csv", "a") == 0) {
-            fprintf(fp, "%llu,%.2f,%.2f\n", currentTime, fps, totalFps);
-            fclose(fp);
-        }
+        LOG_INFO("[STATS] Game FPS: %.2f | DLSS 4.5 Output FPS: %.2f", fps, totalFps);
         
         // Update the Control Panel Live
         OverlayUI::Get().SetFPS(fps, totalFps);
@@ -339,7 +329,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present1(UINT Sync, UINT Flags,
         }, "Toggle Vignette");
         
         InputHandler::Get().RegisterHotkey(VK_F6, [](){ StreamlineIntegration::Get().SetSharpness(0.0f); }, "Sharpness 0.0");
-        InputHandler::Get().RegisterHotkey(VK_F4, [](){ StreamlineIntegration::Get().SetSharpness(0.5f); }, "Sharpness 0.5");
+        InputHandler::Get().RegisterHotkey(VK_F4, [](){ MessageBeep(MB_OK); OverlayUI::Get().ToggleDebugMode(); }, "Toggle Debug");
         InputHandler::Get().RegisterHotkey(VK_F5, [](){ StreamlineIntegration::Get().CycleLODBias(); }, "Cycle LOD Bias");
         
         inputsRegisteredPresent1 = true;

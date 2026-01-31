@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 #include <windows.h>
+#include <wrl/client.h> // Added for ComPtr
 
 #include <sl.h>
 #include <sl_consts.h>
@@ -46,13 +47,16 @@ public:
 
     // Configuration
     void SetDLSSMode(int mode); // 0=Off, 1=Perf, 2=Bal, 3=Qual...
+    void SetDLSSPreset(int preset); // 0=Default, 1=A...
     void SetFrameGenMultiplier(int multiplier); // 0=Off, 2, 3, 4
     int GetFrameGenMultiplier() const { return m_frameGenMultiplier; }
     void SetSharpness(float sharpness); // 0.0 to 1.0
     void SetLODBias(float bias); // 0.0 to -3.0
+    void SetMVecScale(float x, float y);
 
     // Runtime Toggles (For Hotkeys)
     void CycleDLSSMode();
+    void CycleDLSSPreset();
     void CycleFrameGen();
     void CycleLODBias(); // Cycle between 0, -1, -2 (Sharpening)
     
@@ -66,14 +70,14 @@ private:
     ~StreamlineIntegration() = default;
 
     bool m_initialized = false;
-    ID3D12Device* m_pDevice = nullptr;
-    ID3D12CommandQueue* m_pCommandQueue = nullptr;
-    ID3D12CommandAllocator* m_pCommandAllocator = nullptr;
-    ID3D12GraphicsCommandList* m_pCommandList = nullptr;
-    ID3D12Fence* m_pFence = nullptr;
+    Microsoft::WRL::ComPtr<ID3D12Device> m_pDevice;
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_pCommandQueue;
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_pCommandAllocator;
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_pCommandList;
+    Microsoft::WRL::ComPtr<ID3D12Fence> m_pFence;
     HANDLE m_fenceEvent = nullptr;
     uint64_t m_fenceValue = 0;
-    IDXGISwapChain* m_pSwapChain = nullptr;
+    Microsoft::WRL::ComPtr<IDXGISwapChain> m_pSwapChain;
     
     // Feature availability tracking
     bool m_dlssSupported = false;
@@ -98,10 +102,11 @@ private:
     ID3D12Resource* m_colorBuffer = nullptr;
     ID3D12Resource* m_depthBuffer = nullptr;
     ID3D12Resource* m_motionVectors = nullptr;
-    ID3D12Resource* m_backBuffer = nullptr;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_backBuffer;
 
     // User configuration
     sl::DLSSMode m_dlssMode = sl::DLSSMode::eDLAA; // Default Highest Quality
+    sl::DLSSPreset m_dlssPreset = sl::DLSSPreset::eDefault;
     bool m_useMfg = false;
     int m_frameGenMultiplier = 4; // Default 4x
     bool m_dlssEnabled = true;
@@ -109,6 +114,8 @@ private:
     
     float m_sharpness = 0.5f; // Default sharpness
     float m_lodBias = -1.0f;  // Default Sharper Textures
+    float m_mvecScaleX = 1.0f;
+    float m_mvecScaleY = 1.0f;
 
     sl::Feature m_featuresToLoad[5] = {};
     uint32_t m_featureCount = 0;

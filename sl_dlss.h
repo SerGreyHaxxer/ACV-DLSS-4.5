@@ -18,6 +18,18 @@ enum class DLSSMode {
     eDLAA = 6
 };
 
+// DLSS Presets (Hints for the AI model)
+enum class DLSSPreset {
+    eDefault = 0,
+    ePresetA = 1, // Older models, good for ghosting
+    ePresetB = 2, // Ultra Perf
+    ePresetC = 3, // Balanced/Quality (Fast)
+    ePresetD = 4, // Balanced/Quality (Good stability)
+    ePresetE = 5, // The "Unreal Engine" preset (Great stability)
+    ePresetF = 6, // DLAA / Ultra Quality focus
+    ePresetG = 7  // Unused
+};
+
 // DLSS Options
 struct DLSSOptions {
     DLSSMode mode;
@@ -29,6 +41,7 @@ struct DLSSOptions {
     float preExposure;
     unsigned int inputWidth;  // Added for explicit scaling support
     unsigned int inputHeight; // Added for explicit scaling support
+    DLSSPreset preset;        // Added: DLSS Preset Selection
 };
 
 // Get optimal settings for target resolution

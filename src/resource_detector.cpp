@@ -1,5 +1,7 @@
 #include "resource_detector.h"
 #include "logger.h"
+#include <sstream>
+#include <iomanip>
 
 ResourceDetector& ResourceDetector::Get() {
     static ResourceDetector instance;
@@ -42,7 +44,7 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
     if (mvScore > 0.5f) {
         bool found = false;
         for (auto& cand : m_motionCandidates) {
-            if (cand.pResource == pResource) {
+            if (cand.pResource.Get() == pResource) {
                 cand.lastFrameSeen = m_frameCount;
                 found = true;
                 break;
@@ -60,7 +62,7 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
     if (depthScore > 0.5f) {
         bool found = false;
         for (auto& cand : m_depthCandidates) {
-            if (cand.pResource == pResource) {
+            if (cand.pResource.Get() == pResource) {
                 cand.lastFrameSeen = m_frameCount;
                 found = true;
                 break;
@@ -76,7 +78,7 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
     if (colorScore > 0.5f) {
         bool found = false;
         for (auto& cand : m_colorCandidates) {
-            if (cand.pResource == pResource) {
+            if (cand.pResource.Get() == pResource) {
                 cand.lastFrameSeen = m_frameCount;
                 found = true;
                 break;
@@ -144,7 +146,7 @@ ID3D12Resource* ResourceDetector::GetBestMotionVectorCandidate() {
     for (const auto& cand : m_motionCandidates) {
         if (cand.score > bestScore) {
             bestScore = cand.score;
-            best = cand.pResource;
+            best = cand.pResource.Get();
         }
     }
     return best;
@@ -158,7 +160,7 @@ ID3D12Resource* ResourceDetector::GetBestDepthCandidate() {
     for (const auto& cand : m_depthCandidates) {
         if (cand.score > bestScore) {
             bestScore = cand.score;
-            best = cand.pResource;
+            best = cand.pResource.Get();
         }
     }
     return best;
@@ -172,18 +174,37 @@ ID3D12Resource* ResourceDetector::GetBestColorCandidate() {
     for (const auto& cand : m_colorCandidates) {
         if (cand.score > bestScore) {
             bestScore = cand.score;
-            best = cand.pResource;
+            best = cand.pResource.Get();
         }
     }
     return best;
 }
 
 void ResourceDetector::AnalyzeCommandList(ID3D12GraphicsCommandList* pCmdList) {
-    // In a real implementation, we would hook SetGraphicsRootDescriptorTable
-    // or ResourceBarrier to see which resources are being bound/transitioned.
-    // Since we can't easily inspect the command list contents without extensive
-    // detention, we rely on tracking resources at Creation time or ResourceBarrier time.
-    
-    // For this prototype, we assume resources are registered via tracking
-    // ResourceBarrier calls in the ExecuteCommandLists hook.
+    // Placeholder
+}
+
+std::string ResourceDetector::GetDebugInfo() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    std::stringstream ss;
+    ss << "=== RESOURCE DETECTOR DEBUG ===\r\n";
+    ss << "Frame: " << m_frameCount << "\r\n\r\n";
+
+    auto printList = [&](const char* name, const std::vector<ResourceCandidate>& list) {
+        ss << "--- " << name << " (" << list.size() << ") ---\r\n";
+        for (const auto& c : list) {
+            ss << "Ptr: " << (void*)c.pResource.Get() 
+               << " | " << c.desc.Width << "x" << c.desc.Height 
+               << " | Fmt: " << c.desc.Format 
+               << " | Score: " << std::fixed << std::setprecision(2) << c.score 
+               << " | Last: " << c.lastFrameSeen << "\r\n";
+        }
+        ss << "\r\n";
+    };
+
+    printList("Color Candidates", m_colorCandidates);
+    printList("Depth Candidates", m_depthCandidates);
+    printList("Motion Vec Candidates", m_motionCandidates);
+
+    return ss.str();
 }
