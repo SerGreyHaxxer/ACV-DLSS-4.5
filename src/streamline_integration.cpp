@@ -49,20 +49,19 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
 
     m_featuresToLoad[0] = sl::kFeatureDLSS;
     m_featuresToLoad[1] = sl::kFeatureDLSS_G;
-    m_featuresToLoad[2] = sl::kFeatureDLSS_MFG;
-    m_featuresToLoad[3] = sl::kFeatureDLSS_RR;
-    m_featuresToLoad[4] = sl::kFeatureReflex;
-    m_featureCount = 5;
+    m_featuresToLoad[2] = sl::kFeatureDLSS_RR;
+    m_featuresToLoad[3] = sl::kFeatureReflex;
+    m_featureCount = 4;
     pref.featuresToLoad = m_featuresToLoad;
     pref.numFeaturesToLoad = m_featureCount;
 
-    sl::Result res = sl::slInit(pref, sl::kSDKVersion);
+    sl::Result res = slInit(pref, sl::kSDKVersion);
     if (SL_FAILED(res)) {
         LOG_ERROR("slInit failed: %d", (int)res);
         return false;
     }
 
-    res = sl::slSetD3DDevice(pDevice);
+    res = slSetD3DDevice(pDevice);
     if (SL_FAILED(res)) {
         LOG_ERROR("slSetD3DDevice failed: %d", (int)res);
         return false;
@@ -73,17 +72,16 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
     m_initialized = true;
 
     sl::FeatureRequirements requirements{};
-    if (SL_SUCCEEDED(sl::slGetFeatureRequirements(sl::kFeatureDLSS, requirements))) {
-        m_dlssSupported = (requirements.flags & static_cast<uint32_t>(sl::FeatureRequirementFlags::eD3D12Supported)) != 0;
+    if (SL_SUCCEEDED(slGetFeatureRequirements(sl::kFeatureDLSS, requirements))) {
+        m_dlssSupported = (requirements.flags & sl::FeatureRequirementFlags::eD3D12Supported) != 0;
     }
-    if (SL_SUCCEEDED(sl::slGetFeatureRequirements(sl::kFeatureDLSS_G, requirements))) {
-        m_dlssgSupported = (requirements.flags & static_cast<uint32_t>(sl::FeatureRequirementFlags::eD3D12Supported)) != 0;
+    if (SL_SUCCEEDED(slGetFeatureRequirements(sl::kFeatureDLSS_G, requirements))) {
+        m_dlssgSupported = (requirements.flags & sl::FeatureRequirementFlags::eD3D12Supported) != 0;
+        m_mfgSupported = m_dlssgSupported;
     }
-    if (SL_SUCCEEDED(sl::slGetFeatureRequirements(sl::kFeatureDLSS_MFG, requirements))) {
-        m_mfgSupported = (requirements.flags & static_cast<uint32_t>(sl::FeatureRequirementFlags::eD3D12Supported)) != 0;
-    }
-    if (SL_SUCCEEDED(sl::slGetFeatureRequirements(sl::kFeatureDLSS_RR, requirements))) {
-        m_rayReconstructionSupported = (requirements.flags & static_cast<uint32_t>(sl::FeatureRequirementFlags::eD3D12Supported)) != 0;
+    // MFG check removed
+    if (SL_SUCCEEDED(slGetFeatureRequirements(sl::kFeatureDLSS_RR, requirements))) {
+        m_rayReconstructionSupported = (requirements.flags & sl::FeatureRequirementFlags::eD3D12Supported) != 0;
     }
 
     m_dlssEnabled = DLSS4_ENABLE_SUPER_RESOLUTION != 0;
@@ -118,25 +116,34 @@ void StreamlineIntegration::Shutdown() {
         
         if (m_fenceEvent) { CloseHandle(m_fenceEvent); m_fenceEvent = nullptr; }
         
-        sl::slShutdown();
+        slShutdown();
         m_initialized = false;
     }
 }
 
 void StreamlineIntegration::NewFrame(IDXGISwapChain* pSwapChain) {
     if (!m_initialized) return;
-    m_needNewFrameToken = true;
+    
     UpdateSwapChain(pSwapChain);
     
+    // Get NEW frame token first
+    sl::Result res = slGetNewFrameToken(m_frameToken, &m_frameIndex);
+    if (SL_FAILED(res)) {
+        LOG_ERROR("Failed to get frame token: %d", res);
+        return;
+    }
+
     // Pull candidates
     ID3D12Resource* color = ResourceDetector::Get().GetBestColorCandidate();
     ID3D12Resource* depth = ResourceDetector::Get().GetBestDepthCandidate();
     ID3D12Resource* mvec = ResourceDetector::Get().GetBestMotionVectorCandidate();
+    
     if (color) TagColorBuffer(color);
     if (depth) TagDepthBuffer(depth);
     if (mvec) TagMotionVectors(mvec);
 
-    // Defer UpdateOptions/TagResources until Evaluate to ensure a frame token is available
+    // THEN tag resources immediately
+    TagResources();
 }
 
 void StreamlineIntegration::TagColorBuffer(ID3D12Resource* pResource) { if (m_initialized && pResource) m_colorBuffer = pResource; }
@@ -154,9 +161,7 @@ void StreamlineIntegration::SetCameraData(const float* view, const float* proj, 
     sl::Constants consts{};
     for (int i = 0; i < 16; ++i) {
         reinterpret_cast<float*>(&consts.cameraViewToClip)[i] = view[i];
-        reinterpret_cast<float*>(&consts.cameraClipToView)[i] = proj[i];
-        reinterpret_cast<float*>(&consts.cameraViewToWorld)[i] = view[i];
-        reinterpret_cast<float*>(&consts.cameraWorldToView)[i] = proj[i];
+        reinterpret_cast<float*>(&consts.clipToCameraView)[i] = proj[i];
     }
     consts.jitterOffset = sl::float2(jitterX, jitterY);
     consts.mvecScale = sl::float2(m_mvecScaleX, m_mvecScaleY); // Use configured scale
@@ -169,7 +174,7 @@ void StreamlineIntegration::SetCameraData(const float* view, const float* proj, 
     m_lastJitterY = jitterY;
 
     if (!EnsureFrameToken()) return;
-    sl::slSetConstants(consts, *m_frameToken, m_viewport);
+    slSetConstants(consts, *m_frameToken, m_viewport);
 }
 
 void StreamlineIntegration::EvaluateDLSS(ID3D12GraphicsCommandList* pCmdList) {
@@ -177,11 +182,47 @@ void StreamlineIntegration::EvaluateDLSS(ID3D12GraphicsCommandList* pCmdList) {
     if (!EnsureFrameToken()) return;
     if (m_lastDlssEvalFrame == m_frameIndex) return;
     if (m_optionsDirty) UpdateOptions();
-    TagResources();
+    
+    // Transition resources to required states
+    D3D12_RESOURCE_BARRIER barriers[3] = {};
+    int barrierCount = 0;
+    
+    if (m_colorBuffer) {
+        barriers[barrierCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barriers[barrierCount].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        barriers[barrierCount].Transition.pResource = m_colorBuffer;
+        barriers[barrierCount].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barriers[barrierCount].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        barriers[barrierCount].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        barrierCount++;
+    }
+    if (m_motionVectors && m_motionVectors != m_colorBuffer) {
+        barriers[barrierCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barriers[barrierCount].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        barriers[barrierCount].Transition.pResource = m_motionVectors;
+        barriers[barrierCount].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barriers[barrierCount].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        barriers[barrierCount].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        barrierCount++;
+    }
+    if (m_depthBuffer) {
+        barriers[barrierCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barriers[barrierCount].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        barriers[barrierCount].Transition.pResource = m_depthBuffer;
+        barriers[barrierCount].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barriers[barrierCount].Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+        barriers[barrierCount].Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_READ;
+        barrierCount++;
+    }
+    
+    if (barrierCount > 0) {
+        pCmdList->ResourceBarrier(barrierCount, barriers);
+    }
+    
     const sl::BaseStructure* inputs[] = { &m_viewport };
-    sl::slEvaluateFeature(sl::kFeatureDLSS, *m_frameToken, inputs, 1, pCmdList);
+    slEvaluateFeature(sl::kFeatureDLSS, *m_frameToken, inputs, 1, pCmdList);
     if (m_rayReconstructionEnabled && m_rayReconstructionSupported) {
-        sl::slEvaluateFeature(sl::kFeatureDLSS_RR, *m_frameToken, inputs, 1, pCmdList);
+        slEvaluateFeature(sl::kFeatureDLSS_RR, *m_frameToken, inputs, 1, pCmdList);
     }
     m_lastDlssEvalFrame = m_frameIndex;
     if (!m_loggedDlssEval) {
@@ -200,18 +241,15 @@ void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain* pSwapChain) {
     m_pCommandAllocator->Reset();
     m_pCommandList->Reset(m_pCommandAllocator.Get(), nullptr);
     if (m_optionsDirty) UpdateOptions();
-    TagResources();
+    
+    // EvaluateDLSS(m_pCommandList.Get()); // Already evaluates DLSS? 
+    // Wait, usually we Evaluate DLSS then FG. 
+    // My EvaluateDLSS also tags? No, I removed it.
     EvaluateDLSS(m_pCommandList.Get());
 
     const sl::BaseStructure* inputs[] = { &m_viewport };
-    if (m_useMfg && m_mfgSupported) {
-        sl::slEvaluateFeature(sl::kFeatureDLSS_MFG, *m_frameToken, inputs, 1, m_pCommandList.Get());
-        if (!m_loggedFrameGenEval) {
-            m_loggedFrameGenEval = true;
-            LOG_INFO("DLSS MFG evaluated successfully.");
-        }
-    } else if (m_dlssgSupported) {
-        sl::slEvaluateFeature(sl::kFeatureDLSS_G, *m_frameToken, inputs, 1, m_pCommandList.Get());
+    if (m_dlssgSupported) {
+        slEvaluateFeature(sl::kFeatureDLSS_G, *m_frameToken, inputs, 1, m_pCommandList.Get());
         if (!m_loggedFrameGenEval) {
             m_loggedFrameGenEval = true;
             LOG_INFO("DLSS-G evaluated successfully.");
@@ -418,21 +456,11 @@ void StreamlineIntegration::TagResources() {
         sl::ResourceTag(&mvec, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &fullExtent),
     };
 
-    sl::slSetTagForFrame(*m_frameToken, m_viewport, tags, static_cast<uint32_t>(std::size(tags)), nullptr);
+    slSetTagForFrame(*m_frameToken, m_viewport, tags, static_cast<uint32_t>(std::size(tags)), nullptr);
 }
 
 void StreamlineIntegration::UpdateOptions() {
     if (!m_initialized) return;
-
-    // Get input size from tagged buffer if possible, otherwise default to viewport
-    uint32_t renderWidth = m_viewportWidth;
-    uint32_t renderHeight = m_viewportHeight;
-    
-    if (m_colorBuffer) {
-        D3D12_RESOURCE_DESC desc = m_colorBuffer->GetDesc();
-        renderWidth = (uint32_t)desc.Width;
-        renderHeight = desc.Height;
-    }
 
     if (m_dlssSupported && m_dlssEnabled) {
         sl::DLSSOptions dlssOptions{};
@@ -440,33 +468,28 @@ void StreamlineIntegration::UpdateOptions() {
         dlssOptions.outputWidth = m_viewportWidth;
         dlssOptions.outputHeight = m_viewportHeight;
         dlssOptions.sharpness = m_sharpness;
-        dlssOptions.colorBuffersHDR = true;
-        dlssOptions.inputWidth = renderWidth;
-        dlssOptions.inputHeight = renderHeight;
-        dlssOptions.preset = m_dlssPreset; // Set the Preset
+        dlssOptions.colorBuffersHDR = sl::Boolean::eTrue;
+        dlssOptions.dlaaPreset = m_dlssPreset;
+        dlssOptions.qualityPreset = m_dlssPreset;
+        dlssOptions.balancedPreset = m_dlssPreset;
+        dlssOptions.performancePreset = m_dlssPreset;
+        dlssOptions.ultraQualityPreset = m_dlssPreset;
         
-        sl::slSetFeatureOptions(sl::kFeatureDLSS, &dlssOptions);
+        slDLSSSetOptions(m_viewport, dlssOptions);
     }
 
     if (m_frameGenMultiplier >= 2 && m_reflexEnabled) {
         sl::ReflexOptions reflexOptions = {};
         reflexOptions.mode = sl::ReflexMode::eLowLatencyWithBoost;
         reflexOptions.useMarkersToOptimize = true;
-        sl::slSetFeatureOptions(sl::kFeatureReflex, &reflexOptions);
+        slReflexSetOptions(reflexOptions);
 
-        if (m_frameGenMultiplier > 2) { // Use MFG for 3x and 4x
-            sl::DLSSMFGOptions mfgOptions{};
-            if (m_frameGenMultiplier == 3) mfgOptions.mode = sl::DLSSMFGMode::e3x;
-            else mfgOptions.mode = sl::DLSSMFGMode::e4x;
-            
-            mfgOptions.numBackBuffers = 2;
-            mfgOptions.enableOFA = true;
-            sl::slSetFeatureOptions(sl::kFeatureDLSS_MFG, &mfgOptions);
-        } else { // Use DLSS-G for 2x
+        if (m_dlssgSupported) {
             sl::DLSSGOptions fgOptions{};
             fgOptions.mode = sl::DLSSGMode::eOn;
-            fgOptions.numFramesToGenerate = 1; // 2x total
-            sl::slSetFeatureOptions(sl::kFeatureDLSS_G, &fgOptions);
+            // 2x -> 1 generated, 3x -> 2 generated, 4x -> 3 generated
+            fgOptions.numFramesToGenerate = (m_frameGenMultiplier > 1) ? (m_frameGenMultiplier - 1) : 1;
+            slDLSSGSetOptions(m_viewport, fgOptions);
         }
     }
 }
@@ -501,7 +524,7 @@ bool StreamlineIntegration::EnsureFrameToken() {
     if (m_frameToken && !m_needNewFrameToken) {
         return true;
     }
-    sl::Result res = sl::slGetNewFrameToken(m_frameToken, &m_frameIndex);
+    sl::Result res = slGetNewFrameToken(m_frameToken, &m_frameIndex);
     if (SL_FAILED(res)) {
         LOG_ERROR("slGetNewFrameToken failed: %d", (int)res);
         return false;

@@ -222,3 +222,13 @@ std::string ResourceDetector::GetDebugInfo() {
 
     return ss.str();
 }
+
+void ResourceDetector::LogDebugInfo() {
+    std::string info = GetDebugInfo();
+    // Breakdown lines to avoid massive log entries
+    std::stringstream ss(info);
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (!line.empty()) LOG_INFO("[MEM] %s", line.c_str());
+    }
+}

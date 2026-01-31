@@ -1,6 +1,10 @@
+#include <vector>
+#include <string>
+#include <sstream>
 #include "overlay.h"
 #include "streamline_integration.h"
 #include "config_manager.h"
+#include "resource_detector.h"
 #include "logger.h"
 #include <commctrl.h>
 #include <stdio.h>
@@ -17,6 +21,7 @@
 #define ID_BTN_EXPAND   106
 #define ID_CHECK_REFLEX 107
 #define ID_CHECK_HUD    108
+#define ID_CHECK_DEBUG  109
 
 // Colors (ImGui Style)
 #define COL_BG      RGB(30, 30, 30)
@@ -67,9 +72,15 @@ void OverlayUI::UIThreadLoop() {
     WNDCLASSEXW wcFPS = {0}; wcFPS.cbSize = sizeof(WNDCLASSEXW); wcFPS.lpfnWndProc = WindowProc; wcFPS.hInstance = m_hModule; wcFPS.lpszClassName = L"DLSS4ProxyFPS"; wcFPS.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH); RegisterClassExW(&wcFPS);
     WNDCLASSEXW wcVig = {0}; wcVig.cbSize = sizeof(WNDCLASSEXW); wcVig.lpfnWndProc = WindowProc; wcVig.hInstance = m_hModule; wcVig.lpszClassName = L"DLSS4ProxyVignette"; wcVig.hbrBackground = CreateSolidBrush(RGB(255, 100, 0)); RegisterClassExW(&wcVig);
     
+    // 3. Debug Window Class
+    WNDCLASSEXW wcDbg = {0}; wcDbg.cbSize = sizeof(WNDCLASSEXW); wcDbg.lpfnWndProc = WindowProc; wcDbg.hInstance = m_hModule; wcDbg.lpszClassName = L"DLSS4ProxyDebug"; 
+    wcDbg.hbrBackground = CreateSolidBrush(RGB(20, 20, 20)); // Dark background
+    RegisterClassExW(&wcDbg);
+
     CreateOverlayWindow();
     CreateFPSWindow();
     CreateVignetteWindow(); 
+    CreateDebugWindow(); 
     
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0)) {
@@ -149,6 +160,10 @@ void OverlayUI::CreateOverlayWindow() {
     m_hCheckHUDFix = CreateWindowW(L"BUTTON", L"HUD Masking", WS_CHILD | BS_AUTOCHECKBOX, padding, cy, contentWidth, 25, m_hwnd, (HMENU)ID_CHECK_HUD, m_hModule, NULL);
     SendMessage(m_hCheckHUDFix, WM_SETFONT, (WPARAM)m_hFontUI, TRUE);
     cy += 30;
+
+    m_hCheckDebug = CreateWindowW(L"BUTTON", L"Show Resource Debug Info", WS_CHILD | BS_AUTOCHECKBOX, padding, cy, contentWidth, 25, m_hwnd, (HMENU)ID_CHECK_DEBUG, m_hModule, NULL);
+    SendMessage(m_hCheckDebug, WM_SETFONT, (WPARAM)m_hFontUI, TRUE);
+    cy += 30;
     
     UpdateControls();
     ShowWindow(m_hwnd, SW_HIDE); // Start Hidden
@@ -182,7 +197,62 @@ void OverlayUI::DrawFPSOverlay() {
     DrawTextW(hdc, buf, -1, &rect, DT_CENTER|DT_VCENTER|DT_SINGLELINE);
     SelectObject(hdc, hOld); DeleteObject(hFont); ReleaseDC(m_hwndFPS, hdc);
 }
+
+void OverlayUI::CreateDebugWindow() {
+    // Large window on the right side
+    int w = 500;
+    int h = 600;
+    int x = GetSystemMetrics(SM_CXSCREEN) - w - 20;
+    int y = 20;
+    
+    m_hwndDebug = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE, 
+        L"DLSS4ProxyDebug", L"", 
+        WS_POPUP, x, y, w, h, NULL, NULL, m_hModule, NULL
+    );
+    SetLayeredWindowAttributes(m_hwndDebug, 0, 220, LWA_ALPHA); // Semi-transparent
+}
+
+void OverlayUI::UpdateDebugInfo() {
+    if (!m_hwndDebug || !m_showDebug) return;
+    
+    std::string debugInfo = ResourceDetector::Get().GetDebugInfo();
+    
+    HDC hdc = GetDC(m_hwndDebug);
+    RECT rect; GetClientRect(m_hwndDebug, &rect);
+    
+    // Clear
+    HBRUSH bg = CreateSolidBrush(RGB(20, 20, 20)); 
+    FillRect(hdc, &rect, bg); 
+    DeleteObject(bg);
+    
+    SetTextColor(hdc, RGB(0, 255, 0)); // Green text
+    SetBkMode(hdc, TRANSPARENT);
+    
+    HFONT hFont = CreateFontW(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Consolas");
+    HFONT hOld = (HFONT)SelectObject(hdc, hFont);
+    
+    // Convert string to wstring for DrawTextW
+    std::wstring wText;
+    if (!debugInfo.empty()) {
+        int size_needed = MultiByteToWideChar(CP_UTF8, 0, &debugInfo[0], (int)debugInfo.size(), NULL, 0);
+        wText.resize(size_needed, 0);
+        MultiByteToWideChar(CP_UTF8, 0, &debugInfo[0], (int)debugInfo.size(), &wText[0], size_needed);
+    } else {
+        wText = L"No debug info available yet...";
+    }
+    
+    RECT textRect = rect;
+    textRect.left += 10; textRect.top += 10;
+    DrawTextW(hdc, wText.c_str(), -1, &textRect, DT_LEFT);
+    
+    SelectObject(hdc, hOld); 
+    DeleteObject(hFont); 
+    ReleaseDC(m_hwndDebug, hdc);
+}
+
 void OverlayUI::SetFPS(float gameFps, float totalFps) { m_cachedTotalFPS = totalFps; DrawFPSOverlay(); 
+    if (m_showDebug) UpdateDebugInfo(); 
     if(m_hLabelFPS) { wchar_t buf[64]; swprintf_s(buf, L"%.0f FPS", totalFps); SetWindowTextW(m_hLabelFPS, buf); }
     if (m_hLabelCamera) {
         wchar_t buf[128];
@@ -290,15 +360,20 @@ LRESULT CALLBACK OverlayUI::WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
             ui.m_expanded = !ui.m_expanded;
             SetWindowTextW(ui.m_hBtnExpand, ui.m_expanded ? L"<< Collapse" : L"Advanced Settings >>");
             int show = ui.m_expanded ? SW_SHOW : SW_HIDE;
-            ShowWindow(ui.m_hCheckReflex, show); ShowWindow(ui.m_hCheckHUDFix, show);
+            ShowWindow(ui.m_hCheckReflex, show); 
+            ShowWindow(ui.m_hCheckHUDFix, show);
+            ShowWindow(ui.m_hCheckDebug, show);
             RECT rect; GetWindowRect(ui.m_hwnd, &rect);
-            SetWindowPos(ui.m_hwnd, NULL, 0, 0, rect.right-rect.left, ui.m_expanded ? 610 : 510, SWP_NOMOVE|SWP_NOZORDER);
+            SetWindowPos(ui.m_hwnd, NULL, 0, 0, rect.right-rect.left, ui.m_expanded ? 650 : 510, SWP_NOMOVE|SWP_NOZORDER);
         } else if (id == ID_CHECK_REFLEX && code == BN_CLICKED) {
             bool enabled = SendMessageW(ui.m_hCheckReflex, BM_GETCHECK, 0, 0) == BST_CHECKED;
             StreamlineIntegration::Get().SetReflexEnabled(enabled);
         } else if (id == ID_CHECK_HUD && code == BN_CLICKED) {
             bool enabled = SendMessageW(ui.m_hCheckHUDFix, BM_GETCHECK, 0, 0) == BST_CHECKED;
             StreamlineIntegration::Get().SetHUDFixEnabled(enabled);
+        } else if (id == ID_CHECK_DEBUG && code == BN_CLICKED) {
+            ui.m_showDebug = SendMessageW(ui.m_hCheckDebug, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            ShowWindow(ui.m_hwndDebug, ui.m_showDebug ? SW_SHOW : SW_HIDE);
         }
     }
     if (uMsg == WM_HSCROLL) {

@@ -12,7 +12,7 @@
 #include <sl_dlss_g.h>
 #include <sl_dlss_d.h>
 #include <sl_dlss_mfg.h>
-#include "../sl_reflex.h" // Relative path since it's in root
+#include "sl_reflex.h"
 
 // ============================================================================
 // STREAMLINE INTEGRATION WRAPPER

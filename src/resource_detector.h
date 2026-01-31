@@ -25,6 +25,7 @@ public:
     uint64_t GetFrameCount();
 
     std::string GetDebugInfo();
+    void LogDebugInfo(); // Dump to log file
 
     void NewFrame();
     void Clear(); // Clear all candidates

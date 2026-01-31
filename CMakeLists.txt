@@ -13,6 +13,30 @@ project(DLSS4Proxy VERSION 1.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Find NVIDIA Streamline SDK
+# Allow custom path via -DSTREAMLINE_SDK_PATH="C:/Path/To/SDK"
+if(NOT STREAMLINE_SDK_PATH)
+    set(STREAMLINE_SDK_PATH "$ENV{USERPROFILE}/Downloads/streamline-sdk-v2.10.3")
+endif()
+
+# Also check for any version of streamline SDK in Downloads
+if(NOT EXISTS "${STREAMLINE_SDK_PATH}/lib/x64/sl.interposer.lib")
+    file(GLOB SDK_CANDIDATES "$ENV{USERPROFILE}/Downloads/streamline-sdk*")
+    if(SDK_CANDIDATES)
+        list(GET SDK_CANDIDATES 0 STREAMLINE_SDK_PATH)
+    endif()
+endif()
+
+if(NOT EXISTS "${STREAMLINE_SDK_PATH}/lib/x64/sl.interposer.lib")
+    message(FATAL_ERROR "NVIDIA Streamline SDK not found!\n"
+        "Expected at: ${STREAMLINE_SDK_PATH}\n"
+        "Please download from: https://developer.nvidia.com/rtx/streamline\n"
+        "Or set custom path: cmake .. -DSTREAMLINE_SDK_PATH=\"C:/Path/To/SDK\"")
+endif()
+
+set(STREAMLINE_SDK "${STREAMLINE_SDK_PATH}" CACHE PATH "NVIDIA Streamline SDK path")
+message(STATUS "Found Streamline SDK: ${STREAMLINE_SDK}")
+
 # Output name must be dxgi.dll for proxy to work
 set(CMAKE_SHARED_LIBRARY_PREFIX "")
 
@@ -52,6 +76,10 @@ target_link_libraries(dxgi PRIVATE
     dxguid
     user32
     dbghelp
+    comctl32
+    gdi32
+    shell32
+    "${STREAMLINE_SDK}/lib/x64/sl.interposer.lib"
 )
 
 # Set output directory
@@ -72,6 +100,7 @@ target_compile_definitions(dxgi PRIVATE
 # Include path for Streamline SDK headers (local or external)
 target_include_directories(dxgi PRIVATE
     "${CMAKE_SOURCE_DIR}"
+    "${STREAMLINE_SDK}/include"
 )
 
 # Enable warnings

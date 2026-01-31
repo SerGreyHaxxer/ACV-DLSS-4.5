@@ -187,7 +187,39 @@ typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateCommittedResource)(ID3D12Device*, c
 PFN_CreateCommittedResource g_OriginalCreateCommittedResource = nullptr;
 
 HRESULT STDMETHODCALLTYPE Hooked_CreateCommittedResource(ID3D12Device* pThis, const D3D12_HEAP_PROPERTIES* pHeapProperties, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC* pDesc, D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE* pOptimizedClearValue, REFIID riid, void** ppvResource) {
-    HRESULT hr = g_OriginalCreateCommittedResource(pThis, pHeapProperties, HeapFlags, pDesc, InitialResourceState, pOptimizedClearValue, riid, ppvResource);
+    
+    D3D12_RESOURCE_DESC newDesc = *pDesc;
+    bool modified = false;
+
+    if (pDesc && pDesc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && 
+        (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) &&
+        g_SwapChainState.width > 0 && 
+        pDesc->Width == g_SwapChainState.width && 
+        pDesc->Height == g_SwapChainState.height) {
+        
+        int mode = StreamlineIntegration::Get().GetDLSSModeIndex();
+        float scale = 1.0f;
+        // 0=Off, 1=Perf, 2=Bal, 3=Qual, 4=UltQual, 5=DLAA
+        switch (mode) {
+            case 1: scale = 0.5f; break;
+            case 2: scale = 0.58f; break;
+            case 3: scale = 0.6667f; break;
+            case 4: scale = 0.77f; break;
+            case 5: scale = 1.0f; break;
+            default: scale = 1.0f; break;
+        }
+
+        if (scale < 0.99f) {
+            newDesc.Width = (UINT)(pDesc->Width * scale);
+            newDesc.Height = (UINT)(pDesc->Height * scale);
+            if (newDesc.Width < 1) newDesc.Width = 1;
+            if (newDesc.Height < 1) newDesc.Height = 1;
+            modified = true;
+            // LOG_INFO("Hooked_CreateCommittedResource: Resizing RenderTarget %dx%d -> %dx%d", pDesc->Width, pDesc->Height, newDesc.Width, newDesc.Height);
+        }
+    }
+
+    HRESULT hr = g_OriginalCreateCommittedResource(pThis, pHeapProperties, HeapFlags, modified ? &newDesc : pDesc, InitialResourceState, pOptimizedClearValue, riid, ppvResource);
     if (SUCCEEDED(hr) && ppvResource && *ppvResource) {
         // OPTIMIZATION: Only scan small buffers (Typical CBVs are < 64KB) to avoid hangs
         if (pDesc && pDesc->Width <= 65536 && pHeapProperties && pHeapProperties->Type == D3D12_HEAP_TYPE_UPLOAD && pDesc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {

@@ -57,10 +57,12 @@ private:
     HWND m_hGrpAdvanced = nullptr;
     HWND m_hCheckReflex = nullptr;
     HWND m_hCheckHUDFix = nullptr;
+    HWND m_hCheckDebug = nullptr;
     
     bool m_visible = false;
     bool m_showFPS = false;
     bool m_showVignette = false; 
+    bool m_showDebug = false;
     bool m_expanded = false; 
     bool m_initialized = false;
     
@@ -68,4 +70,9 @@ private:
     float m_cachedJitterX = 0.0f;
     float m_cachedJitterY = 0.0f;
     bool m_cachedCamera = false;
+    
+    // Debug Window
+    HWND m_hwndDebug = nullptr;
+    void CreateDebugWindow();
+    void UpdateDebugInfo();
 };
