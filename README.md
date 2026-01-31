@@ -1,135 +1,65 @@
-# DLSS 4 Proxy DLL for Assassin's Creed Valhalla
+# Assassin's Creed Valhalla - DLSS 4.5 & Frame Generation Mod
 
-A custom proxy DLL that injects **NVIDIA DLSS 4** functionality with **4x Multi-Frame Generation** into games that don't natively support it.
+![Status](https://img.shields.org/badge/Status-Working-brightgreen) ![Version](https://img.shields.org/badge/Version-4.5-blue) ![DirectX](https://img.shields.org/badge/DX-12-blue)
 
-## Features
+This mod injects **NVIDIA DLSS 4.5** (Upscaling) and **Frame Generation** (up to 4x) into *Assassin's Creed Valhalla*. It replaces the game's native anti-aliasing with DLSS/DLAA and uses Streamline to generate intermediate frames for smoother gameplay.
 
-| Feature | Status | Requirements |
-|---------|--------|--------------|
-| **DLSS 4 Super Resolution** | ✅ Ready | Streamline SDK + `nvngx_dlss.dll` v4.0+ |
-| **Ray Reconstruction** | ✅ Ready | Streamline SDK + RT enabled |
-| **Frame Generation 2x** | ✅ Ready | Streamline SDK + `nvngx_dlssg.dll` + RTX 40/50 |
-| **Frame Generation 3x** | ✅ Ready | Streamline SDK + RTX 50 series |
-| **Frame Generation 4x** | ✅ Ready | Streamline SDK + RTX 50 series only |
+## 🌟 Key Features
 
-## Quick Start
+*   **Frame Generation:** Multiplies your FPS by 2x, 3x, or **4x**.
+*   **True DLSS Scaling:** Supports rendering at lower resolutions (50%-67%) and upscaling to Native 4K with AI quality better than native TAA.
+*   **DLAA Mode:** Run at native resolution with AI Anti-Aliasing for ultimate sharpness.
+*   **NVIDIA Reflex:** Low-Latency mode enabled to minimize input lag.
+*   **In-Game Control Panel (F1):** Adjust settings live without restarting.
+    *   Change Frame Gen Multiplier.
+    *   Toggle DLSS Modes (Quality, Balanced, Performance).
+    *   Adjust Sharpness & Texture Detail (LOD Bias).
+*   **Live FPS Overlay (F2):** Custom Valhalla-themed counter showing Base vs. Total FPS.
 
-### 1. Build the DLL
+## 📥 Installation
 
-```powershell
-# Using CMake + Visual Studio
-mkdir build
-cd build
-cmake .. -G "Visual Studio 17 2022" -A x64
-cmake --build . --config Release
-```
+### Method 1: Automatic (Recommended)
+1.  Download this repository.
+2.  Run **`complete_setup.ps1`** (Right-click -> Run with PowerShell).
+3.  Follow the prompts. It will find your game and install everything.
 
-Or compile directly with MSVC:
-```powershell
-cl /LD /EHsc /std:c++17 /Fe:dxgi.dll main.cpp src\*.cpp /link d3d12.lib dxgi.lib dxguid.lib /DEF:dxgi.def
-```
+### Method 2: Manual
+1.  Copy `dxgi.dll` from the `bin` folder to your game directory (where `ACValhalla.exe` is).
+2.  Ensure you have the NVIDIA Streamline DLLs (`sl.interposer.dll`, `sl.common.dll`) and DLSS DLLs (`nvngx_dlss.dll`, `nvngx_dlssg.dll`) in the game folder.
+3.  Launch the game.
 
-### 2. Install
+## 🎮 How to Use
 
-1. Copy `dxgi.dll` to your AC Valhalla folder (next to `ACValhalla.exe`)
-2. Copy `nvngx_dlss.dll` (v4.0+) to the same folder
-3. Copy `nvngx_dlssg.dll` for Frame Generation
-4. Copy Streamline runtime DLLs (`sl.interposer.dll`, `sl.common.dll`) to the same folder
-5. Run the game!
+1.  **Launch** *Assassin's Creed Valhalla*.
+2.  **Press F1** to open the **Control Panel**.
+    *   Set **Frame Gen** to **4x** for maximum smoothness.
+    *   Set **DLSS Mode** to **Quality** or **Balanced**.
+3.  **For Performance Boost:**
+    *   Go to Game Options -> Screen.
+    *   Lower **Resolution Scale** to **67%** (Quality) or **50%** (Performance).
+    *   *The mod will detect this and upscale it back to native resolution.*
+4.  **Press F2** to toggle the **FPS Counter**.
+    *   Format: `Base FPS -> Generated FPS` (e.g., `60 -> 240 FPS`).
 
-### 3. Verify
+## 🛠️ Controls
 
-Check for `dlss4_proxy.log` in the game folder. It should show:
-```
-[INFO] DLSS 4 Proxy DLL Loaded
-[INFO] Frame Gen Multiplier: 4x
-[INFO] NVIDIA DLSS 4 support detected!
-```
+| Hotkey | Action |
+| :--- | :--- |
+| **F1** | Toggle Control Panel Overlay |
+| **F2** | Toggle Real FPS Counter |
 
-## Configuration
+## ⚙️ Advanced Settings (Overlay)
 
-Edit `src/dlss4_config.h` before building:
+*   **Sharpness:** Controls the DLSS edge sharpening filter (0.0 - 1.0).
+*   **LOD Bias:** Controls texture sharpness. Use negative values (slider left) if textures look blurry.
+*   **Reflex Boost:** Aggressive latency reduction (found in "Advanced >>" section).
 
-```cpp
-// Frame Generation: 2, 3, or 4 (max for RTX 50)
-#define DLSS4_FRAME_GEN_MULTIPLIER 4
+## ⚠️ Troubleshooting
 
-// Quality: 0=Perf, 1=Balanced, 2=Quality, 3=UltraQuality, 4=DLAA
-#define DLSS4_SR_QUALITY_MODE 2
+*   **Game Crashing?** Ensure you don't have other overlays (RiverTuner/Afterburner) hooking DX12 aggressively.
+*   **Laggy Input?** Make sure **NVIDIA Reflex** is checked in the Advanced section (F1).
+*   **UI Flickering?** Try enabling "HUD Masking" in Advanced settings.
 
-// Toggle features
-#define DLSS4_ENABLE_SUPER_RESOLUTION 1
-#define DLSS4_ENABLE_RAY_RECONSTRUCTION 1
-#define DLSS4_ENABLE_FRAME_GENERATION 1
-```
-
-## File Structure
-
-```
-tensor-curie/
-├── main.cpp              # DLL entry point
-├── dxgi.def              # Export definitions
-├── CMakeLists.txt        # Build configuration
-└── src/
-    ├── dlss4_config.h    # User configuration
-    ├── logger.h          # Logging utility
-    ├── proxy.h/cpp       # DXGI forwarding
-    ├── hooks.h/cpp       # DirectX Present hooks
-    ├── ngx_wrapper.h/cpp # NGX wrapper (fallback)
-    ├── streamline_integration.* # Streamline SDK integration
-    ├── d3d12_wrappers.*  # D3D12 resource/command list wrappers
-    ├── dxgi_wrappers.*   # DXGI swapchain wrappers
-    └── resource_detector.* # Resource heuristics
-```
-
-## How It Works
-
-```
-┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
-│  Game Engine    │──────│  Our dxgi.dll   │──────│  System DXGI    │
-│  (AC Valhalla)  │      │  (Proxy)        │      │                 │
-└─────────────────┘      └────────┬────────┘      └─────────────────┘
-                                  │
-                                  ▼
-                         ┌─────────────────┐
-                         │  DLSS 4 NGX     │
-                         │  (nvngx_*.dll)  │
-                         └─────────────────┘
-```
-
-1. Game loads our `dxgi.dll` (proxy) instead of system DLL
-2. We forward all calls to real DXGI
-3. We hook `Present()` to inject DLSS processing
-4. Before Present: Apply Super Resolution upscaling
-5. After Present: Generate 1-3 extra frames (Multi-Frame Gen)
-
-## Requirements
-
-- **GPU**: NVIDIA RTX 40 series (Frame Gen 2x) or RTX 50 series (up to 4x)
-- **Driver**: 560.xx or newer with DLSS 4 support
-- **Windows**: 10/11 64-bit
-- **Build**: Visual Studio 2022 with C++ workload
-- **Streamline SDK**: Official NVIDIA Streamline SDK headers/libs and runtime DLLs
-
-## Limitations
-
-> [!WARNING]
-> This is a framework/skeleton implementation. For full functionality:
-
-1. **NVIDIA DLLs Required**: You must supply `nvngx_dlss.dll` and `nvngx_dlssg.dll`
-2. **Streamline Runtime**: `sl.interposer.dll` and `sl.common.dll` must be present in the game folder
-3. **Motion Vectors**: The game must expose motion vectors, or you need game-specific hooks
-4. **Offsets**: Memory offsets in `dlss4_config.h` are placeholders
-
-## Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| Game crashes on start | Check `dlss4_proxy.log` for errors |
-| No DLSS effect | Verify `nvngx_*.dll` files are present |
-| Low FPS with Frame Gen | Ensure RTX 40/50 GPU and latest drivers |
-| Log says "DLL missing" | Place NVIDIA DLLs in game folder |
-
-## License
-
-Educational use only. NVIDIA NGX SDK and DLLs are property of NVIDIA Corporation.
+## 📝 Credits
+*   Mod created by **SerGreyHaxxer**.
+*   Powered by NVIDIA Streamline SDK.
