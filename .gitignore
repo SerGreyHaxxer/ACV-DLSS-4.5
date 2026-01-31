@@ -1,5 +1,5 @@
 # Build Artifacts
-bin/
+# bin/ (Removed from ignore so users get the pre-built DLL)
 build/
 *.obj
 *.lib
