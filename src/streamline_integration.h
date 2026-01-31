@@ -1,0 +1,122 @@
+#pragma once
+#include <d3d12.h>
+#include <dxgi1_4.h>
+#include <cstdint>
+#include <vector>
+#include <windows.h>
+
+#include <sl.h>
+#include <sl_consts.h>
+#include <sl_dlss.h>
+#include <sl_dlss_g.h>
+#include <sl_dlss_d.h>
+#include <sl_dlss_mfg.h>
+#include "../sl_reflex.h" // Relative path since it's in root
+
+// ============================================================================
+// STREAMLINE INTEGRATION WRAPPER
+// ============================================================================
+// This class manages the NVIDIA Streamline SDK lifecycle.
+// It handles initialization, resource tagging, and feature evaluation.
+// ============================================================================
+
+class StreamlineIntegration {
+public:
+    static StreamlineIntegration& Get();
+
+    // Lifecycle
+    bool Initialize(ID3D12Device* pDevice);
+    void Shutdown();
+    
+    // Per-Frame Updates
+    void NewFrame(IDXGISwapChain* pSwapChain);
+    void SetCommandQueue(ID3D12CommandQueue* pQueue);
+    
+    // Resource Tagging (Call before Evaluate)
+    void TagColorBuffer(ID3D12Resource* pResource);
+    void TagDepthBuffer(ID3D12Resource* pResource);
+    void TagMotionVectors(ID3D12Resource* pResource);
+    
+    // Camera Constants (Required for DLSS)
+    void SetCameraData(const float* viewMatrix, const float* projMatrix, float jitterX, float jitterY);
+
+    // Feature Execution
+    void EvaluateDLSS(ID3D12GraphicsCommandList* pCmdList);
+    void EvaluateFrameGen(IDXGISwapChain* pSwapChain);
+
+    // Configuration
+    void SetDLSSMode(int mode); // 0=Off, 1=Perf, 2=Bal, 3=Qual...
+    void SetFrameGenMultiplier(int multiplier); // 0=Off, 2, 3, 4
+    int GetFrameGenMultiplier() const { return m_frameGenMultiplier; }
+    void SetSharpness(float sharpness); // 0.0 to 1.0
+    void SetLODBias(float bias); // 0.0 to -3.0
+
+    // Runtime Toggles (For Hotkeys)
+    void CycleDLSSMode();
+    void CycleFrameGen();
+    void CycleLODBias(); // Cycle between 0, -1, -2 (Sharpening)
+    
+    float GetLODBias() const { return m_lodBias; }
+
+    // Resource Management
+    void ReleaseResources();
+
+private:
+    StreamlineIntegration() = default;
+    ~StreamlineIntegration() = default;
+
+    bool m_initialized = false;
+    ID3D12Device* m_pDevice = nullptr;
+    ID3D12CommandQueue* m_pCommandQueue = nullptr;
+    ID3D12CommandAllocator* m_pCommandAllocator = nullptr;
+    ID3D12GraphicsCommandList* m_pCommandList = nullptr;
+    ID3D12Fence* m_pFence = nullptr;
+    HANDLE m_fenceEvent = nullptr;
+    uint64_t m_fenceValue = 0;
+    IDXGISwapChain* m_pSwapChain = nullptr;
+    
+    // Feature availability tracking
+    bool m_dlssSupported = false;
+    bool m_frameGenSupported = false;
+    bool m_dlssgSupported = false;
+    bool m_mfgSupported = false;
+    bool m_rayReconstructionSupported = false;
+    
+    // Current viewport
+    unsigned int m_viewportWidth = 0;
+    unsigned int m_viewportHeight = 0;
+    DXGI_FORMAT m_backBufferFormat = DXGI_FORMAT_UNKNOWN;
+
+    // Streamline runtime state
+    sl::ViewportHandle m_viewport = sl::ViewportHandle(0);
+    sl::FrameToken* m_frameToken = nullptr;
+    uint32_t m_frameIndex = 0;
+    bool m_optionsDirty = true;
+    bool m_needNewFrameToken = true;
+
+    // Cached resources
+    ID3D12Resource* m_colorBuffer = nullptr;
+    ID3D12Resource* m_depthBuffer = nullptr;
+    ID3D12Resource* m_motionVectors = nullptr;
+    ID3D12Resource* m_backBuffer = nullptr;
+
+    // User configuration
+    sl::DLSSMode m_dlssMode = sl::DLSSMode::eDLAA; // Default Highest Quality
+    bool m_useMfg = false;
+    int m_frameGenMultiplier = 4; // Default 4x
+    bool m_dlssEnabled = true;
+    bool m_rayReconstructionEnabled = true;
+    
+    float m_sharpness = 0.5f; // Default sharpness
+    float m_lodBias = -1.0f;  // Default Sharper Textures
+
+    sl::Feature m_featuresToLoad[5] = {};
+    uint32_t m_featureCount = 0;
+
+    void UpdateSwapChain(IDXGISwapChain* pSwapChain);
+    void UpdateOptions();
+    void TagResources();
+    void EnsureCommandList();
+    void WaitForGpu();
+    bool EnsureFrameToken();
+};

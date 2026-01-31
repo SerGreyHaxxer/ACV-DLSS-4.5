@@ -1,0 +1,30 @@
+# Build Artifacts
+bin/
+build/
+*.obj
+*.lib
+*.exp
+*.dll
+*.exe
+*.pdb
+*.ilk
+
+# User Specific
+*.user
+*.suo
+.vs/
+
+# Logs and Stats
+*.log
+*.csv
+dlss_stats.csv
+startup_trace.log
+dlss4_proxy.log
+
+# Mock/Test Data
+MockGameFolder/
+test_proxy.bat
+
+# System
+Thumbs.db
+Desktop.ini
