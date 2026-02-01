@@ -218,16 +218,28 @@ HRESULT STDMETHODCALLTYPE Hooked_Close(ID3D12GraphicsCommandList* pThis) {
     if (!IsWrappedCommandListUsed()) {
         float jitterX = 0.0f, jitterY = 0.0f;
         TryGetPatternJitter(jitterX, jitterY);
-        float view[16], proj[16], score = 0.0f;
         
-        static int s_camLog = 0;
-        bool doLog = (++s_camLog % 300 == 0); // Log every ~5 seconds at 60fps
+        static uint64_t s_lastScanFrame = 0;
+        uint64_t currentFrame = ResourceDetector::Get().GetFrameCount();
         
-        if (TryScanAllCbvsForCamera(view, proj, &score, doLog)) {
-            StreamlineIntegration::Get().SetCameraData(view, proj, jitterX, jitterY);
+        // Scan only once per frame to avoid CPU kill
+        if (currentFrame > s_lastScanFrame) {
+            float view[16], proj[16], score = 0.0f;
+            static int s_camLog = 0;
+            bool doLog = (++s_camLog % 300 == 0); 
+            
+            if (TryScanAllCbvsForCamera(view, proj, &score, doLog)) {
+                StreamlineIntegration::Get().SetCameraData(view, proj, jitterX, jitterY);
+            } else {
+                // If scan fails, we still pass Jitter to SetCameraData (which uses cached matrices if available)
+                StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
+            }
+            s_lastScanFrame = currentFrame;
         } else {
+            // Same frame, just update Jitter (cheap)
             StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
         }
+        
         StreamlineIntegration::Get().EvaluateDLSS(pThis);
     }
     return g_OriginalClose(pThis);

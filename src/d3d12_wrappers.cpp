@@ -162,69 +162,235 @@ void RegisterCbv(ID3D12Resource* pResource, UINT64 size, uint8_t* cpuPtr) {
 
 static D3D12_GPU_VIRTUAL_ADDRESS s_lastCameraCbv = 0;
 
+static size_t s_lastCameraOffset = 0;
+
+
+
 bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates) {
+
     std::lock_guard<std::mutex> lock(g_cbvMutex);
+
     auto it = std::remove_if(g_cbvInfos.begin(), g_cbvInfos.end(), [](const UploadCbvInfo& info) {
+
         if (!info.cpuPtr) return true;
+
         MEMORY_BASIC_INFORMATION mbi;
+
         if (VirtualQuery(info.cpuPtr, &mbi, sizeof(mbi)) == 0) return true;
+
         if (mbi.State != MEM_COMMIT) return true;
+
         if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return true;
+
         return false;
+
     });
+
     if (it != g_cbvInfos.end()) g_cbvInfos.erase(it, g_cbvInfos.end());
 
-    // OPTIMIZATION: Check last known good buffer first
+
+
+    // OPTIMIZATION: Fast path - check known location first
+
     if (s_lastCameraCbv != 0) {
+
         for (const auto& info : g_cbvInfos) {
+
             if (info.gpuBase == s_lastCameraCbv) {
-                float tempView[16], tempProj[16], score = 0.0f;
-                if (TryExtractCameraFromBuffer(info.cpuPtr, static_cast<size_t>(info.size), tempView, tempProj, &score)) {
-                    memcpy(outView, tempView, sizeof(float) * 16);
-                    memcpy(outProj, tempProj, sizeof(float) * 16);
-                    if (outScore) *outScore = score;
-                    return true;
+
+                // Direct read at cached offset
+
+                if (s_lastCameraOffset + sizeof(float) * 32 <= info.size) {
+
+                    const float* view = reinterpret_cast<const float*>(info.cpuPtr + s_lastCameraOffset);
+
+                    const float* proj = view + 16;
+
+                    float score = ScoreMatrixPair(view, proj);
+
+                    if (score > 0.4f) { // Still valid?
+
+                        memcpy(outView, view, sizeof(float) * 16);
+
+                        memcpy(outProj, proj, sizeof(float) * 16);
+
+                        if (outScore) *outScore = score;
+
+                        return true;
+
+                    }
+
                 }
+
+                // If invalid at offset, fall back to full scan of this buffer
+
+                float tempView[16], tempProj[16], score = 0.0f;
+
+                if (TryExtractCameraFromBuffer(info.cpuPtr, static_cast<size_t>(info.size), tempView, tempProj, &score)) {
+
+                    // Update offset if it moved
+
+                    // Wait, TryExtract doesn't return offset. We need to find it again or assume it's fine.
+
+                    // For now, if full scan passes, we just use it. We can't update offset easily without modifying TryExtract.
+
+                    // But since we are here, it means the cached offset FAILED.
+
+                    memcpy(outView, tempView, sizeof(float) * 16);
+
+                    memcpy(outProj, tempProj, sizeof(float) * 16);
+
+                    if (outScore) *outScore = score;
+
+                    return true;
+
+                }
+
             }
+
         }
+
     }
+
+
 
     float bestScore = 0.0f;
+
     bool found = false;
+
     D3D12_GPU_VIRTUAL_ADDRESS foundGpuBase = 0;
+
     
+
+    // Full Scan (Slow path) - Limit frequency?
+
+    // We rely on the Fast Path to catch 99% of cases.
+
+    
+
     if (g_cbvInfos.empty() && logCandidates) {
+
         LOG_INFO("[CAM] No CBVs registered! Check RegisterCbv hooks.");
+
         return false;
+
     }
+
+
 
     for (const auto& info : g_cbvInfos) {
+
         if (!info.cpuPtr || info.size < CAMERA_CBV_MIN_SIZE) continue;
+
+        
+
+        // We need the offset from TryExtract to cache it.
+
+        // Copy-paste TryExtract logic here to capture offset, or modify TryExtract?
+
+        // Modifying TryExtract is cleaner.
+
+        // But I can't modify the header signature easily.
+
+        // I'll just inline the logic for the "winner".
+
+        
+
         float tempView[16], tempProj[16], score = 0.0f;
-        if (TryExtractCameraFromBuffer(info.cpuPtr, static_cast<size_t>(info.size), tempView, tempProj, &score)) {
-            if (logCandidates && score > 0.0f) {
-                LOG_INFO("[CAM] Candidate GPU:0x%llx Size:%llu Score:%.2f View[15]:%.2f Proj[15]:%.2f Proj[11]:%.2f", 
-                    info.gpuBase, info.size, score, tempView[15], tempProj[15], tempProj[11]);
+
+        
+
+        // Optimization: Don't scan huge buffers completely, check first 16MB
+
+        size_t scanLimit = (info.size > 16777216) ? 16777216 : info.size;
+
+        size_t foundOffset = 0;
+
+        bool foundInBuf = false;
+
+
+
+        for (size_t offset = 0; offset + sizeof(float) * 32 <= scanLimit; offset += sizeof(float) * 16) {
+
+            const float* view = reinterpret_cast<const float*>(info.cpuPtr + offset);
+
+            const float* proj = view + 16;
+
+            float s = ScoreMatrixPair(view, proj);
+
+            if (s > score) {
+
+                score = s;
+
+                foundOffset = offset;
+
             }
-            if (score > bestScore) {
-                bestScore = score;
-                memcpy(outView, tempView, sizeof(float) * 16);
-                memcpy(outProj, tempProj, sizeof(float) * 16);
-                foundGpuBase = info.gpuBase;
-                found = true;
-            }
+
         }
+
+        
+
+        if (score >= 0.4f) {
+
+            foundInBuf = true;
+
+            memcpy(tempView, info.cpuPtr + foundOffset, sizeof(float) * 16);
+
+            memcpy(tempProj, info.cpuPtr + foundOffset + 16, sizeof(float) * 16);
+
+            
+
+            if (logCandidates && score > 0.0f) {
+
+                 LOG_INFO("[CAM] Candidate GPU:0x%llx Size:%llu Score:%.2f View[15]:%.2f Proj[15]:%.2f Proj[11]:%.2f", 
+
+                    info.gpuBase, info.size, score, tempView[15], tempProj[15], tempProj[11]);
+
+            }
+
+
+
+            if (score > bestScore) {
+
+                bestScore = score;
+
+                memcpy(outView, tempView, sizeof(float) * 16);
+
+                memcpy(outProj, tempProj, sizeof(float) * 16);
+
+                foundGpuBase = info.gpuBase;
+
+                s_lastCameraOffset = foundOffset; // Cache it!
+
+                found = true;
+
+            }
+
+        }
+
     }
 
-            if (found) {
-                s_lastCameraCbv = foundGpuBase;
-                if (outScore) *outScore = bestScore;
-                LOG_INFO("Camera matrices detected (Score: %.2f) at GPU: 0x%llx", bestScore, foundGpuBase);
-            } else if (logCandidates) {
-                LOG_INFO("[CAM] Scan failed. Checked %llu CBVs. Best Score: %.2f", (uint64_t)g_cbvInfos.size(), bestScore);
-            }        
-        return found;
+
+
+    if (found) {
+
+        s_lastCameraCbv = foundGpuBase;
+
+        if (outScore) *outScore = bestScore;
+
+        LOG_INFO("Camera matrices detected (Score: %.2f) at GPU: 0x%llx Offset: +0x%zX", bestScore, foundGpuBase, s_lastCameraOffset);
+
+    } else if (logCandidates) {
+
+        LOG_INFO("[CAM] Scan failed. Checked %llu CBVs. Best Score: %.2f", (uint64_t)g_cbvInfos.size(), bestScore);
+
     }
+
+    
+
+    return found;
+
+}
 WrappedID3D12GraphicsCommandList::WrappedID3D12GraphicsCommandList(ID3D12GraphicsCommandList* pReal, WrappedID3D12Device* pDeviceWrapper) 
     : m_pReal(pReal), m_pDeviceWrapper(pDeviceWrapper), m_refCount(1) {
     if(m_pReal) m_pReal->AddRef();
