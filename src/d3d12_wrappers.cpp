@@ -1,6 +1,7 @@
 #include "d3d12_wrappers.h"
 #include "streamline_integration.h"
 #include "hooks.h"
+#include "dlss4_config.h"
 #include <algorithm>
 #include <unordered_map>
 #include <vector>
@@ -33,6 +34,8 @@ namespace {
     std::mutex g_cbvMutex;
     std::vector<UploadCbvInfo> g_cbvInfos;
     std::atomic<uint64_t> g_cameraFrame(0);
+    std::atomic<uint64_t> g_lastFullScanFrame(0);
+    std::atomic<uint64_t> g_lastCameraFoundFrame(0);
     std::vector<Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>> g_descriptorHeaps;
 
     bool IsFinite(float v) { return v == v && v > -FLT_MAX && v < FLT_MAX; }
@@ -67,23 +70,29 @@ namespace {
         return score;
     }
 
-    bool TryExtractCameraFromBuffer(const uint8_t* data, size_t size, float* outView, float* outProj, float* outScore) {
+    bool TryExtractCameraFromBuffer(const uint8_t* data, size_t size, float* outView, float* outProj, float* outScore, size_t* outOffset) {
         if (!data || size < CAMERA_CBV_MIN_SIZE) return false;
         float bestScore = 0.0f;
         size_t bestOffset = 0;
-        
-        // Optimization: Scan FULL buffer but use 256-byte alignment (D3D12 requirement)
-        // This makes scanning 64MB 4x faster than before (was 64-byte stride)
-        size_t scanLimit = size;
-
-        for (size_t offset = 0; offset + sizeof(float) * 32 <= scanLimit; offset += 256) {
-            const float* view = reinterpret_cast<const float*>(data + offset);
-            const float* proj = view + 16;
-            float score = ScoreMatrixPair(view, proj);
-            if (score > bestScore) {
-                bestScore = score;
-                bestOffset = offset;
+        auto scanWithStride = [&](size_t stride, float& bestScoreOut, size_t& bestOffsetOut) {
+            size_t scanLimit = size;
+            for (size_t offset = 0; offset + sizeof(float) * 32 <= scanLimit; offset += stride) {
+                const float* view = reinterpret_cast<const float*>(data + offset);
+                const float* proj = view + 16;
+                float score = ScoreMatrixPair(view, proj);
+                if (score > bestScoreOut) {
+                    bestScoreOut = score;
+                    bestOffsetOut = offset;
+                }
             }
+        };
+        
+        // Fast path: 256-byte alignment (D3D12 requirement). Fallback: 64-byte stride if nothing scores.
+        scanWithStride(256, bestScore, bestOffset);
+        if (bestScore < 0.4f) {
+            bestScore = 0.0f;
+            bestOffset = 0;
+            scanWithStride(64, bestScore, bestOffset);
         }
         if (bestScore < 0.4f) return false;
         const float* view = reinterpret_cast<const float*>(data + bestOffset);
@@ -91,6 +100,7 @@ namespace {
         memcpy(outView, view, sizeof(float) * 16);
         memcpy(outProj, proj, sizeof(float) * 16);
         if (outScore) *outScore = bestScore;
+        if (outOffset) *outOffset = bestOffset;
         return true;
     }
 
@@ -149,6 +159,14 @@ namespace {
     }
 }
 
+bool GetLastCameraStats(float& outScore, uint64_t& outFrame) {
+    std::lock_guard<std::mutex> lock(g_cameraMutex);
+    if (!g_bestCamera.valid) return false;
+    outScore = g_bestCamera.score;
+    outFrame = g_bestCamera.frame;
+    return true;
+}
+
 void RegisterCbv(ID3D12Resource* pResource, UINT64 size, uint8_t* cpuPtr) {
     std::lock_guard<std::mutex> lock(g_cbvMutex);
     UploadCbvInfo info{};
@@ -163,9 +181,20 @@ static D3D12_GPU_VIRTUAL_ADDRESS s_lastCameraCbv = 0;
 
 static size_t s_lastCameraOffset = 0;
 
+void ResetCameraScanCache() {
+    std::lock_guard<std::mutex> lock(g_cbvMutex);
+    g_cbvInfos.clear();
+    s_lastCameraCbv = 0;
+    s_lastCameraOffset = 0;
+    g_lastFullScanFrame.store(0);
+    g_lastCameraFoundFrame.store(0);
+}
 
+uint64_t GetLastCameraFoundFrame() {
+    return g_lastCameraFoundFrame.load();
+}
 
-bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates) {
+bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates, bool allowFullScan) {
 
     std::lock_guard<std::mutex> lock(g_cbvMutex);
 
@@ -215,6 +244,7 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
 
                         if (outScore) *outScore = score;
 
+                        g_lastCameraFoundFrame.store(StreamlineIntegration::Get().GetFrameCount());
                         return true;
 
                     }
@@ -224,25 +254,14 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
                 // If invalid at offset, fall back to full scan of this buffer
 
                 float tempView[16], tempProj[16], score = 0.0f;
-
-                if (TryExtractCameraFromBuffer(info.cpuPtr, static_cast<size_t>(info.size), tempView, tempProj, &score)) {
-
-                    // Update offset if it moved
-
-                    // Wait, TryExtract doesn't return offset. We need to find it again or assume it's fine.
-
-                    // For now, if full scan passes, we just use it. We can't update offset easily without modifying TryExtract.
-
-                    // But since we are here, it means the cached offset FAILED.
-
+                size_t newOffset = 0;
+                if (TryExtractCameraFromBuffer(info.cpuPtr, static_cast<size_t>(info.size), tempView, tempProj, &score, &newOffset)) {
+                    s_lastCameraOffset = newOffset;
                     memcpy(outView, tempView, sizeof(float) * 16);
-
                     memcpy(outProj, tempProj, sizeof(float) * 16);
-
                     if (outScore) *outScore = score;
-
+                    g_lastCameraFoundFrame.store(StreamlineIntegration::Get().GetFrameCount());
                     return true;
-
                 }
 
             }
@@ -277,9 +296,16 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
 
 
 
+    if (!allowFullScan) {
+        return false;
+    }
+    g_lastFullScanFrame.store(StreamlineIntegration::Get().GetFrameCount());
+
+    uint32_t scanned = 0;
     for (const auto& info : g_cbvInfos) {
 
         if (!info.cpuPtr || info.size < CAMERA_CBV_MIN_SIZE) continue;
+        if (scanned++ >= CAMERA_SCAN_MAX_CBVS_PER_FRAME) break;
 
         
 
@@ -325,7 +351,7 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
 
                 for (size_t offset = 0; offset + sizeof(float) * 32 <= scanLimit; offset += 256) {
 
-        
+                    
 
                     const float* view = reinterpret_cast<const float*>(info.cpuPtr + offset);
 
@@ -357,6 +383,20 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
 
                 }
 
+                if (score < 0.4f) {
+                    score = 0.0f;
+                    foundOffset = 0;
+                    for (size_t offset = 0; offset + sizeof(float) * 32 <= scanLimit; offset += 64) {
+                        const float* view = reinterpret_cast<const float*>(info.cpuPtr + offset);
+                        const float* proj = view + 16;
+                        float s = ScoreMatrixPair(view, proj);
+                        if (s > score) {
+                            score = s;
+                            foundOffset = offset;
+                        }
+                    }
+                }
+
         
 
                 
@@ -369,7 +409,7 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
 
             memcpy(tempView, info.cpuPtr + foundOffset, sizeof(float) * 16);
 
-            memcpy(tempProj, info.cpuPtr + foundOffset + 16, sizeof(float) * 16);
+            memcpy(tempProj, info.cpuPtr + foundOffset + sizeof(float) * 16, sizeof(float) * 16);
 
             
 
@@ -406,17 +446,12 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
 
 
     if (found) {
-
         s_lastCameraCbv = foundGpuBase;
-
         if (outScore) *outScore = bestScore;
-
+        g_lastCameraFoundFrame.store(StreamlineIntegration::Get().GetFrameCount());
         LOG_INFO("Camera matrices detected (Score: %.2f) at GPU: 0x%llx Offset: +0x%zX", bestScore, foundGpuBase, s_lastCameraOffset);
-
     } else if (logCandidates) {
-
         LOG_INFO("[CAM] Scan failed. Checked %llu CBVs. Best Score: %.2f", (uint64_t)g_cbvInfos.size(), bestScore);
-
     }
 
     
@@ -464,9 +499,14 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::Close() {
     if (currentFrame > s_lastScanFrame) {
         float view[16], proj[16], score = 0.0f;
         static int s_camLog = 0;
-        bool doLog = (++s_camLog % 300 == 0); 
+        bool doLog = (++s_camLog % CAMERA_SCAN_LOG_INTERVAL == 0);
+        uint64_t lastFound = g_lastCameraFoundFrame.load();
+        uint64_t lastFull = g_lastFullScanFrame.load();
+        bool stale = lastFound == 0 || (currentFrame > lastFound + CAMERA_SCAN_STALE_FRAMES);
+        bool forceFull = stale || (currentFrame % CAMERA_SCAN_FORCE_FULL_FRAMES == 0);
+        bool allowFull = forceFull || (currentFrame > lastFull + CAMERA_SCAN_MIN_INTERVAL_FRAMES);
 
-        if (TryScanAllCbvsForCamera(view, proj, &score, doLog)) {
+        if (TryScanAllCbvsForCamera(view, proj, &score, doLog, allowFull)) {
             // Found it!
             UpdateBestCamera(view, proj, jitterX, jitterY); // Update global best
             StreamlineIntegration::Get().SetCameraData(view, proj, jitterX, jitterY);

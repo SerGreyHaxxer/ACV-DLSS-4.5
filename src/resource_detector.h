@@ -30,6 +30,7 @@ public:
 
     void NewFrame();
     void Clear(); // Clear all candidates
+    void SetExpectedDimensions(uint32_t width, uint32_t height);
 
 private:
     ResourceDetector() = default;
@@ -50,4 +51,6 @@ private:
     float m_bestMotionScore = 0.0f;
     float m_bestDepthScore = 0.0f;
     float m_bestColorScore = 0.0f;
+    uint32_t m_expectedWidth = 0;
+    uint32_t m_expectedHeight = 0;
 };

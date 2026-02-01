@@ -23,7 +23,7 @@ InputHandler& InputHandler::Get() {
 
 void InputHandler::RegisterHotkey(int vKey, std::function<void()> callback, const char* name) {
     m_callbacks.push_back({vKey, callback, false, std::string(name)});
-    LOG_INFO("Registered Hotkey: %s (Key: %d)", name, vKey);
+    LOG_DEBUG("Registered Hotkey: %s (Key: %d)", name, vKey);
 }
 
 void InputHandler::InstallHook() {
@@ -45,7 +45,7 @@ void InputHandler::UninstallHook() {
 void InputHandler::HandleKey(int vKey) {
     for (auto& cb : m_callbacks) {
         if (cb.vKey == vKey) {
-            LOG_INFO("Global Hotkey Triggered: %s", cb.name.c_str());
+            LOG_DEBUG("Global Hotkey Triggered: %s", cb.name.c_str());
             if (cb.callback) cb.callback();
         }
     }
@@ -57,7 +57,7 @@ void InputHandler::ProcessInput() {
         bool isDown = (state & 0x8000) != 0;
         if (isDown && !cb.wasPressed) {
             cb.wasPressed = true;
-            LOG_INFO("Polled Hotkey Triggered: %s", cb.name.c_str());
+            LOG_DEBUG("Polled Hotkey Triggered: %s", cb.name.c_str());
             if (cb.callback) cb.callback();
         } else if (!isDown) {
             cb.wasPressed = false;

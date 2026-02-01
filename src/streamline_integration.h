@@ -72,6 +72,7 @@ public:
 
     // Resource Management
     void ReleaseResources();
+    void NotifySwapChainResize(UINT width, UINT height);
     bool HasCameraData() const { return m_hasCameraData; }
     void GetLastCameraJitter(float& x, float& y) const { x = m_lastJitterX; y = m_lastJitterY; }
     UINT GetDescriptorSize() const { return m_cbvSrvUavDescriptorSize; }
@@ -129,6 +130,15 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_depthBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_motionVectors;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_backBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_lastTaggedColor;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_lastTaggedDepth;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_lastTaggedMvec;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_lastTaggedBackBuffer;
+    D3D12_RESOURCE_DESC m_lastColorDesc = {};
+    D3D12_RESOURCE_DESC m_lastDepthDesc = {};
+    D3D12_RESOURCE_DESC m_lastMvecDesc = {};
+    D3D12_RESOURCE_DESC m_lastBackBufferDesc = {};
+    bool m_descInitialized = false;
 
     // User configuration
     sl::DLSSMode m_dlssMode = sl::DLSSMode::eDLAA; // Default Highest Quality
@@ -153,6 +163,12 @@ private:
     sl::Feature m_featuresToLoad[5] = {};
     uint32_t m_featureCount = 0;
     UINT m_cbvSrvUavDescriptorSize = 0;
+    bool m_dlssgLoaded = false;
+    bool m_reflexLoaded = false;
+    bool m_rrLoaded = false;
+    bool m_needFeatureReload = false;
+    bool m_forceTagging = true;
+    uint32_t m_mfgInvalidParamFrames = 0;
 
     void UpdateSwapChain(IDXGISwapChain* pSwapChain);
     void UpdateOptions();

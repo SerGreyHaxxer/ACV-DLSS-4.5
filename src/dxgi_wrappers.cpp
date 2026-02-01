@@ -292,11 +292,13 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present1(UINT Sync, UINT Flags,
 }
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::ResizeBuffers(UINT C, UINT W, UINT H, DXGI_FORMAT F, UINT FL) {
+    StreamlineIntegration::Get().NotifySwapChainResize(W, H);
     StreamlineIntegration::Get().ReleaseResources();
     return m_pReal->ResizeBuffers(C, W, H, F, FL);
 }
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::ResizeBuffers1(UINT C, UINT W, UINT H, DXGI_FORMAT F, UINT FL, const UINT* M, IUnknown* const* Q) {
+    StreamlineIntegration::Get().NotifySwapChainResize(W, H);
     StreamlineIntegration::Get().ReleaseResources();
     ScopedInterface<IDXGISwapChain3> real(m_pReal); return real ? real->ResizeBuffers1(C, W, H, F, FL, M, Q) : E_NOINTERFACE;
 }

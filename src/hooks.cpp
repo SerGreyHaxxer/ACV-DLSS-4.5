@@ -4,6 +4,7 @@
 #include <psapi.h>
 #include <wchar.h>
 #include "hooks.h"
+#include "dlss4_config.h"
 #include "iat_utils.h"
 #include "logger.h"
 #include "dlss4_config.h"
@@ -167,16 +168,20 @@ typedef HRESULT(STDMETHODCALLTYPE* PFN_Close)(ID3D12GraphicsCommandList*);
 PFN_Close g_OriginalClose = nullptr;
 
 void STDMETHODCALLTYPE HookedResourceBarrier(ID3D12GraphicsCommandList* pThis, UINT NumBarriers, const D3D12_RESOURCE_BARRIER* pBarriers) {
-    // DISABLED: Too expensive. We catch resources at creation.
-    /*
     if (pBarriers) {
-        for (UINT i = 0; i < NumBarriers; i++) {
-            if (pBarriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION) {
-                ResourceDetector::Get().RegisterResource(pBarriers[i].Transition.pResource);
+        static uint64_t s_lastScanFrame = 0;
+        uint64_t currentFrame = StreamlineIntegration::Get().GetFrameCount();
+        if (currentFrame != s_lastScanFrame) {
+            s_lastScanFrame = currentFrame;
+            UINT scanned = 0;
+            for (UINT i = 0; i < NumBarriers && scanned < RESOURCE_BARRIER_SCAN_MAX; i++) {
+                if (pBarriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION) {
+                    ResourceDetector::Get().RegisterResource(pBarriers[i].Transition.pResource);
+                    scanned++;
+                }
             }
         }
     }
-    */
     g_OriginalResourceBarrier(pThis, NumBarriers, pBarriers);
 }
 
@@ -229,9 +234,13 @@ HRESULT STDMETHODCALLTYPE Hooked_Close(ID3D12GraphicsCommandList* pThis) {
         if (currentFrame > s_lastScanFrame) {
             float view[16], proj[16], score = 0.0f;
             static int s_camLog = 0;
-            bool doLog = (++s_camLog % 300 == 0); 
+            bool doLog = (++s_camLog % CAMERA_SCAN_LOG_INTERVAL == 0);
             
-            if (TryScanAllCbvsForCamera(view, proj, &score, doLog)) {
+            uint64_t lastFound = GetLastCameraFoundFrame();
+            bool stale = lastFound == 0 || (currentFrame > lastFound + CAMERA_SCAN_STALE_FRAMES);
+            bool forceFull = stale || (currentFrame % CAMERA_SCAN_FORCE_FULL_FRAMES == 0);
+            bool allowFull = forceFull || (currentFrame > s_lastScanFrame + CAMERA_SCAN_MIN_INTERVAL_FRAMES);
+            if (TryScanAllCbvsForCamera(view, proj, &score, doLog, allowFull)) {
                 StreamlineIntegration::Get().SetCameraData(view, proj, jitterX, jitterY);
             } else {
                 StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);

@@ -1,5 +1,6 @@
 #include "proxy.h"
 #include "logger.h"
+#include "config_manager.h"
 #include "hooks.h"
 #include "dxgi_wrappers.h"
 #include <string>
@@ -16,6 +17,10 @@ extern "C" void LogStartup(const char* msg) {
         fprintf(fp, "[PROXY] %s\n", msg);
         fclose(fp);
     }
+}
+
+int GetLogVerbosity() {
+    return ConfigManager::Get().Data().logVerbosity;
 }
 
 // Global proxy state instance

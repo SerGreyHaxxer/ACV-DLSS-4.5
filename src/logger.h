@@ -158,12 +158,14 @@ private:
     }
 };
 
-#define LOG_INFO(fmt, ...)  Logger::Instance().Log("INFO", fmt, ##__VA_ARGS__)
-#define LOG_WARN(fmt, ...)  Logger::Instance().Log("WARN", fmt, ##__VA_ARGS__)
-#define LOG_ERROR(fmt, ...) Logger::Instance().Log("ERROR", fmt, ##__VA_ARGS__)
+int GetLogVerbosity();
+
+#define LOG_INFO(fmt, ...)  do { if (GetLogVerbosity() >= 1) Logger::Instance().Log("INFO", fmt, ##__VA_ARGS__); } while (0)
+#define LOG_WARN(fmt, ...)  do { if (GetLogVerbosity() >= 1) Logger::Instance().Log("WARN", fmt, ##__VA_ARGS__); } while (0)
+#define LOG_ERROR(fmt, ...) do { Logger::Instance().Log("ERROR", fmt, ##__VA_ARGS__); } while (0)
 
 #if LOG_VERBOSE
-#define LOG_DEBUG(fmt, ...) Logger::Instance().Log("DEBUG", fmt, ##__VA_ARGS__)
+#define LOG_DEBUG(fmt, ...) do { if (GetLogVerbosity() >= 2) Logger::Instance().Log("DEBUG", fmt, ##__VA_ARGS__); } while (0)
 #else
 #define LOG_DEBUG(fmt, ...) ((void)0)
 #endif

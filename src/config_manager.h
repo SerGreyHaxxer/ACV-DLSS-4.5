@@ -11,6 +11,18 @@ struct ModConfig {
     float mvecScaleY = 1.0f;
     bool reflexEnabled = true;
     bool hudFixEnabled = false;
+    int logVerbosity = 1; // 0=Quiet, 1=Normal, 2=Verbose
+    bool quietResourceScan = false;
+    bool debugMode = false;
+    bool uiVisible = false;
+    bool uiExpanded = false;
+    bool showFPS = false;
+    bool showVignette = false;
+    int uiPosX = 50;
+    int uiPosY = 50;
+    float vignetteIntensity = 0.35f;
+    float vignetteRadius = 0.78f;
+    float vignetteSoftness = 0.55f;
 };
 
 class ConfigManager {
@@ -19,6 +31,7 @@ public:
     
     void Load();
     void Save();
+    void ResetToDefaults();
     
     ModConfig& Data() { return m_config; }
 

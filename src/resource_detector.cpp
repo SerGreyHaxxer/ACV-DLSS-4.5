@@ -1,6 +1,7 @@
 #include "resource_detector.h"
 #include "logger.h"
 #include "dlss4_config.h"
+#include "config_manager.h"
 #include <sstream>
 #include <iomanip>
 
@@ -39,7 +40,15 @@ void ResourceDetector::Clear() {
     m_bestMotionScore = 0.0f;
     m_bestDepthScore = 0.0f;
     m_bestColorScore = 0.0f;
+    m_expectedWidth = 0;
+    m_expectedHeight = 0;
     LOG_INFO("Resource detector explicitly cleared.");
+}
+
+void ResourceDetector::SetExpectedDimensions(uint32_t width, uint32_t height) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_expectedWidth = width;
+    m_expectedHeight = height;
 }
 
 // Define a GUID for our tag: {25CDDAA4-B1C6-41E5-9C52-FE69FC2E6A3D}
@@ -91,19 +100,23 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
     if (m_motionCandidates.size() > 500) m_motionCandidates.clear();
     if (m_depthCandidates.size() > 500) m_depthCandidates.clear();
 
+    bool quietScan = ConfigManager::Get().Data().quietResourceScan;
     if (mvScore > 0.5f) {
         bool found = false;
         for (auto& cand : m_motionCandidates) {
             if (cand.pResource.Get() == pResource) {
                 cand.lastFrameSeen = currentFrame;
+                cand.score = mvScore;
                 found = true;
                 break;
             }
         }
         if (!found) {
             m_motionCandidates.push_back({pResource, mvScore, desc, currentFrame});
-            LOG_DEBUG("Found MV Candidate: %dx%d Fmt:%d Score:%.2f", 
-                desc.Width, desc.Height, desc.Format, mvScore);
+            if (!quietScan) {
+                LOG_DEBUG("Found MV Candidate: %dx%d Fmt:%d Score:%.2f", 
+                    desc.Width, desc.Height, desc.Format, mvScore);
+            }
         }
         if (mvScore >= m_bestMotionScore) {
             m_bestMotionScore = mvScore;
@@ -116,6 +129,7 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
         for (auto& cand : m_depthCandidates) {
             if (cand.pResource.Get() == pResource) {
                 cand.lastFrameSeen = currentFrame;
+                cand.score = depthScore;
                 found = true;
                 break;
             }
@@ -134,20 +148,25 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
         for (auto& cand : m_colorCandidates) {
             if (cand.pResource.Get() == pResource) {
                 cand.lastFrameSeen = currentFrame;
+                cand.score = colorScore;
                 found = true;
                 break;
             }
         }
         if (!found) {
             m_colorCandidates.push_back({pResource, colorScore, desc, currentFrame});
-            LOG_INFO("[MFG] Found Color Candidate: %dx%d Fmt:%d Score:%.2f", 
-                desc.Width, desc.Height, desc.Format, colorScore);
+            if (!quietScan) {
+                LOG_INFO("[MFG] Found Color Candidate: %dx%d Fmt:%d Score:%.2f", 
+                    desc.Width, desc.Height, desc.Format, colorScore);
+            }
         }
         if (colorScore >= m_bestColorScore) {
             m_bestColorScore = colorScore;
             m_bestColor = pResource;
-            LOG_INFO("[MFG] New BEST Color: %dx%d Fmt:%d Score:%.2f Ptr:%p", 
-                desc.Width, desc.Height, desc.Format, colorScore, pResource);
+            if (!quietScan) {
+                LOG_INFO("[MFG] New BEST Color: %dx%d Fmt:%d Score:%.2f Ptr:%p", 
+                    desc.Width, desc.Height, desc.Format, colorScore, pResource);
+            }
         }
     }
 }
@@ -166,6 +185,18 @@ float ResourceDetector::ScoreMotionVector(const D3D12_RESOURCE_DESC& desc) {
     
     // Flags: often allow UAV (for compute generation)
     if (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) score += 0.2f;
+    if (desc.SampleDesc.Count > 1) score -= RESOURCE_MSAA_PENALTY;
+    if (desc.MipLevels > 1) score -= RESOURCE_MIP_PENALTY;
+    if (m_expectedWidth > 0 && m_expectedHeight > 0) {
+        float ratioW = static_cast<float>(desc.Width) / static_cast<float>(m_expectedWidth);
+        float ratioH = static_cast<float>(desc.Height) / static_cast<float>(m_expectedHeight);
+        if (ratioW >= RESOURCE_EXPECTED_MIN_RATIO && ratioW <= RESOURCE_EXPECTED_MAX_RATIO &&
+            ratioH >= RESOURCE_EXPECTED_MIN_RATIO && ratioH <= RESOURCE_EXPECTED_MAX_RATIO) {
+            score += RESOURCE_EXPECTED_MATCH_BONUS;
+        } else {
+            score -= RESOURCE_EXPECTED_MATCH_BONUS;
+        }
+    }
 
     return score;
 }
@@ -180,6 +211,18 @@ float ResourceDetector::ScoreDepth(const D3D12_RESOURCE_DESC& desc) {
     else return 0.0f;
 
     if (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) score += 0.2f;
+    if (desc.SampleDesc.Count > 1) score -= RESOURCE_MSAA_PENALTY;
+    if (desc.MipLevels > 1) score -= RESOURCE_MIP_PENALTY;
+    if (m_expectedWidth > 0 && m_expectedHeight > 0) {
+        float ratioW = static_cast<float>(desc.Width) / static_cast<float>(m_expectedWidth);
+        float ratioH = static_cast<float>(desc.Height) / static_cast<float>(m_expectedHeight);
+        if (ratioW >= RESOURCE_EXPECTED_MIN_RATIO && ratioW <= RESOURCE_EXPECTED_MAX_RATIO &&
+            ratioH >= RESOURCE_EXPECTED_MIN_RATIO && ratioH <= RESOURCE_EXPECTED_MAX_RATIO) {
+            score += RESOURCE_EXPECTED_MATCH_BONUS;
+        } else {
+            score -= RESOURCE_EXPECTED_MATCH_BONUS;
+        }
+    }
 
     return score;
 }
@@ -202,7 +245,19 @@ float ResourceDetector::ScoreColor(const D3D12_RESOURCE_DESC& desc) {
         // If it's a known RT format and large, give it a chance
         if (desc.Width > 1280) score += 0.1f;
     }
-    
+    if (desc.SampleDesc.Count > 1) score -= RESOURCE_MSAA_PENALTY;
+    if (desc.MipLevels > 1) score -= RESOURCE_MIP_PENALTY;
+    if (m_expectedWidth > 0 && m_expectedHeight > 0) {
+        float ratioW = static_cast<float>(desc.Width) / static_cast<float>(m_expectedWidth);
+        float ratioH = static_cast<float>(desc.Height) / static_cast<float>(m_expectedHeight);
+        if (ratioW >= RESOURCE_EXPECTED_MIN_RATIO && ratioW <= RESOURCE_EXPECTED_MAX_RATIO &&
+            ratioH >= RESOURCE_EXPECTED_MIN_RATIO && ratioH <= RESOURCE_EXPECTED_MAX_RATIO) {
+            score += RESOURCE_EXPECTED_MATCH_BONUS;
+        } else {
+            score -= RESOURCE_EXPECTED_MATCH_BONUS;
+        }
+    }
+
     return score;
 }
 
@@ -235,6 +290,23 @@ ID3D12Resource* ResourceDetector::GetBestColorCandidate() {
             }
         }
         
+        if (bestMatch) return bestMatch;
+    }
+
+    if (m_expectedWidth > 0 && m_expectedHeight > 0) {
+        ID3D12Resource* bestMatch = nullptr;
+        float bestMatchScore = 0.0f;
+        for (const auto& cand : m_colorCandidates) {
+            float ratioW = static_cast<float>(cand.desc.Width) / static_cast<float>(m_expectedWidth);
+            float ratioH = static_cast<float>(cand.desc.Height) / static_cast<float>(m_expectedHeight);
+            if (ratioW >= RESOURCE_EXPECTED_MIN_RATIO && ratioW <= RESOURCE_EXPECTED_MAX_RATIO &&
+                ratioH >= RESOURCE_EXPECTED_MIN_RATIO && ratioH <= RESOURCE_EXPECTED_MAX_RATIO) {
+                if (cand.score > bestMatchScore) {
+                    bestMatchScore = cand.score;
+                    bestMatch = cand.pResource.Get();
+                }
+            }
+        }
         if (bestMatch) return bestMatch;
     }
 

@@ -2,6 +2,7 @@
 #include "logger.h"
 #include "dlss4_config.h"
 #include "resource_detector.h"
+#include "d3d12_wrappers.h"
 #include "config_manager.h"
 #include <string>
 #include <array>
@@ -75,10 +76,16 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
     pref.flags |= sl::PreferenceFlags::eUseFrameBasedResourceTagging;
     pref.flags |= sl::PreferenceFlags::eAllowOTA;
     m_featuresToLoad[0] = sl::kFeatureDLSS;
-    m_featuresToLoad[1] = sl::kFeatureDLSS_G;
-    m_featuresToLoad[2] = sl::kFeatureDLSS_RR;
-    m_featuresToLoad[3] = sl::kFeatureReflex;
-    m_featureCount = 4;
+    m_featureCount = 1;
+    if (m_frameGenMultiplier >= 2) {
+        m_featuresToLoad[m_featureCount++] = sl::kFeatureDLSS_G;
+    }
+    if (m_reflexEnabled) {
+        m_featuresToLoad[m_featureCount++] = sl::kFeatureReflex;
+    }
+    if (m_rayReconstructionEnabled) {
+        m_featuresToLoad[m_featureCount++] = sl::kFeatureDLSS_RR;
+    }
     pref.featuresToLoad = m_featuresToLoad;
     pref.numFeaturesToLoad = m_featureCount;
     sl::Result res = slInit(pref, sl::kSDKVersion);
@@ -86,36 +93,64 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
     res = slSetD3DDevice(pDevice);
     if (SL_FAILED(res)) return false;
     m_pDevice = pDevice;
+    m_cbvSrvUavDescriptorSize = pDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     slSetFeatureLoaded(sl::kFeatureDLSS, true);
-    slSetFeatureLoaded(sl::kFeatureDLSS_G, true);
-    slSetFeatureLoaded(sl::kFeatureReflex, true);
+    if (m_frameGenMultiplier >= 2) slSetFeatureLoaded(sl::kFeatureDLSS_G, true);
+    if (m_reflexEnabled) slSetFeatureLoaded(sl::kFeatureReflex, true);
+    if (m_rayReconstructionEnabled) slSetFeatureLoaded(sl::kFeatureDLSS_RR, true);
+    m_dlssgLoaded = (m_frameGenMultiplier >= 2);
+    m_reflexLoaded = m_reflexEnabled;
+    m_rrLoaded = m_rayReconstructionEnabled;
     m_initialized = true;
     m_viewport = sl::ViewportHandle(0);
     sl::FeatureRequirements requirements{};
     if (SL_SUCCEEDED(slGetFeatureRequirements(sl::kFeatureDLSS, requirements))) m_dlssSupported = (requirements.flags & sl::FeatureRequirementFlags::eD3D12Supported) != 0;
     if (SL_SUCCEEDED(slGetFeatureRequirements(sl::kFeatureDLSS_G, requirements))) m_dlssgSupported = (requirements.flags & sl::FeatureRequirementFlags::eD3D12Supported) != 0;
     if (SL_SUCCEEDED(slGetFeatureRequirements(sl::kFeatureReflex, requirements))) m_reflexSupported = (requirements.flags & sl::FeatureRequirementFlags::eD3D12Supported) != 0;
+    if (SL_SUCCEEDED(slGetFeatureRequirements(sl::kFeatureDLSS_RR, requirements))) m_rayReconstructionSupported = (requirements.flags & sl::FeatureRequirementFlags::eD3D12Supported) != 0;
 
     // Auto-disable features if hardware doesn't support them
     m_dlssEnabled = m_dlssEnabled && m_dlssSupported;
     if (!m_dlssgSupported) m_frameGenMultiplier = 0;
     if (!m_reflexSupported) m_reflexEnabled = false;
+    if (!m_rayReconstructionSupported) m_rayReconstructionEnabled = false;
 
     m_useMfg = m_frameGenMultiplier > 2;
     LOG_INFO("Streamline ready. DLSS:%s DLSSG:%s Reflex:%s", m_dlssSupported ? "OK" : "NO", m_dlssgSupported ? "OK" : "NO", m_reflexSupported ? "OK" : "NO");
     
     // Refresh UI to reflect hardware support
     OverlayUI::Get().UpdateControls();
+    OverlayUI::Get().ToggleDebugMode(cfg.debugMode);
     
+    m_forceTagging = true;
     return true;
 }
 
 void StreamlineIntegration::Shutdown() {
-    if (m_initialized) { m_backBuffer.Reset(); m_pCommandList.Reset(); m_pCommandAllocator.Reset(); m_pFence.Reset(); m_pCommandQueue.Reset(); m_pSwapChain.Reset(); slShutdown(); m_initialized = false; }
+    if (m_initialized) {
+        m_backBuffer.Reset();
+        m_pCommandList.Reset();
+        m_pCommandAllocator.Reset();
+        m_pFence.Reset();
+        m_pCommandQueue.Reset();
+        m_pSwapChain.Reset();
+        m_dlssgLoaded = false;
+        m_reflexLoaded = false;
+        m_rrLoaded = false;
+        slShutdown();
+        m_initialized = false;
+    }
 }
 
 void StreamlineIntegration::NewFrame(IDXGISwapChain* pSwapChain) {
     if (!m_initialized) return;
+    if (m_needFeatureReload) {
+        LOG_INFO("Reloading Streamline features...");
+        Shutdown();
+        Initialize(m_pDevice.Get());
+        m_needFeatureReload = false;
+        m_forceTagging = true;
+    }
     UpdateSwapChain(pSwapChain);
     uint32_t prevFrameIndex = m_frameIndex;
     sl::Result res = slGetNewFrameToken(m_frameToken, &m_frameIndex);
@@ -187,11 +222,17 @@ void StreamlineIntegration::EvaluateDLSS(ID3D12GraphicsCommandList* pCmdList) {
 
 void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain* pSwapChain) {
     if (!m_initialized || m_frameGenMultiplier < 2) return;
+    if (!m_dlssgLoaded || !m_dlssgSupported) return;
     UpdateSwapChain(pSwapChain);
     if (!EnsureFrameToken()) return;
     EnsureCommandList();
     if (!m_pCommandList || !m_pCommandAllocator || !m_pCommandQueue) return;
     if (m_viewportWidth == 0 || m_viewportHeight == 0) return;
+    if (!m_colorBuffer || !m_motionVectors || !m_depthBuffer) return;
+    D3D12_RESOURCE_DESC mvDesc = m_motionVectors->GetDesc();
+    if (mvDesc.Width == 0 || mvDesc.Height == 0) return;
+    m_mvecScaleX = (float)m_viewportWidth / (float)mvDesc.Width;
+    m_mvecScaleY = (float)m_viewportHeight / (float)mvDesc.Height;
     m_pCommandAllocator->Reset();
     m_pCommandList->Reset(m_pCommandAllocator.Get(), nullptr);
     if (m_optionsDirty) UpdateOptions();
@@ -199,7 +240,24 @@ void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain* pSwapChain) {
     const sl::BaseStructure* inputs[] = { &m_viewport };
     if (m_dlssgSupported) {
         sl::Result fgRes = slEvaluateFeature(sl::kFeatureDLSS_G, *m_frameToken, inputs, 1, m_pCommandList.Get());
-        if (SL_FAILED(fgRes)) { static uint32_t s_failCount = 0; if (s_failCount++ % 60 == 0) LOG_ERROR("[MFG] Evaluation failed: %d", (int)fgRes); }
+        if (SL_FAILED(fgRes)) {
+            static uint32_t s_failCount = 0;
+            if (s_failCount++ % 60 == 0) LOG_ERROR("[MFG] Evaluation failed: %d", (int)fgRes);
+            if ((int)fgRes == 31) {
+                m_mfgInvalidParamFrames++;
+                if (m_mfgInvalidParamFrames == MFG_INVALID_PARAM_FALLBACK_FRAMES) {
+                    m_frameGenMultiplier = 2;
+                    m_optionsDirty = true;
+                    LOG_WARN("[MFG] Invalid params persist; forcing FG multiplier to 2x");
+                } else if (m_mfgInvalidParamFrames >= MFG_INVALID_PARAM_DISABLE_FRAMES) {
+                    m_frameGenMultiplier = 0;
+                    m_needFeatureReload = true;
+                    LOG_ERROR("[MFG] Invalid params persist; disabling Frame Generation");
+                }
+            }
+        } else {
+            m_mfgInvalidParamFrames = 0;
+        }
     }
     m_pCommandList->Close();
     ID3D12CommandList* lists[] = { m_pCommandList.Get() };
@@ -224,26 +282,60 @@ int StreamlineIntegration::GetDLSSModeIndex() const {
 }
 
 void StreamlineIntegration::SetDLSSPreset(int preset) { m_dlssPreset = static_cast<sl::DLSSPreset>(preset); m_optionsDirty = true; }
-void StreamlineIntegration::SetFrameGenMultiplier(int multiplier) { m_frameGenMultiplier = multiplier; m_optionsDirty = true; }
+void StreamlineIntegration::SetFrameGenMultiplier(int multiplier) { m_frameGenMultiplier = multiplier; m_optionsDirty = true; if ((multiplier >= 2) != m_dlssgLoaded) m_needFeatureReload = true; }
 void StreamlineIntegration::SetCommandQueue(ID3D12CommandQueue* pQueue) { if (pQueue) m_pCommandQueue = pQueue; }
 void StreamlineIntegration::SetSharpness(float sharpness) { m_sharpness = sharpness; m_optionsDirty = true; }
 void StreamlineIntegration::SetLODBias(float bias) { m_lodBias = bias; }
-void StreamlineIntegration::SetReflexEnabled(bool enabled) { m_reflexEnabled = enabled; }
-void StreamlineIntegration::SetHUDFixEnabled(bool enabled) { m_hudFixEnabled = enabled; }
-void StreamlineIntegration::ReleaseResources() { m_backBuffer.Reset(); m_colorBuffer.Reset(); m_depthBuffer.Reset(); m_motionVectors.Reset(); ResourceDetector::Get().Clear(); }
+void StreamlineIntegration::SetReflexEnabled(bool enabled) { m_reflexEnabled = enabled; if (enabled && !m_reflexLoaded) m_needFeatureReload = true; if (!enabled && m_reflexLoaded) m_needFeatureReload = true; }
+void StreamlineIntegration::SetHUDFixEnabled(bool enabled) { m_hudFixEnabled = enabled; m_forceTagging = true; }
+void StreamlineIntegration::ReleaseResources() {
+    m_backBuffer.Reset();
+    m_colorBuffer.Reset();
+    m_depthBuffer.Reset();
+    m_motionVectors.Reset();
+    m_lastTaggedColor.Reset();
+    m_lastTaggedDepth.Reset();
+    m_lastTaggedMvec.Reset();
+    m_lastTaggedBackBuffer.Reset();
+    m_descInitialized = false;
+    m_forceTagging = true;
+    ResourceDetector::Get().Clear();
+    ResetCameraScanCache();
+}
+void StreamlineIntegration::NotifySwapChainResize(UINT width, UINT height) {
+    m_forceTagging = true;
+    ResourceDetector::Get().SetExpectedDimensions(width, height);
+}
 void StreamlineIntegration::PrintMFGStatus() { LOG_INFO("[MFG] Mult:%d Init:%d Supported:%d Viewport:%dx%d", m_frameGenMultiplier, m_initialized, m_dlssgSupported, m_viewportWidth, m_viewportHeight); }
 
 void StreamlineIntegration::UpdateSwapChain(IDXGISwapChain* pSwapChain) {
     if (!pSwapChain) return;
     if (m_pSwapChain.Get() != pSwapChain) m_pSwapChain = pSwapChain;
     Microsoft::WRL::ComPtr<IDXGISwapChain3> sc3;
-    if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3)))) { m_backBuffer.Reset(); pSwapChain->GetBuffer(sc3->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&m_backBuffer)); }
+    if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3)))) {
+        m_backBuffer.Reset();
+        pSwapChain->GetBuffer(sc3->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&m_backBuffer));
+        DXGI_SWAP_CHAIN_DESC desc{};
+        if (SUCCEEDED(pSwapChain->GetDesc(&desc))) {
+            ResourceDetector::Get().SetExpectedDimensions(desc.BufferDesc.Width, desc.BufferDesc.Height);
+        }
+    }
 }
 
 void StreamlineIntegration::TagResources() {
     if (!m_initialized || !m_colorBuffer || !m_backBuffer) return;
     D3D12_RESOURCE_DESC inDesc = m_colorBuffer->GetDesc();
     D3D12_RESOURCE_DESC outDesc = m_backBuffer->GetDesc();
+    if (!m_forceTagging && m_lastTaggedColor.Get() == m_colorBuffer.Get() &&
+        m_lastTaggedDepth.Get() == m_depthBuffer.Get() &&
+        m_lastTaggedMvec.Get() == m_motionVectors.Get() &&
+        m_lastTaggedBackBuffer.Get() == m_backBuffer.Get() &&
+        m_descInitialized &&
+        memcmp(&m_lastColorDesc, &inDesc, sizeof(D3D12_RESOURCE_DESC)) == 0 &&
+        memcmp(&m_lastBackBufferDesc, &outDesc, sizeof(D3D12_RESOURCE_DESC)) == 0 &&
+        m_viewportWidth == (uint32_t)outDesc.Width && m_viewportHeight == outDesc.Height) {
+        return;
+    }
     m_viewportWidth = (uint32_t)outDesc.Width; m_viewportHeight = outDesc.Height;
     sl::Extent fullExtent{0, 0, m_viewportWidth, m_viewportHeight};
     sl::Resource colorIn(sl::ResourceType::eTex2d, m_colorBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -255,7 +347,7 @@ void StreamlineIntegration::TagResources() {
     sl::Resource mvec(sl::ResourceType::eTex2d, m_motionVectors ? m_motionVectors.Get() : m_colorBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     if (m_motionVectors) { D3D12_RESOURCE_DESC mvDesc = m_motionVectors->GetDesc(); mvec.width = (uint32_t)mvDesc.Width; mvec.height = mvDesc.Height; mvec.nativeFormat = mvDesc.Format; }
     sl::ResourceTag tags[] = {
-        sl::ResourceTag(&colorIn, sl::kBufferTypeHUDLessColor, sl::ResourceLifecycle::eValidUntilPresent, &fullExtent),
+        sl::ResourceTag(&colorIn, m_hudFixEnabled ? sl::kBufferTypeHUDLessColor : sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eValidUntilPresent, &fullExtent),
         sl::ResourceTag(&colorIn, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eValidUntilPresent, &fullExtent),
         sl::ResourceTag(&colorOut, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilPresent, &fullExtent),
         sl::ResourceTag(&depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &fullExtent),
@@ -263,6 +355,16 @@ void StreamlineIntegration::TagResources() {
     };
     m_viewport = sl::ViewportHandle(0);
     slSetTagForFrame(*m_frameToken, m_viewport, tags, static_cast<uint32_t>(std::size(tags)), nullptr);
+    m_lastTaggedColor = m_colorBuffer;
+    m_lastTaggedDepth = m_depthBuffer;
+    m_lastTaggedMvec = m_motionVectors;
+    m_lastTaggedBackBuffer = m_backBuffer;
+    m_lastColorDesc = inDesc;
+    if (m_depthBuffer) m_lastDepthDesc = m_depthBuffer->GetDesc();
+    if (m_motionVectors) m_lastMvecDesc = m_motionVectors->GetDesc();
+    m_lastBackBufferDesc = outDesc;
+    m_descInitialized = true;
+    m_forceTagging = false;
 }
 
 void StreamlineIntegration::UpdateOptions() {

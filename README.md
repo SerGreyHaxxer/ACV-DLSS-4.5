@@ -39,6 +39,8 @@ Follow these steps to install the mod. **No building or coding required!**
 5.  **Press F5** to open the Mod Menu.
     *   Enable **Frame Generation**.
     *   Set your desired multiplier (e.g., 2x, 3x, or 4x).
+    *   Configure **Vignette** and **FPS overlay** in the Overlay section.
+    *   **F6** toggles FPS overlay, **F7** toggles vignette.
 
 ---
 

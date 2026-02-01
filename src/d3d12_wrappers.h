@@ -2,6 +2,7 @@
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <vector>
+#include <cstdint>
 #include <mutex>
 #include "resource_detector.h"
 #include "logger.h"
@@ -17,7 +18,10 @@ class WrappedID3D12Device;
 
 // Helper to register CBVs for camera scanning
 void RegisterCbv(ID3D12Resource* pResource, UINT64 size, uint8_t* cpuPtr);
-bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates);
+bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates, bool allowFullScan);
+bool GetLastCameraStats(float& outScore, uint64_t& outFrame);
+void ResetCameraScanCache();
+uint64_t GetLastCameraFoundFrame();
 
 class WrappedID3D12GraphicsCommandList : public ID3D12GraphicsCommandList {
 public:
