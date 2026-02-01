@@ -191,14 +191,19 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
     float bestScore = 0.0f;
     bool found = false;
     D3D12_GPU_VIRTUAL_ADDRESS foundGpuBase = 0;
+    
+    if (g_cbvInfos.empty() && logCandidates) {
+        LOG_INFO("[CAM] No CBVs registered! Check RegisterCbv hooks.");
+        return false;
+    }
 
     for (const auto& info : g_cbvInfos) {
         if (!info.cpuPtr || info.size < CAMERA_CBV_MIN_SIZE) continue;
         float tempView[16], tempProj[16], score = 0.0f;
         if (TryExtractCameraFromBuffer(info.cpuPtr, static_cast<size_t>(info.size), tempView, tempProj, &score)) {
-            if (logCandidates && score > 0.1f) {
-                LOG_INFO("[CAM] Candidate GPU:0x%llx Score:%.2f View[15]:%.2f Proj[15]:%.2f Proj[11]:%.2f", 
-                    info.gpuBase, score, tempView[15], tempProj[15], tempProj[11]);
+            if (logCandidates && score > 0.0f) {
+                LOG_INFO("[CAM] Candidate GPU:0x%llx Size:%llu Score:%.2f View[15]:%.2f Proj[15]:%.2f Proj[11]:%.2f", 
+                    info.gpuBase, info.size, score, tempView[15], tempProj[15], tempProj[11]);
             }
             if (score > bestScore) {
                 bestScore = score;
