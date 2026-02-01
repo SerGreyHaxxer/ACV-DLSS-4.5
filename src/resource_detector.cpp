@@ -26,6 +26,8 @@ void ResourceDetector::NewFrame() {
             m_bestMotionScore = 0.0f;
             m_bestDepthScore = 0.0f;
             m_bestColorScore = 0.0f;
+            m_depthFormatOverrides.clear();
+            m_motionFormatOverrides.clear();
             LOG_INFO("Resource detector cache cleared (Frame %llu)", m_frameCount.load());
         }
     }
@@ -42,6 +44,8 @@ void ResourceDetector::Clear() {
     m_bestMotionScore = 0.0f;
     m_bestDepthScore = 0.0f;
     m_bestColorScore = 0.0f;
+    m_depthFormatOverrides.clear();
+    m_motionFormatOverrides.clear();
     m_expectedWidth = 0;
     m_expectedHeight = 0;
     LOG_INFO("Resource detector explicitly cleared.");
@@ -58,6 +62,72 @@ static const GUID RD_GEN_TAG = { 0x25cddaa4, 0xb1c6, 0x41e5, { 0x9c, 0x52, 0xfe,
 
 void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
     RegisterResource(pResource, false);
+}
+
+void ResourceDetector::RegisterDepthFromView(ID3D12Resource* pResource, DXGI_FORMAT viewFormat) {
+    if (!pResource) return;
+    D3D12_RESOURCE_DESC desc = pResource->GetDesc();
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return;
+    if (desc.Width < 64 || desc.Height < 64) return;
+    if (!(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) && viewFormat == DXGI_FORMAT_UNKNOWN) return;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (viewFormat != DXGI_FORMAT_UNKNOWN) {
+        m_depthFormatOverrides[pResource] = viewFormat;
+    }
+    if (m_bestDepth.Get() == pResource) return;
+    m_bestDepthScore = 2.0f;
+    m_bestDepth = pResource;
+    bool quietScan = ConfigManager::Get().Data().quietResourceScan;
+    if (!quietScan) {
+        LOG_INFO("[MFG] Depth view bound: %dx%d Fmt:%d Ptr:%p", desc.Width, desc.Height, desc.Format, pResource);
+    }
+}
+
+void ResourceDetector::RegisterMotionVectorFromView(ID3D12Resource* pResource, DXGI_FORMAT viewFormat) {
+    if (!pResource) return;
+    D3D12_RESOURCE_DESC desc = pResource->GetDesc();
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return;
+    if (desc.Width < 64 || desc.Height < 64) return;
+    float mvScore = ScoreMotionVector(desc);
+    if (mvScore <= 0.0f) {
+        // Allow view-format hint when resource is typeless or unknown.
+        if (viewFormat == DXGI_FORMAT_R16G16_FLOAT ||
+            viewFormat == DXGI_FORMAT_R16G16_UNORM ||
+            viewFormat == DXGI_FORMAT_R16G16_SNORM ||
+            viewFormat == DXGI_FORMAT_R16G16_SINT ||
+            viewFormat == DXGI_FORMAT_R16G16_UINT ||
+            viewFormat == DXGI_FORMAT_R16G16_TYPELESS ||
+            viewFormat == DXGI_FORMAT_R32G32_FLOAT ||
+            viewFormat == DXGI_FORMAT_R32G32_SINT ||
+            viewFormat == DXGI_FORMAT_R32G32_UINT) {
+            mvScore = 0.6f;
+        } else {
+            return;
+        }
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (viewFormat != DXGI_FORMAT_UNKNOWN) {
+        m_motionFormatOverrides[pResource] = viewFormat;
+    }
+    if (m_bestMotion.Get() == pResource) return;
+    m_bestMotionScore = 2.0f;
+    m_bestMotion = pResource;
+    bool quietScan = ConfigManager::Get().Data().quietResourceScan;
+    if (!quietScan) {
+        LOG_INFO("[MFG] MV view bound: %dx%d Fmt:%d Ptr:%p", desc.Width, desc.Height, desc.Format, pResource);
+    }
+}
+
+DXGI_FORMAT ResourceDetector::GetDepthFormatOverride(ID3D12Resource* pResource) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto it = m_depthFormatOverrides.find(pResource);
+    return it != m_depthFormatOverrides.end() ? it->second : DXGI_FORMAT_UNKNOWN;
+}
+
+DXGI_FORMAT ResourceDetector::GetMotionFormatOverride(ID3D12Resource* pResource) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto it = m_motionFormatOverrides.find(pResource);
+    return it != m_motionFormatOverrides.end() ? it->second : DXGI_FORMAT_UNKNOWN;
 }
 
 void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDuplicate) {

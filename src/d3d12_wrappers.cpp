@@ -36,7 +36,70 @@ namespace {
     std::atomic<uint64_t> g_cameraFrame(0);
     std::atomic<uint64_t> g_lastFullScanFrame(0);
     std::atomic<uint64_t> g_lastCameraFoundFrame(0);
-    std::vector<Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>> g_descriptorHeaps;
+    struct DescriptorRecord {
+        D3D12_DESCRIPTOR_HEAP_DESC desc;
+        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
+    };
+    std::mutex g_descriptorMutex;
+    std::vector<DescriptorRecord> g_descriptorRecords;
+    std::unordered_map<uintptr_t, Microsoft::WRL::ComPtr<ID3D12Resource>> g_descriptorResources;
+    std::unordered_map<uintptr_t, DXGI_FORMAT> g_descriptorFormats;
+
+    bool IsLikelyMotionVectorFormat(DXGI_FORMAT format) {
+        switch (format) {
+            case DXGI_FORMAT_R16G16_FLOAT:
+            case DXGI_FORMAT_R16G16_UNORM:
+            case DXGI_FORMAT_R16G16_SNORM:
+            case DXGI_FORMAT_R16G16_SINT:
+            case DXGI_FORMAT_R16G16_UINT:
+            case DXGI_FORMAT_R32G32_FLOAT:
+            case DXGI_FORMAT_R32G32_SINT:
+            case DXGI_FORMAT_R32G32_UINT:
+            case DXGI_FORMAT_R16G16_TYPELESS:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    void TrackDescriptorHeap(ID3D12DescriptorHeap* heap) {
+        if (!heap) return;
+        D3D12_DESCRIPTOR_HEAP_DESC desc = heap->GetDesc();
+        std::lock_guard<std::mutex> lock(g_descriptorMutex);
+        for (const auto& record : g_descriptorRecords) {
+            if (record.heap.Get() == heap) return;
+        }
+        g_descriptorRecords.push_back({ desc, heap });
+    }
+
+    void TrackDescriptorResource(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource* resource, DXGI_FORMAT format) {
+        if (!handle.ptr || !resource) return;
+        {
+            std::lock_guard<std::mutex> lock(g_descriptorMutex);
+            g_descriptorResources[handle.ptr] = resource;
+            g_descriptorFormats[handle.ptr] = format;
+        }
+        DXGI_FORMAT mvFormat = format;
+        if (mvFormat == DXGI_FORMAT_UNKNOWN) {
+            mvFormat = resource->GetDesc().Format;
+        }
+        if (IsLikelyMotionVectorFormat(mvFormat)) {
+            ResourceDetector::Get().RegisterMotionVectorFromView(resource, mvFormat);
+        }
+    }
+
+    bool TryResolveDescriptorResource(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource** outResource, DXGI_FORMAT* outFormat) {
+        if (!handle.ptr) return false;
+        std::lock_guard<std::mutex> lock(g_descriptorMutex);
+        auto it = g_descriptorResources.find(handle.ptr);
+        if (it == g_descriptorResources.end()) return false;
+        if (outResource) *outResource = it->second.Get();
+        if (outFormat) {
+            auto fmtIt = g_descriptorFormats.find(handle.ptr);
+            *outFormat = (fmtIt != g_descriptorFormats.end()) ? fmtIt->second : DXGI_FORMAT_UNKNOWN;
+        }
+        return true;
+    }
 
     bool IsFinite(float v) { return v == v && v > -FLT_MAX && v < FLT_MAX; }
     bool LooksLikeMatrix(const float* m) {
@@ -543,7 +606,16 @@ void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::ResourceBarrier(UINT Nu
     m_pReal->ResourceBarrier(NumBarriers, pBarriers);
 }
 
-void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::OMSetRenderTargets(UINT N, const D3D12_CPU_DESCRIPTOR_HANDLE* R, BOOL S, const D3D12_CPU_DESCRIPTOR_HANDLE* D) { m_pReal->OMSetRenderTargets(N, R, S, D); }
+    void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::OMSetRenderTargets(UINT N, const D3D12_CPU_DESCRIPTOR_HANDLE* R, BOOL S, const D3D12_CPU_DESCRIPTOR_HANDLE* D) {
+        if (D && D->ptr) {
+            ID3D12Resource* res = nullptr;
+            DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
+            if (TryResolveDescriptorResource(*D, &res, &fmt) && res) {
+                ResourceDetector::Get().RegisterDepthFromView(res, fmt);
+            }
+        }
+        m_pReal->OMSetRenderTargets(N, R, S, D);
+    }
 void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::ExecuteBundle(ID3D12GraphicsCommandList* pCommandList) { m_pReal->ExecuteBundle(pCommandList); }
 void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::ClearDepthStencilView(D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView, D3D12_CLEAR_FLAGS ClearFlags, FLOAT Depth, UINT8 Stencil, UINT NumRects, const D3D12_RECT* pRects) { m_pReal->ClearDepthStencilView(DepthStencilView, ClearFlags, Depth, Stencil, NumRects, pRects); }
 void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::ClearRenderTargetView(D3D12_CPU_DESCRIPTOR_HANDLE RenderTargetView, const FLOAT ColorRGBA[4], UINT NumRects, const D3D12_RECT* pRects) { m_pReal->ClearRenderTargetView(RenderTargetView, ColorRGBA, NumRects, pRects); }
@@ -563,7 +635,14 @@ void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::RSSetScissorRects(UINT 
 void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::OMSetBlendFactor(const FLOAT F[4]) { m_pReal->OMSetBlendFactor(F); }
 void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::OMSetStencilRef(UINT R) { m_pReal->OMSetStencilRef(R); }
 void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::SetPipelineState(ID3D12PipelineState* P) { m_pReal->SetPipelineState(P); }
-void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::SetDescriptorHeaps(UINT N, ID3D12DescriptorHeap* const* H) { m_pReal->SetDescriptorHeaps(N, H); }
+void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::SetDescriptorHeaps(UINT N, ID3D12DescriptorHeap* const* H) { 
+    if (H) {
+        for (UINT i = 0; i < N; ++i) {
+            TrackDescriptorHeap(H[i]);
+        }
+    }
+    m_pReal->SetDescriptorHeaps(N, H);
+}
 void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::SetComputeRootSignature(ID3D12RootSignature* S) { m_pReal->SetComputeRootSignature(S); }
 void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::SetGraphicsRootSignature(ID3D12RootSignature* S) { m_pReal->SetGraphicsRootSignature(S); }
 void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::SetComputeRootDescriptorTable(UINT I, D3D12_GPU_DESCRIPTOR_HANDLE H) { m_pReal->SetComputeRootDescriptorTable(I, H); }
@@ -672,6 +751,44 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12Device::CreateReservedResource(const D3D1
         }
     }
     return hr;
+}
+
+HRESULT STDMETHODCALLTYPE WrappedID3D12Device::CreateDescriptorHeap(const D3D12_DESCRIPTOR_HEAP_DESC* pDesc, REFIID riid, void** ppvHeap) {
+    HRESULT hr = m_pReal->CreateDescriptorHeap(pDesc, riid, ppvHeap);
+    if (SUCCEEDED(hr) && ppvHeap && *ppvHeap && pDesc && pDesc->Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) {
+        TrackDescriptorHeap((ID3D12DescriptorHeap*)*ppvHeap);
+    }
+    return hr;
+}
+
+void STDMETHODCALLTYPE WrappedID3D12Device::CreateShaderResourceView(ID3D12Resource* pResource, const D3D12_SHADER_RESOURCE_VIEW_DESC* pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) {
+    m_pReal->CreateShaderResourceView(pResource, pDesc, DestDescriptor);
+    if (!pResource) return;
+    if (pDesc && pDesc->ViewDimension != D3D12_SRV_DIMENSION_TEXTURE2D) return;
+    DXGI_FORMAT format = pDesc ? pDesc->Format : pResource->GetDesc().Format;
+    TrackDescriptorResource(DestDescriptor, pResource, format);
+}
+
+void STDMETHODCALLTYPE WrappedID3D12Device::CreateUnorderedAccessView(ID3D12Resource* pResource, ID3D12Resource* pCounterResource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) {
+    m_pReal->CreateUnorderedAccessView(pResource, pCounterResource, pDesc, DestDescriptor);
+    if (!pResource) return;
+    if (pDesc && pDesc->ViewDimension != D3D12_UAV_DIMENSION_TEXTURE2D) return;
+    DXGI_FORMAT format = pDesc ? pDesc->Format : pResource->GetDesc().Format;
+    TrackDescriptorResource(DestDescriptor, pResource, format);
+}
+
+void STDMETHODCALLTYPE WrappedID3D12Device::CreateRenderTargetView(ID3D12Resource* pResource, const D3D12_RENDER_TARGET_VIEW_DESC* pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) {
+    m_pReal->CreateRenderTargetView(pResource, pDesc, DestDescriptor);
+    if (!pResource) return;
+    DXGI_FORMAT format = pDesc ? pDesc->Format : pResource->GetDesc().Format;
+    TrackDescriptorResource(DestDescriptor, pResource, format);
+}
+
+void STDMETHODCALLTYPE WrappedID3D12Device::CreateDepthStencilView(ID3D12Resource* pResource, const D3D12_DEPTH_STENCIL_VIEW_DESC* pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) {
+    m_pReal->CreateDepthStencilView(pResource, pDesc, DestDescriptor);
+    if (!pResource) return;
+    DXGI_FORMAT format = pDesc ? pDesc->Format : pResource->GetDesc().Format;
+    TrackDescriptorResource(DestDescriptor, pResource, format);
 }
 
 void STDMETHODCALLTYPE WrappedID3D12Device::CreateSampler(const D3D12_SAMPLER_DESC* pD, D3D12_CPU_DESCRIPTOR_HANDLE Dest) {

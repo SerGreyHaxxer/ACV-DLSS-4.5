@@ -355,9 +355,19 @@ void StreamlineIntegration::TagResources() {
     sl::Resource colorOut(sl::ResourceType::eTex2d, m_backBuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET);
     colorOut.width = m_viewportWidth; colorOut.height = m_viewportHeight; colorOut.nativeFormat = outDesc.Format;
     sl::Resource depth(sl::ResourceType::eTex2d, m_depthBuffer ? m_depthBuffer.Get() : m_colorBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_READ);
-    if (m_depthBuffer) { D3D12_RESOURCE_DESC dDesc = m_depthBuffer->GetDesc(); depth.width = (uint32_t)dDesc.Width; depth.height = dDesc.Height; depth.nativeFormat = dDesc.Format; }
+    if (m_depthBuffer) {
+        D3D12_RESOURCE_DESC dDesc = m_depthBuffer->GetDesc();
+        depth.width = (uint32_t)dDesc.Width; depth.height = dDesc.Height; depth.nativeFormat = dDesc.Format;
+        DXGI_FORMAT overrideFmt = ResourceDetector::Get().GetDepthFormatOverride(m_depthBuffer.Get());
+        if (overrideFmt != DXGI_FORMAT_UNKNOWN) depth.nativeFormat = overrideFmt;
+    }
     sl::Resource mvec(sl::ResourceType::eTex2d, m_motionVectors ? m_motionVectors.Get() : m_colorBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    if (m_motionVectors) { D3D12_RESOURCE_DESC mvDesc = m_motionVectors->GetDesc(); mvec.width = (uint32_t)mvDesc.Width; mvec.height = mvDesc.Height; mvec.nativeFormat = mvDesc.Format; }
+    if (m_motionVectors) {
+        D3D12_RESOURCE_DESC mvDesc = m_motionVectors->GetDesc();
+        mvec.width = (uint32_t)mvDesc.Width; mvec.height = (uint32_t)mvDesc.Height; mvec.nativeFormat = mvDesc.Format;
+        DXGI_FORMAT overrideFmt = ResourceDetector::Get().GetMotionFormatOverride(m_motionVectors.Get());
+        if (overrideFmt != DXGI_FORMAT_UNKNOWN) mvec.nativeFormat = overrideFmt;
+    }
     sl::ResourceTag tags[] = {
         sl::ResourceTag(&colorIn, m_hudFixEnabled ? sl::kBufferTypeHUDLessColor : sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eValidUntilPresent, &fullExtent),
         sl::ResourceTag(&colorIn, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eValidUntilPresent, &fullExtent),

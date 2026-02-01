@@ -3,6 +3,7 @@
 #include <vector>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <wrl/client.h> // Added
 
 struct ResourceCandidate {
@@ -20,6 +21,10 @@ public:
 
     void RegisterResource(ID3D12Resource* pResource);
     void RegisterResource(ID3D12Resource* pResource, bool allowDuplicate);
+    void RegisterDepthFromView(ID3D12Resource* pResource, DXGI_FORMAT viewFormat);
+    void RegisterMotionVectorFromView(ID3D12Resource* pResource, DXGI_FORMAT viewFormat);
+    DXGI_FORMAT GetDepthFormatOverride(ID3D12Resource* pResource);
+    DXGI_FORMAT GetMotionFormatOverride(ID3D12Resource* pResource);
     
     ID3D12Resource* GetBestMotionVectorCandidate();
     ID3D12Resource* GetBestDepthCandidate();
@@ -54,4 +59,6 @@ private:
     float m_bestColorScore = 0.0f;
     uint32_t m_expectedWidth = 0;
     uint32_t m_expectedHeight = 0;
+    std::unordered_map<ID3D12Resource*, DXGI_FORMAT> m_depthFormatOverrides;
+    std::unordered_map<ID3D12Resource*, DXGI_FORMAT> m_motionFormatOverrides;
 };
