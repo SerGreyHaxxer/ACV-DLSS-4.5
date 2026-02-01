@@ -221,9 +221,7 @@ HRESULT STDMETHODCALLTYPE Hooked_Close(ID3D12GraphicsCommandList* pThis) {
         float view[16], proj[16], score = 0.0f;
         
         static int s_camLog = 0;
-        s_camLog++;
-        // Log first 500 frames always, then every 300
-        bool doLog = (s_camLog < 500) || (s_camLog % 300 == 0);
+        bool doLog = (++s_camLog % 300 == 0); // Log every ~5 seconds at 60fps
         
         if (TryScanAllCbvsForCamera(view, proj, &score, doLog)) {
             StreamlineIntegration::Get().SetCameraData(view, proj, jitterX, jitterY);

@@ -216,13 +216,13 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
         }
     }
 
-        if (found) {
-            s_lastCameraCbv = foundGpuBase;
-            if (outScore) *outScore = bestScore;
-        } else if (logCandidates) {
-            LOG_INFO("[CAM] Scan failed. Checked %llu CBVs. Best Score: %.2f", (uint64_t)g_cbvInfos.size(), bestScore);
-        }
-        
+            if (found) {
+                s_lastCameraCbv = foundGpuBase;
+                if (outScore) *outScore = bestScore;
+                LOG_INFO("Camera matrices detected (Score: %.2f) at GPU: 0x%llx", bestScore, foundGpuBase);
+            } else if (logCandidates) {
+                LOG_INFO("[CAM] Scan failed. Checked %llu CBVs. Best Score: %.2f", (uint64_t)g_cbvInfos.size(), bestScore);
+            }        
         return found;
     }
 WrappedID3D12GraphicsCommandList::WrappedID3D12GraphicsCommandList(ID3D12GraphicsCommandList* pReal, WrappedID3D12Device* pDeviceWrapper) 
