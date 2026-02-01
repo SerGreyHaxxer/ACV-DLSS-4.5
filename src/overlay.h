@@ -15,6 +15,7 @@ public:
     void ToggleVignette();
     void SetCameraStatus(bool hasCamera, float jitterX, float jitterY);
     bool IsVisible() const { return m_visible; }
+    void UpdateControls();
 
 private:
     OverlayUI() = default;
@@ -28,7 +29,6 @@ private:
     void CreateVignetteWindow();
     void DrawFPSOverlay();  
     void DrawVignette();
-    void UpdateControls(); 
 
     HMODULE m_hModule = nullptr;
     HWND m_hwnd = nullptr;     // Main Menu

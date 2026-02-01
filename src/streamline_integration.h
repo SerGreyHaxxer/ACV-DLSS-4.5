@@ -122,9 +122,9 @@ private:
     bool m_needNewFrameToken = true;
 
     // Cached resources
-    ID3D12Resource* m_colorBuffer = nullptr;
-    ID3D12Resource* m_depthBuffer = nullptr;
-    ID3D12Resource* m_motionVectors = nullptr;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_colorBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_depthBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_motionVectors;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_backBuffer;
 
     // User configuration

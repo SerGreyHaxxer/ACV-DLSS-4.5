@@ -274,18 +274,40 @@ void OverlayUI::SetCameraStatus(bool hasCamera, float jitterX, float jitterY) {
 void OverlayUI::ToggleVisibility() { if(m_hwnd) { m_visible = !m_visible; ShowWindow(m_hwnd, m_visible?SW_SHOW:SW_HIDE); if(m_visible){ SetForegroundWindow(m_hwnd); SetFocus(m_hwnd); } } }
 void OverlayUI::UpdateControls() {
     ModConfig& cfg = ConfigManager::Get().Data();
-    if (m_hComboDLSS) SendMessageW(m_hComboDLSS, CB_SETCURSEL, StreamlineIntegration::Get().GetDLSSModeIndex(), 0);
-    if (m_hComboPreset) SendMessageW(m_hComboPreset, CB_SETCURSEL, StreamlineIntegration::Get().GetDLSSPresetIndex(), 0);
+    StreamlineIntegration& sli = StreamlineIntegration::Get();
+
+    // 1. Hardware Support Checks
+    bool dlssSup = sli.IsDLSSSupported();
+    bool fgSup = sli.IsFrameGenSupported();
+    bool reflexSup = sli.IsReflexSupported();
+
+    // 2. Enable/Disable Controls
+    if (m_hComboDLSS) EnableWindow(m_hComboDLSS, dlssSup);
+    if (m_hCheckFG) EnableWindow(m_hCheckFG, fgSup);
+    if (m_hCheckReflex) EnableWindow(m_hCheckReflex, reflexSup);
+
+    // 3. Update Values (Prefer Runtime State)
+    if (m_hComboDLSS) SendMessageW(m_hComboDLSS, CB_SETCURSEL, sli.GetDLSSModeIndex(), 0);
+    if (m_hComboPreset) SendMessageW(m_hComboPreset, CB_SETCURSEL, sli.GetDLSSPresetIndex(), 0);
+    
     if (m_hCheckFG) {
+        int fgMult = sli.GetFrameGenMultiplier(); // Use runtime value (0 if unsupported)
         int fgIndex = 0;
-        if (cfg.frameGenMultiplier == 2) fgIndex = 1;
-        else if (cfg.frameGenMultiplier == 3) fgIndex = 2;
-        else if (cfg.frameGenMultiplier == 4) fgIndex = 3;
+        if (fgMult == 2) fgIndex = 1;
+        else if (fgMult == 3) fgIndex = 2;
+        else if (fgMult == 4) fgIndex = 3;
         SendMessageW(m_hCheckFG, CB_SETCURSEL, fgIndex, 0);
     }
+
     if (m_hSliderSharpness) SendMessageW(m_hSliderSharpness, TBM_SETPOS, TRUE, (LPARAM)std::lround(cfg.sharpness * 100.0f));
     if (m_hSliderLOD) SendMessageW(m_hSliderLOD, TBM_SETPOS, TRUE, (LPARAM)std::lround(-cfg.lodBias * 10.0f));
-    if (m_hCheckReflex) SendMessageW(m_hCheckReflex, BM_SETCHECK, cfg.reflexEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    
+    if (m_hCheckReflex) {
+        // If not supported, force unchecked visually
+        bool checked = reflexSup ? cfg.reflexEnabled : false; 
+        SendMessageW(m_hCheckReflex, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
+    }
+    
     if (m_hCheckHUDFix) SendMessageW(m_hCheckHUDFix, BM_SETCHECK, cfg.hudFixEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 

@@ -5,9 +5,12 @@
 #include "config_manager.h"
 #include <string>
 #include <array>
+#include "overlay.h"
 #include <dxgi1_4.h>
 #include <chrono>
 
+#undef SL_FAILED
+#undef SL_SUCCEEDED
 #define SL_FAILED(x) ((x) != sl::Result::eOk)
 #define SL_SUCCEEDED(x) ((x) == sl::Result::eOk)
 
@@ -91,9 +94,19 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
     sl::FeatureRequirements requirements{};
     if (SL_SUCCEEDED(slGetFeatureRequirements(sl::kFeatureDLSS, requirements))) m_dlssSupported = (requirements.flags & sl::FeatureRequirementFlags::eD3D12Supported) != 0;
     if (SL_SUCCEEDED(slGetFeatureRequirements(sl::kFeatureDLSS_G, requirements))) m_dlssgSupported = (requirements.flags & sl::FeatureRequirementFlags::eD3D12Supported) != 0;
-    m_dlssEnabled = true;
+    if (SL_SUCCEEDED(slGetFeatureRequirements(sl::kFeatureReflex, requirements))) m_reflexSupported = (requirements.flags & sl::FeatureRequirementFlags::eD3D12Supported) != 0;
+
+    // Auto-disable features if hardware doesn't support them
+    m_dlssEnabled = m_dlssEnabled && m_dlssSupported;
+    if (!m_dlssgSupported) m_frameGenMultiplier = 0;
+    if (!m_reflexSupported) m_reflexEnabled = false;
+
     m_useMfg = m_frameGenMultiplier > 2;
-    LOG_INFO("Streamline ready. DLSS:%s DLSSG:%s", m_dlssSupported ? "OK" : "NO", m_dlssgSupported ? "OK" : "NO");
+    LOG_INFO("Streamline ready. DLSS:%s DLSSG:%s Reflex:%s", m_dlssSupported ? "OK" : "NO", m_dlssgSupported ? "OK" : "NO", m_reflexSupported ? "OK" : "NO");
+    
+    // Refresh UI to reflect hardware support
+    OverlayUI::Get().UpdateControls();
+    
     return true;
 }
 
@@ -195,7 +208,7 @@ void StreamlineIntegration::SetSharpness(float sharpness) { m_sharpness = sharpn
 void StreamlineIntegration::SetLODBias(float bias) { m_lodBias = bias; }
 void StreamlineIntegration::SetReflexEnabled(bool enabled) { m_reflexEnabled = enabled; }
 void StreamlineIntegration::SetHUDFixEnabled(bool enabled) { m_hudFixEnabled = enabled; }
-void StreamlineIntegration::ReleaseResources() { m_backBuffer.Reset(); m_colorBuffer = nullptr; m_depthBuffer = nullptr; m_motionVectors = nullptr; ResourceDetector::Get().Clear(); }
+void StreamlineIntegration::ReleaseResources() { m_backBuffer.Reset(); m_colorBuffer.Reset(); m_depthBuffer.Reset(); m_motionVectors.Reset(); ResourceDetector::Get().Clear(); }
 void StreamlineIntegration::PrintMFGStatus() { LOG_INFO("[MFG] Mult:%d Init:%d Supported:%d Viewport:%dx%d", m_frameGenMultiplier, m_initialized, m_dlssgSupported, m_viewportWidth, m_viewportHeight); }
 
 void StreamlineIntegration::UpdateSwapChain(IDXGISwapChain* pSwapChain) {
@@ -211,13 +224,13 @@ void StreamlineIntegration::TagResources() {
     D3D12_RESOURCE_DESC outDesc = m_backBuffer->GetDesc();
     m_viewportWidth = (uint32_t)outDesc.Width; m_viewportHeight = outDesc.Height;
     sl::Extent fullExtent{0, 0, m_viewportWidth, m_viewportHeight};
-    sl::Resource colorIn(sl::ResourceType::eTex2d, m_colorBuffer, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    sl::Resource colorIn(sl::ResourceType::eTex2d, m_colorBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     colorIn.width = (uint32_t)inDesc.Width; colorIn.height = inDesc.Height; colorIn.nativeFormat = inDesc.Format;
     sl::Resource colorOut(sl::ResourceType::eTex2d, m_backBuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET);
     colorOut.width = m_viewportWidth; colorOut.height = m_viewportHeight; colorOut.nativeFormat = outDesc.Format;
-    sl::Resource depth(sl::ResourceType::eTex2d, m_depthBuffer ? m_depthBuffer : m_colorBuffer, D3D12_RESOURCE_STATE_DEPTH_READ);
+    sl::Resource depth(sl::ResourceType::eTex2d, m_depthBuffer ? m_depthBuffer.Get() : m_colorBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_READ);
     if (m_depthBuffer) { D3D12_RESOURCE_DESC dDesc = m_depthBuffer->GetDesc(); depth.width = (uint32_t)dDesc.Width; depth.height = dDesc.Height; depth.nativeFormat = dDesc.Format; }
-    sl::Resource mvec(sl::ResourceType::eTex2d, m_motionVectors ? m_motionVectors : m_colorBuffer, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    sl::Resource mvec(sl::ResourceType::eTex2d, m_motionVectors ? m_motionVectors.Get() : m_colorBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     if (m_motionVectors) { D3D12_RESOURCE_DESC mvDesc = m_motionVectors->GetDesc(); mvec.width = (uint32_t)mvDesc.Width; mvec.height = mvDesc.Height; mvec.nativeFormat = mvDesc.Format; }
     sl::ResourceTag tags[] = {
         sl::ResourceTag(&colorIn, sl::kBufferTypeHUDLessColor, sl::ResourceLifecycle::eValidUntilPresent, &fullExtent),
