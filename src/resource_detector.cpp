@@ -66,12 +66,14 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
     D3D12_RESOURCE_DESC desc = pResource->GetDesc();
     
     // EXTREME DEBUGGING: Log everything for the first 2000 resources
+    /*
     static std::atomic<uint64_t> s_globalCounter(0);
     if (s_globalCounter < 2000) {
         LOG_INFO("[EXTREME] Res: %dx%d Fmt:%d Dim:%d Flags:%d", 
             (int)desc.Width, (int)desc.Height, (int)desc.Format, (int)desc.Dimension, (int)desc.Flags);
         s_globalCounter++;
     }
+    */
 
     // Ignore non-texture resources
     if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return;

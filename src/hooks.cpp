@@ -7,7 +7,6 @@
 #include "iat_utils.h"
 #include "logger.h"
 #include "dlss4_config.h"
-#include "ngx_wrapper.h"
 #include "streamline_integration.h"
 #include <mutex>
 #include <atomic>
@@ -255,40 +254,88 @@ FARPROC WINAPI Hooked_GetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
     return g_OriginalGetProcAddress(hModule, lpProcName);
 }
 void InstallGetProcAddressHook() { HookAllModulesIAT("kernel32.dll", "GetProcAddress", (void*)Hooked_GetProcAddress, (void**)&g_OriginalGetProcAddress); }
+// ... (Typedefs) ...
 typedef HMODULE(WINAPI* PFN_LoadLibraryW)(LPCWSTR);
 PFN_LoadLibraryW g_OriginalLoadLibraryW = nullptr;
+
+typedef HMODULE(WINAPI* PFN_LoadLibraryExW)(LPCWSTR, HANDLE, DWORD);
+PFN_LoadLibraryExW g_OriginalLoadLibraryExW = nullptr;
+
 static thread_local bool s_inLoadLibraryHook = false;
+
+void CheckAndHookD3D12(HMODULE hModule, LPCWSTR name) {
+    if (!hModule || !name) return;
+    const wchar_t* lastSlash = wcsrchr(name, L'\\');
+    if (lastSlash) name = lastSlash + 1;
+    if (_wcsicmp(name, L"d3d12.dll") == 0 && g_OriginalD3D12CreateDevice == nullptr) {
+        LOG_INFO("d3d12.dll loaded via LoadLibrary, resolving D3D12CreateDevice...");
+        g_OriginalD3D12CreateDevice = (PFN_D3D12CreateDevice)GetProcAddress(hModule, "D3D12CreateDevice");
+    }
+}
+
 HMODULE WINAPI Hooked_LoadLibraryW(LPCWSTR lpLibFileName) {
     if (s_inLoadLibraryHook) return g_OriginalLoadLibraryW(lpLibFileName);
     s_inLoadLibraryHook = true;
     HMODULE result = g_OriginalLoadLibraryW(lpLibFileName);
-    if (result && lpLibFileName) {
-        const wchar_t* name = lpLibFileName;
-        const wchar_t* lastSlash = wcsrchr(name, L'\\');
-        if (lastSlash) name = lastSlash + 1;
-        if (_wcsicmp(name, L"d3d12.dll") == 0 && g_OriginalD3D12CreateDevice == nullptr) {
-            g_OriginalD3D12CreateDevice = (PFN_D3D12CreateDevice)GetProcAddress(result, "D3D12CreateDevice");
-        }
-    }
+    if (result) CheckAndHookD3D12(result, lpLibFileName);
     s_inLoadLibraryHook = false;
     return result;
 }
+
+HMODULE WINAPI Hooked_LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
+    if (s_inLoadLibraryHook) return g_OriginalLoadLibraryExW(lpLibFileName, hFile, dwFlags);
+    s_inLoadLibraryHook = true;
+    HMODULE result = g_OriginalLoadLibraryExW(lpLibFileName, hFile, dwFlags);
+    if (result) CheckAndHookD3D12(result, lpLibFileName);
+    s_inLoadLibraryHook = false;
+    return result;
+}
+
 void InstallLoadLibraryHook() {
     HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
-    if (hKernel32 && !g_OriginalLoadLibraryW) g_OriginalLoadLibraryW = (PFN_LoadLibraryW)GetProcAddress(hKernel32, "LoadLibraryW");
+    if (hKernel32) {
+        if (!g_OriginalLoadLibraryW) g_OriginalLoadLibraryW = (PFN_LoadLibraryW)GetProcAddress(hKernel32, "LoadLibraryW");
+        if (!g_OriginalLoadLibraryExW) g_OriginalLoadLibraryExW = (PFN_LoadLibraryExW)GetProcAddress(hKernel32, "LoadLibraryExW");
+    }
+    
     if (g_OriginalLoadLibraryW) HookAllModulesIAT("kernel32.dll", "LoadLibraryW", (void*)Hooked_LoadLibraryW, nullptr);
+    if (g_OriginalLoadLibraryExW) HookAllModulesIAT("kernel32.dll", "LoadLibraryExW", (void*)Hooked_LoadLibraryExW, nullptr);
 }
+
 static std::atomic<bool> s_hooksInstalled(false);
 void InstallD3D12Hooks() {
     if (s_hooksInstalled.exchange(true)) return;
+    
+    LOG_INFO("Installing D3D12 IAT Hooks...");
     InstallLoadLibraryHook();
+    
     HMODULE hD3D12Already = GetModuleHandleW(L"d3d12.dll");
-    if (hD3D12Already && g_OriginalD3D12CreateDevice == nullptr) g_OriginalD3D12CreateDevice = (PFN_D3D12CreateDevice)GetProcAddress(hD3D12Already, "D3D12CreateDevice");
+    if (hD3D12Already && g_OriginalD3D12CreateDevice == nullptr) {
+        LOG_INFO("d3d12.dll already in memory, resolving D3D12CreateDevice...");
+        g_OriginalD3D12CreateDevice = (PFN_D3D12CreateDevice)GetProcAddress(hD3D12Already, "D3D12CreateDevice");
+    }
+    
     HMODULE hMods[1024];
     HANDLE hProcess = GetCurrentProcess();
     DWORD cbNeeded;
     if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
-        for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) HookIAT(hMods[i], "d3d12.dll", "D3D12CreateDevice", (void*)Hooked_D3D12CreateDevice, (void**)&g_OriginalD3D12CreateDevice);
+        int count = cbNeeded / sizeof(HMODULE);
+        LOG_INFO("Scanning %d modules for IAT hooks...", count);
+        for (int i = 0; i < count; i++) {
+            char modName[MAX_PATH];
+            if (GetModuleBaseNameA(hProcess, hMods[i], modName, sizeof(modName))) {
+                if (_stricmp(modName, "dxgi.dll") == 0) continue; // Don't hook ourselves (or real dxgi if we are proxying it?)
+                // Actually we are dxgi.dll proxy, so we might appear as dxgi.dll.
+                // We should avoid hooking ourself to avoid recursion if we call D3D12CreateDevice.
+                
+                // HookIAT returns true if it patched something
+                if (HookIAT(hMods[i], "d3d12.dll", "D3D12CreateDevice", (void*)Hooked_D3D12CreateDevice, (void**)&g_OriginalD3D12CreateDevice)) {
+                    LOG_INFO("Hooked D3D12CreateDevice in module: %s", modName);
+                }
+            }
+        }
+    } else {
+        LOG_ERROR("EnumProcessModules failed!");
     }
     InstallGetProcAddressHook();
 }
