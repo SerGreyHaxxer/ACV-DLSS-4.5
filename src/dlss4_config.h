@@ -41,17 +41,13 @@
 // -------------------------------
 // Motion Vector / Depth Buffer Offsets (GAME SPECIFIC)
 // -------------------------------
-// These are PLACEHOLDER values. You must use a tool like Cheat Engine,
-// x64dbg, or pattern scanning to find the correct offsets for your
-// version of Assassin's Creed Valhalla.
+// NOTE: These hardcoded offsets are unused in this version.
+// The mod now uses Dynamic Pattern Scanning and Resource Sniffing
+// to automatically detect Jitter, Color, Depth, and Motion Vectors at runtime.
 // 
-// Pattern hint (example, may vary):
-// Motion Vectors: Search for float array near render target creation
-// Depth Buffer:   Search for DXGI_FORMAT_D32_FLOAT resource
-// 
-#define MOTION_VECTOR_OFFSET 0x0        // PLACEHOLDER
-#define DEPTH_BUFFER_OFFSET  0x0        // PLACEHOLDER
-#define JITTER_OFFSET        0x0        // PLACEHOLDER for TAA jitter values
+#define MOTION_VECTOR_OFFSET 0x0        // Unused (Dynamic Sniffer)
+#define DEPTH_BUFFER_OFFSET  0x0        // Unused (Dynamic Sniffer)
+#define JITTER_OFFSET        0x0        // Unused (Dynamic Pattern Scan)
 
 // -------------------------------
 // NGX SDK Paths

@@ -25,7 +25,6 @@
 #include "src/logger.h"
 #include "src/proxy.h"
 #include "src/hooks.h"
-#include "src/ngx_wrapper.h"
 #include "src/crash_handler.h"
 
 // Simple startup logger to debug early crashes
@@ -65,9 +64,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             LogStartup("DLSS 4 Proxy DLL Unloading...");
             
             // Cleanup in reverse order
-            DLSS4_Shutdown();
-            LogStartup("DLSS4 Shutdown");
-            
             CleanupHooks();
             LogStartup("Hooks Cleanup");
             

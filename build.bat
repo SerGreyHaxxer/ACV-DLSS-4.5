@@ -96,7 +96,6 @@ cl /LD /EHsc /std:c++17 /O2 ^
     src\crash_handler.cpp ^
     src\config_manager.cpp ^
     src\overlay.cpp ^
-    src\ngx_wrapper.cpp ^
     src\hooks.cpp ^
     src\input_handler.cpp ^
     src\pattern_scanner.cpp ^

@@ -16,7 +16,6 @@ class ResourceDetector {
 public:
     static ResourceDetector& Get();
 
-    void AnalyzeCommandList(ID3D12GraphicsCommandList* pCmdList);
     void RegisterResource(ID3D12Resource* pResource);
     
     ID3D12Resource* GetBestMotionVectorCandidate();

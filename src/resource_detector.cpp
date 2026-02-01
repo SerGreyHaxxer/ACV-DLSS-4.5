@@ -226,10 +226,6 @@ uint64_t ResourceDetector::GetFrameCount() {
     return m_frameCount;
 }
 
-void ResourceDetector::AnalyzeCommandList(ID3D12GraphicsCommandList* pCmdList) {
-    // Placeholder
-}
-
 std::string ResourceDetector::GetDebugInfo() {
     std::lock_guard<std::mutex> lock(m_mutex);
     std::stringstream ss;
