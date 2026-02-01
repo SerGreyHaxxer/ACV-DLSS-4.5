@@ -196,6 +196,10 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
         if (!info.cpuPtr || info.size < CAMERA_CBV_MIN_SIZE) continue;
         float tempView[16], tempProj[16], score = 0.0f;
         if (TryExtractCameraFromBuffer(info.cpuPtr, static_cast<size_t>(info.size), tempView, tempProj, &score)) {
+            if (logCandidates && score > 0.1f) {
+                LOG_INFO("[CAM] Candidate GPU:0x%llx Score:%.2f View[15]:%.2f Proj[15]:%.2f Proj[11]:%.2f", 
+                    info.gpuBase, score, tempView[15], tempProj[15], tempProj[11]);
+            }
             if (score > bestScore) {
                 bestScore = score;
                 memcpy(outView, tempView, sizeof(float) * 16);
@@ -206,14 +210,15 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
         }
     }
 
-    if (found) {
-        s_lastCameraCbv = foundGpuBase;
-        if (outScore) *outScore = bestScore;
+        if (found) {
+            s_lastCameraCbv = foundGpuBase;
+            if (outScore) *outScore = bestScore;
+        } else if (logCandidates) {
+            LOG_INFO("[CAM] Scan failed. Checked %llu CBVs. Best Score: %.2f", (uint64_t)g_cbvInfos.size(), bestScore);
+        }
+        
+        return found;
     }
-
-    return found;
-}
-
 WrappedID3D12GraphicsCommandList::WrappedID3D12GraphicsCommandList(ID3D12GraphicsCommandList* pReal, WrappedID3D12Device* pDeviceWrapper) 
     : m_pReal(pReal), m_pDeviceWrapper(pDeviceWrapper), m_refCount(1) {
     if(m_pReal) m_pReal->AddRef();

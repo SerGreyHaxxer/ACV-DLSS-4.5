@@ -219,7 +219,11 @@ HRESULT STDMETHODCALLTYPE Hooked_Close(ID3D12GraphicsCommandList* pThis) {
         float jitterX = 0.0f, jitterY = 0.0f;
         TryGetPatternJitter(jitterX, jitterY);
         float view[16], proj[16], score = 0.0f;
-        if (TryScanAllCbvsForCamera(view, proj, &score, false)) {
+        
+        static int s_camLog = 0;
+        bool doLog = (++s_camLog % 300 == 0); // Log every ~5 seconds at 60fps
+        
+        if (TryScanAllCbvsForCamera(view, proj, &score, doLog)) {
             StreamlineIntegration::Get().SetCameraData(view, proj, jitterX, jitterY);
         } else {
             StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
