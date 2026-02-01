@@ -59,8 +59,15 @@ bool TryGetPatternJitter(float& jitterX, float& jitterY) {
     if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return false;
 
     const float* vals = reinterpret_cast<const float*>(addr);
-    jitterX = vals[0];
-    jitterY = vals[1];
+    float jx = vals[0];
+    float jy = vals[1];
+
+    // Validation: Must be finite number
+    // _finite is MSVC specific, or std::isfinite
+    if (!_finite(jx) || !_finite(jy)) return false;
+
+    jitterX = jx;
+    jitterY = jy;
     return true;
 }
 

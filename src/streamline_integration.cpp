@@ -139,16 +139,38 @@ void StreamlineIntegration::TagDepthBuffer(ID3D12Resource* pResource) { if (m_in
 void StreamlineIntegration::TagMotionVectors(ID3D12Resource* pResource) { if (m_initialized && pResource) m_motionVectors = pResource; }
 
 void StreamlineIntegration::SetCameraData(const float* view, const float* proj, float jitterX, float jitterY) {
-    if (!m_initialized || !view || !proj) return;
+    if (!m_initialized) return;
+
+    // Cache valid matrices
+    if (view && proj) {
+        memcpy(m_cachedView, view, sizeof(float) * 16);
+        memcpy(m_cachedProj, proj, sizeof(float) * 16);
+        m_hasCameraData = true;
+    }
+
+    // Use cached if current is null
+    const float* useView = view ? view : (m_hasCameraData ? m_cachedView : nullptr);
+    const float* useProj = proj ? proj : (m_hasCameraData ? m_cachedProj : nullptr);
+
+    if (!useView || !useProj) return;
+
+    // Clamp Jitter to reasonable range (-2.0 to 2.0 pixels usually sufficient)
+    // Streamline expects pixels. If these are huge, it's likely garbage.
+    if (jitterX > 5.0f) jitterX = 5.0f; else if (jitterX < -5.0f) jitterX = -5.0f;
+    if (jitterY > 5.0f) jitterY = 5.0f; else if (jitterY < -5.0f) jitterY = -5.0f;
+
+    m_lastJitterX = jitterX;
+    m_lastJitterY = jitterY;
+
     sl::Constants consts{};
-    for (int i = 0; i < 16; ++i) { reinterpret_cast<float*>(&consts.cameraViewToClip)[i] = view[i]; reinterpret_cast<float*>(&consts.clipToCameraView)[i] = proj[i]; }
+    for (int i = 0; i < 16; ++i) { reinterpret_cast<float*>(&consts.cameraViewToClip)[i] = useView[i]; reinterpret_cast<float*>(&consts.clipToCameraView)[i] = useProj[i]; }
     consts.jitterOffset = sl::float2(jitterX, jitterY);
     consts.mvecScale = sl::float2(m_mvecScaleX, m_mvecScaleY);
     consts.depthInverted = sl::Boolean::eTrue;
     consts.cameraMotionIncluded = sl::Boolean::eTrue;
     consts.motionVectors3D = sl::Boolean::eFalse;
     consts.reset = sl::Boolean::eFalse;
-    m_hasCameraData = true;
+    
     if (!EnsureFrameToken()) return;
     m_viewport = sl::ViewportHandle(0);
     slSetConstants(consts, *m_frameToken, m_viewport);

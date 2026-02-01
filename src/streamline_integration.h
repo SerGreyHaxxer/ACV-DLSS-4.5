@@ -139,6 +139,8 @@ private:
     bool m_hasCameraData = false;
     float m_lastJitterX = 0.0f;
     float m_lastJitterY = 0.0f;
+    float m_cachedView[16] = {};
+    float m_cachedProj[16] = {};
     
     float m_sharpness = 0.5f; // Default sharpness
     float m_lodBias = -1.0f;  // Default Sharper Textures
