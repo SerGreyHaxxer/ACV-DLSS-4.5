@@ -72,8 +72,9 @@ namespace {
         float bestScore = 0.0f;
         size_t bestOffset = 0;
         
-        // Optimization: Don't scan huge buffers completely, check first 4KB
-        size_t scanLimit = (size > 4096) ? 4096 : size;
+        // Optimization: Don't scan huge buffers completely, check first 256KB
+        // 4KB was too small for "Mega-CBVs"
+        size_t scanLimit = (size > 262144) ? 262144 : size;
 
         for (size_t offset = 0; offset + sizeof(float) * 32 <= scanLimit; offset += sizeof(float) * 16) {
             const float* view = reinterpret_cast<const float*>(data + offset);
