@@ -23,7 +23,7 @@ void ResourceDetector::NewFrame() {
         m_bestMotionScore = 0.0f;
         m_bestDepthScore = 0.0f;
         m_bestColorScore = 0.0f;
-        LOG_INFO("Resource detector cache cleared (Frame %llu)", m_frameCount);
+        LOG_INFO("Resource detector cache cleared (Frame %llu)", m_frameCount.load());
     }
 }
 
