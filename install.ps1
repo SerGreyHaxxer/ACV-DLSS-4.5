@@ -1,209 +1,109 @@
-# ============================================================================
-# DLSS 4 Proxy - Installation Helper
-# ============================================================================
-# This script helps you set up everything needed to run the DLSS 4 proxy.
-# ============================================================================
+# DLSS 4.5 Mod - Automatic Installer
+$ErrorActionPreference = "Stop"
 
-param(
-    [string]$GamePath = "",
-    [switch]$Help
+Write-Host "==============================================" -ForegroundColor Cyan
+Write-Host "   AC Valhalla DLSS 4.5 Mod Installer" -ForegroundColor Cyan
+Write-Host "==============================================" -ForegroundColor Cyan
+
+# 1. Verify Build
+if (-not (Test-Path "bin\dxgi.dll")) {
+    Write-Host "Error: Mod not built!" -ForegroundColor Red
+    Write-Host "Please run 'build.bat' first to compile the DLL."
+    exit
+}
+
+# 2. Find Game Path
+$gamePath = $null
+$potentialPaths = @(
+    "C:\Program Files (x86)\Steam\steamapps\common\Assassin's Creed Valhalla",
+    "D:\SteamLibrary\steamapps\common\Assassin's Creed Valhalla",
+    "E:\SteamLibrary\steamapps\common\Assassin's Creed Valhalla",
+    "C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\games\Assassin's Creed Valhalla",
+    "D:\Games\Assassin's Creed Valhalla"
 )
 
-# Configuration
-$StreamlineSDK = $PWD
+# Registry Check (Steam)
+try {
+    $steamPath = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Steam App 2208920" -ErrorAction SilentlyContinue
+    if ($steamPath) { $potentialPaths += $steamPath.InstallLocation }
+} catch {}
 
-if ($Help) {
-    Write-Host @"
-DLSS 4 Proxy Installation Helper
+# Registry Check (Ubisoft) - varying keys, often hard to rely on reliably, sticking to paths + manual
 
-Usage:
-    .\install.ps1 -GamePath "C:\Games\AC Valhalla"
-    
-This script will:
-    1. Build the proxy DLL (if not already built)
-    2. Copy dxgi.dll to the game folder
-    3. Install Streamline SDK components from Downloads
-    4. Check for required NVIDIA DLLs
-"@
-    exit 0
-}
-
-Write-Host "============================================" -ForegroundColor Cyan
-Write-Host "DLSS 4 Proxy Installation Helper" -ForegroundColor Cyan  
-Write-Host "============================================" -ForegroundColor Cyan
-
-# Step 1: Check if DLL is built
-$dllPath = "bin\dxgi.dll"
-if (-not (Test-Path $dllPath)) {
-    Write-Host "`nBuilding DLL first..." -ForegroundColor Yellow
-    & .\build.ps1
-    
-    if (-not (Test-Path $dllPath)) {
-        Write-Host "Build failed! Cannot continue." -ForegroundColor Red
-        exit 1
+foreach ($path in $potentialPaths) {
+    if (Test-Path "$path\ACValhalla.exe") {
+        $gamePath = $path
+        break
     }
 }
 
-Write-Host "`n[OK] dxgi.dll found at: $dllPath" -ForegroundColor Green
-
-# Step 2: Get game path if not provided
-if (-not $GamePath) {
-    # Try to find AC Valhalla automatically
-    $commonPaths = @(
-        "C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\games\Assassin's Creed Valhalla",
-        "C:\Program Files\Ubisoft\Ubisoft Game Launcher\games\Assassin's Creed Valhalla",
-        "D:\Games\Assassin's Creed Valhalla",
-        "E:\Games\Assassin's Creed Valhalla",
-        "C:\Games\Assassin's Creed Valhalla"
-    )
-    
-    foreach ($path in $commonPaths) {
-        if (Test-Path "$path\ACValhalla.exe") {
-            $GamePath = $path
-            Write-Host "`n[FOUND] AC Valhalla at: $GamePath" -ForegroundColor Green
-            break
+# Manual Input if not found
+if (-not $gamePath) {
+    Write-Host "Could not automatically find Assassin's Creed Valhalla." -ForegroundColor Yellow
+    Write-Host "Please drag and drop 'ACValhalla.exe' into this window and press Enter:" -ForegroundColor Green
+    $inputPath = Read-Host
+    $inputPath = $inputPath.Trim('"') # Remove quotes if added by drag-drop
+    if (Test-Path $inputPath) {
+        if ($inputPath -match ".exe$") {
+            $gamePath = Split-Path -Parent $inputPath
+        } else {
+            $gamePath = $inputPath
         }
     }
+}
+
+if (-not $gamePath -or -not (Test-Path "$gamePath\ACValhalla.exe")) {
+    Write-Host "Error: Game path not found or invalid." -ForegroundColor Red
+    exit
+}
+
+Write-Host "Found Game: $gamePath" -ForegroundColor Green
+
+# 3. Copy Files
+Write-Host "Copying files..."
+$files = @("dxgi.dll", "nvngx_dlss.dll", "nvngx_dlssg.dll", "sl.common.dll", "sl.dlss.dll", "sl.dlss_g.dll", "sl.interposer.dll", "sl.reflex.dll")
+
+foreach ($file in $files) {
+    $src = "bin\$file"
+    if (-not (Test-Path $src)) {
+        # Try finding in external folders if not in bin
+        $src = "external\streamline\lib\x64\$file"
+    }
     
-    if (-not $GamePath) {
-        Write-Host "`nCould not find AC Valhalla automatically." -ForegroundColor Yellow
-        $GamePath = Read-Host "Enter the game folder path (containing ACValhalla.exe)"
+    if (Test-Path $src) {
+        Copy-Item -Path $src -Destination "$gamePath\$file" -Force
+        Write-Host "  [OK] $file" -ForegroundColor Gray
+    } else {
+        Write-Host "  [MISSING] $file (Make sure SDK is linked or file is in bin)" -ForegroundColor Yellow
     }
 }
 
-# Validate game path
-if (-not (Test-Path $GamePath)) {
-    Write-Host "ERROR: Path does not exist: $GamePath" -ForegroundColor Red
-    exit 1
-}
+# 4. Registry Fix
+Write-Host "Applying Registry Fix..."
+$regContent = @"
+Windows Registry Editor Version 5.00
 
-$exePath = Join-Path $GamePath "ACValhalla.exe"
-if (-not (Test-Path $exePath)) {
-    Write-Host "WARNING: ACValhalla.exe not found in $GamePath" -ForegroundColor Yellow
-    Write-Host "Continuing anyway..." -ForegroundColor Yellow
-}
+[HKEY_LOCAL_MACHINE\SOFTWARE\NVIDIA Corporation\Global\NGXCore]
+"EnableBetaSuperSampling"=dword:00000001
+"ShowDlssIndicator"=dword:00000000
 
-# Step 3: Copy our DLL
-Write-Host "`nInstalling proxy DLL..." -ForegroundColor Yellow
-$destDll = Join-Path $GamePath "dxgi.dll"
+[HKEY_CURRENT_USER\Software\NVIDIA Corporation\Global\NGXCore]
+"EnableBetaSuperSampling"=dword:00000001
+"ShowDlssIndicator"=dword:00000000
+"@
 
-if (Test-Path $destDll) {
-    $backup = Join-Path $GamePath "dxgi.dll.backup"
-    Write-Host "Backing up existing dxgi.dll to dxgi.dll.backup" -ForegroundColor Yellow
-    Copy-Item $destDll $backup -Force
-}
+$regPath = "$gamePath\EnableNvidiaSigOverride.reg"
+$regContent | Out-File -FilePath $regPath -Encoding ASCII
+Write-Host "  [OK] Created $regPath" -ForegroundColor Gray
 
-Copy-Item $dllPath $destDll -Force
-Write-Host "[OK] Installed dxgi.dll" -ForegroundColor Green
+# Attempt auto-import (might ask for admin)
+Start-Process "reg" -ArgumentList "import `"$regPath`"" -Verb RunAs -Wait
 
-# Step 3.5: Install Streamline SDK
-Write-Host "`nInstalling Streamline SDK..." -ForegroundColor Yellow
-
-# Function to copy if source exists
-function Copy-IfFound {
-    param($filename, $dest)
-    # Check in current directory (repo root)
-    if (Test-Path ".\$filename") {
-        Copy-Item ".\$filename" "$dest\$filename" -Force
-        Write-Host "[OK] Copied $filename (from repo root)" -ForegroundColor Green
-        return $true
-    }
-    # Check in SDK bin/x64
-    if (Test-Path "$StreamlineSDK\bin\x64\$filename") {
-        Copy-Item "$StreamlineSDK\bin\x64\$filename" "$dest\$filename" -Force
-        Write-Host "[OK] Copied $filename (from SDK)" -ForegroundColor Green
-        return $true
-    }
-    # Check in SDK bin/x64/plugins (for some versions)
-    if (Test-Path "$StreamlineSDK\bin\x64\plugins\$filename") {
-        Copy-Item "$StreamlineSDK\bin\x64\plugins\$filename" "$dest\$filename" -Force
-        Write-Host "[OK] Copied $filename (from SDK plugins)" -ForegroundColor Green
-        return $true
-    }
-    return $false
-}
-
-$missingFiles = @()
-
-if (-not (Copy-IfFound "sl.interposer.dll" $GamePath)) { $missingFiles += "sl.interposer.dll" }
-if (-not (Copy-IfFound "sl.common.dll" $GamePath)) { $missingFiles += "sl.common.dll" }
-if (-not (Copy-IfFound "sl.dlss.dll" $GamePath)) { $missingFiles += "sl.dlss.dll" }
-if (-not (Copy-IfFound "sl.dlss_g.dll" $GamePath)) { $missingFiles += "sl.dlss_g.dll" }
-
-if ($missingFiles.Count -gt 0) {
-    Write-Host "`n[WARNING] Some Streamline components were not found:" -ForegroundColor Yellow
-    foreach ($file in $missingFiles) {
-        Write-Host "  - $file" -ForegroundColor Red
-    }
-    Write-Host "Please manually copy them to the game folder from the Streamline SDK." -ForegroundColor Yellow
-}
-
-# Step 4: Check for NVIDIA DLLs
-Write-Host "`nChecking for NVIDIA DLSS DLLs..." -ForegroundColor Yellow
-
-$dlssDll = Join-Path $GamePath "nvngx_dlss.dll"
-$dlssgDll = Join-Path $GamePath "nvngx_dlssg.dll"
-
-$dlssOk = Test-Path $dlssDll
-$dlssgOk = Test-Path $dlssgDll
-
-if ($dlssOk) {
-    Write-Host "[OK] nvngx_dlss.dll found" -ForegroundColor Green
-} else {
-    Write-Host "[MISSING] nvngx_dlss.dll" -ForegroundColor Red
-}
-
-if ($dlssgOk) {
-    Write-Host "[OK] nvngx_dlssg.dll found (Frame Gen ready)" -ForegroundColor Green
-} else {
-    Write-Host "[MISSING] nvngx_dlssg.dll (Frame Gen will be disabled)" -ForegroundColor Yellow
-}
-
-# Step 5: Instructions for missing DLLs
-if (-not $dlssOk -or -not $dlssgOk) {
-    Write-Host @"
-
-============================================
-IMPORTANT: Missing NVIDIA DLLs
-============================================
-
-To get the required NVIDIA DLLs:
-
-Option 1: Copy from another DLSS 4 game
-    - Look in games like Cyberpunk 2077, Alan Wake 2, etc.
-    - Find nvngx_dlss.dll (usually in game folder)
-    - For Frame Gen: nvngx_dlssg.dll
-
-Option 2: NVIDIA Developer Portal
-    - Visit: https://developer.nvidia.com/rtx/dlss
-    - Download DLSS SDK
-    - Extract the DLLs
-
-Option 3: TechPowerUp DLSS Archive
-    - https://www.techpowerup.com/download/nvidia-dlss-dll/
-    - Download latest version
-    - Place in game folder
-
-After obtaining the DLLs, copy them to:
-    $GamePath
-
-"@ -ForegroundColor Yellow
-}
-
-# Final summary
-Write-Host "`n============================================" -ForegroundColor Cyan
-Write-Host "Installation Summary" -ForegroundColor Cyan
-Write-Host "============================================" -ForegroundColor Cyan
-Write-Host "Game Path: $GamePath"
-Write-Host "Proxy DLL: Installed"
-Write-Host "Streamline: Installed (if SDK found)"
-Write-Host "DLSS DLL: $(if($dlssOk){'Ready'}else{'MISSING'})"
-Write-Host "Frame Gen DLL: $(if($dlssgOk){'Ready'}else{'MISSING'})"
+Write-Host "==============================================" -ForegroundColor Green
+Write-Host "   INSTALLATION COMPLETE" -ForegroundColor Green
+Write-Host "==============================================" -ForegroundColor Green
+Write-Host "1. Launch the game."
+Write-Host "2. Press F5 for the DLSS Menu."
+Write-Host "3. Check video settings: Scale 50%, Borderless Windowed."
 Write-Host ""
-
-if ($dlssOk) {
-    Write-Host "You can now run the game!" -ForegroundColor Green
-    Write-Host "Check for 'dlss4_proxy.log' in the game folder for debug output."
-} else {
-    Write-Host "Please add the missing NVIDIA DLLs before running the game." -ForegroundColor Yellow
-}
+Pause

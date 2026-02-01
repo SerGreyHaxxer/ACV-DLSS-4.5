@@ -36,7 +36,7 @@
 // Logging
 // -------------------------------
 #define ENABLE_LOGGING 1
-#define LOG_VERBOSE 0          // Set to 1 for detailed frame-by-frame logging
+#define LOG_VERBOSE 1          // Set to 1 for detailed frame-by-frame logging
 
 // -------------------------------
 // Motion Vector / Depth Buffer Offsets (GAME SPECIFIC)
@@ -61,5 +61,5 @@
 #define NGX_DLSS_DLL_NAME    L"nvngx_dlss.dll"
 #define NGX_DLSSG_DLL_NAME   L"nvngx_dlssg.dll"  // Frame Generation module
 
-// Application ID for NGX (use game's Steam AppID or a custom one)
-#define NGX_APP_ID 2208920  // AC Valhalla Steam AppID
+// Application ID for NGX (Spoofing Generic/Dev ID to force DLSS enablement)
+#define NGX_APP_ID 0        // Generic/Development AppID

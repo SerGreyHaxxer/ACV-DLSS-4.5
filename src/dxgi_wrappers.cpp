@@ -223,6 +223,11 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present(UINT SyncInterval, UINT
             MessageBeep(hasCam ? MB_OK : MB_ICONHAND);
         }, "Debug Camera Status");
         
+        InputHandler::Get().RegisterHotkey(VK_F9, [](){
+            MessageBeep(MB_OK);
+            StreamlineIntegration::Get().PrintMFGStatus();
+        }, "Debug MFG Status");
+        
         InputHandler::Get().InstallHook(); // Global Hook
     }
     InputHandler::Get().ProcessInput();
@@ -266,6 +271,11 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present1(UINT Sync, UINT Flags,
             OverlayUI::Get().SetCameraStatus(hasCam, jx, jy);
             MessageBeep(hasCam ? MB_OK : MB_ICONHAND);
         }, "Debug Camera Status");
+        
+        InputHandler::Get().RegisterHotkey(VK_F9, [](){
+            MessageBeep(MB_OK);
+            StreamlineIntegration::Get().PrintMFGStatus();
+        }, "Debug MFG Status");
         
         InputHandler::Get().InstallHook(); // Global Hook
     }

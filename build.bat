@@ -102,7 +102,7 @@ cl /LD /EHsc /std:c++17 /O2 ^
     src\pattern_scanner.cpp ^
     src\iat_utils.cpp ^
     /link ^
-    d3d12.lib dxgi.lib dxguid.lib user32.lib dbghelp.lib gdi32.lib shell32.lib ^
+    d3d12.lib dxgi.lib dxguid.lib user32.lib dbghelp.lib gdi32.lib shell32.lib Advapi32.lib ^
     "%USERPROFILE%\Downloads\streamline-sdk-v2.10.3\lib\x64\sl.interposer.lib" ^
     /DEF:dxgi.def ^
     /DLL

@@ -46,6 +46,17 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
 
     D3D12_RESOURCE_DESC desc = pResource->GetDesc();
     
+    // EXTREME DEBUGGING: Log everything for the first 2000 resources
+    static uint64_t s_globalCounter = 0;
+    if (s_globalCounter < 2000) {
+        LOG_INFO("[EXTREME] Res: %dx%d Fmt:%d Dim:%d Flags:%d", 
+            (int)desc.Width, (int)desc.Height, (int)desc.Format, (int)desc.Dimension, (int)desc.Flags);
+        s_globalCounter++;
+    }
+
+    // Ignore non-texture resources
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return;
+    
     // Ignore small buffers (likely UI icons or constant buffers)
     if (desc.Width < 64 || desc.Height < 64) return;
 
@@ -63,6 +74,17 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
 
     // Score for Color (Input)
     float colorScore = ScoreColor(desc);
+    
+    // Debug logging for all potential candidates
+    static uint64_t s_debugCounter = 0;
+    if (colorScore > 0.0f || mvScore > 0.0f || depthScore > 0.0f) {
+        if (s_debugCounter < 50) { // Log first 50 candidates
+            LOG_INFO("[MFG] Resource candidate: %dx%d Fmt:%d Flags:%d ColorScore:%.2f MVScore:%.2f DepthScore:%.2f", 
+                desc.Width, desc.Height, desc.Format, desc.Flags, colorScore, mvScore, depthScore);
+            s_debugCounter++;
+        }
+    }
+    
     if (mvScore <= 0.5f && depthScore <= 0.5f && colorScore <= 0.5f) {
         return;
     }
@@ -118,12 +140,14 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
         }
         if (!found) {
             m_colorCandidates.push_back({pResource, colorScore, desc, frameCount});
-            LOG_DEBUG("Found Color Candidate: %dx%d Fmt:%d Score:%.2f", 
+            LOG_INFO("[MFG] Found Color Candidate: %dx%d Fmt:%d Score:%.2f", 
                 desc.Width, desc.Height, desc.Format, colorScore);
         }
         if (colorScore >= m_bestColorScore) {
             m_bestColorScore = colorScore;
             m_bestColor = pResource;
+            LOG_INFO("[MFG] New BEST Color: %dx%d Fmt:%d Score:%.2f Ptr:%p", 
+                desc.Width, desc.Height, desc.Format, colorScore, pResource);
         }
     }
 }
@@ -135,6 +159,7 @@ float ResourceDetector::ScoreMotionVector(const D3D12_RESOURCE_DESC& desc) {
     if (desc.Format == DXGI_FORMAT_R16G16_FLOAT) score += 0.8f;
     else if (desc.Format == DXGI_FORMAT_R16G16_UNORM) score += 0.6f;
     else if (desc.Format == DXGI_FORMAT_R32G32_FLOAT) score += 0.4f;
+    else if (desc.Format == DXGI_FORMAT_R16G16_TYPELESS) score += 0.5f; // Typeless
     else return 0.0f; // Not a likely MV format
 
     if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return 0.0f;
@@ -151,6 +176,7 @@ float ResourceDetector::ScoreDepth(const D3D12_RESOURCE_DESC& desc) {
     if (desc.Format == DXGI_FORMAT_D32_FLOAT) score += 0.9f;
     else if (desc.Format == DXGI_FORMAT_R32_FLOAT) score += 0.7f; // Read-only depth
     else if (desc.Format == DXGI_FORMAT_D24_UNORM_S8_UINT) score += 0.5f;
+    else if (desc.Format == DXGI_FORMAT_R32_TYPELESS) score += 0.6f; // Typeless Depth
     else return 0.0f;
 
     if (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) score += 0.2f;
@@ -162,14 +188,20 @@ float ResourceDetector::ScoreColor(const D3D12_RESOURCE_DESC& desc) {
     float score = 0.0f;
     
     // Standard Backbuffer Formats
-    if (desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM) score += 0.5f;
-    else if (desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) score += 0.5f;
+    if (desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) score += 0.5f;
+    else if (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) score += 0.5f; // Added BGRA (Format 87/91)
     else if (desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM) score += 0.6f; // HDR
     else if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) score += 0.7f; // HDR Float
+    else if (desc.Format == DXGI_FORMAT_R11G11B10_FLOAT) score += 0.6f; // Common RT format
     else return 0.0f;
 
-    // Must be Render Target
-    if (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) score += 0.3f;
+    // Must be Render Target or match typical RT resolution/format
+    if (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) {
+        score += 0.3f;
+    } else {
+        // If it's a known RT format and large, give it a chance
+        if (desc.Width > 1280) score += 0.1f;
+    }
     
     return score;
 }

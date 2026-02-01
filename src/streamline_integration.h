@@ -74,6 +74,9 @@ public:
     bool HasCameraData() const { return m_hasCameraData; }
     void GetLastCameraJitter(float& x, float& y) const { x = m_lastJitterX; y = m_lastJitterY; }
     UINT GetDescriptorSize() const { return m_cbvSrvUavDescriptorSize; }
+    
+    // MFG Debug
+    void PrintMFGStatus();
 
 private:
     StreamlineIntegration() = default;
@@ -145,4 +148,13 @@ private:
     void EnsureCommandList();
     void WaitForGpu();
     bool EnsureFrameToken();
+    
+    // MFG Debug tracking
+    struct MFGStats {
+        uint32_t baseFrames = 0;
+        uint32_t generatedFrames = 0;
+        uint32_t lastFrameIndex = 0;
+        float peakMultiplier = 0.0f;
+        uint64_t startTime = 0;
+    } m_mfgStats;
 };
