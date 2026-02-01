@@ -72,9 +72,8 @@ namespace {
         float bestScore = 0.0f;
         size_t bestOffset = 0;
         
-        // Optimization: Don't scan huge buffers completely, check first 256KB
-        // 4KB was too small for "Mega-CBVs"
-        size_t scanLimit = (size > 262144) ? 262144 : size;
+        // Optimization: Don't scan huge buffers completely, check first 16MB
+        size_t scanLimit = (size > 16777216) ? 16777216 : size;
 
         for (size_t offset = 0; offset + sizeof(float) * 32 <= scanLimit; offset += sizeof(float) * 16) {
             const float* view = reinterpret_cast<const float*>(data + offset);
@@ -91,6 +90,8 @@ namespace {
         memcpy(outView, view, sizeof(float) * 16);
         memcpy(outProj, proj, sizeof(float) * 16);
         if (outScore) *outScore = bestScore;
+        // Hack: store offset in score decimals or return via param? 
+        // We'll just trust the caller knows we return the best one found.
         return true;
     }
 
