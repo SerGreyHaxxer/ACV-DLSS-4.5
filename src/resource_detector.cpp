@@ -16,16 +16,18 @@ void ResourceDetector::NewFrame() {
     
     // Periodically clear old candidates to adapt to resolution changes
     if (m_frameCount % RESOURCE_CLEANUP_INTERVAL == 0) {
-        m_motionCandidates.clear();
-        m_depthCandidates.clear();
-        m_colorCandidates.clear();
-        m_bestMotion = nullptr;
-        m_bestDepth = nullptr;
-        m_bestColor = nullptr;
-        m_bestMotionScore = 0.0f;
-        m_bestDepthScore = 0.0f;
-        m_bestColorScore = 0.0f;
-        LOG_INFO("Resource detector cache cleared (Frame %llu)", m_frameCount.load());
+        if (!m_bestMotion || !m_bestDepth || !m_bestColor) {
+            m_motionCandidates.clear();
+            m_depthCandidates.clear();
+            m_colorCandidates.clear();
+            m_bestMotion = nullptr;
+            m_bestDepth = nullptr;
+            m_bestColor = nullptr;
+            m_bestMotionScore = 0.0f;
+            m_bestDepthScore = 0.0f;
+            m_bestColorScore = 0.0f;
+            LOG_INFO("Resource detector cache cleared (Frame %llu)", m_frameCount.load());
+        }
     }
 }
 
@@ -55,6 +57,10 @@ void ResourceDetector::SetExpectedDimensions(uint32_t width, uint32_t height) {
 static const GUID RD_GEN_TAG = { 0x25cddaa4, 0xb1c6, 0x41e5, { 0x9c, 0x52, 0xfe, 0x69, 0xfc, 0x2e, 0x6a, 0x3d } };
 
 void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
+    RegisterResource(pResource, false);
+}
+
+void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDuplicate) {
     if (!pResource) return;
 
     // OPTIMIZATION: Check if we've already processed this resource in the current "generation"
@@ -63,7 +69,7 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
     
     uint64_t lastSeenGen = 0;
     UINT dataSize = sizeof(uint64_t);
-    if (SUCCEEDED(pResource->GetPrivateData(RD_GEN_TAG, &dataSize, &lastSeenGen))) {
+    if (!allowDuplicate && SUCCEEDED(pResource->GetPrivateData(RD_GEN_TAG, &dataSize, &lastSeenGen))) {
         if (lastSeenGen == currentGen) {
             return; // Already processed this generation
         }
@@ -89,7 +95,7 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
     // Score for Color (Input)
     float colorScore = ScoreColor(desc);
     
-    if (mvScore <= 0.5f && depthScore <= 0.5f && colorScore <= 0.5f) {
+    if (mvScore < 0.5f && depthScore < 0.5f && colorScore < 0.5f) {
         return;
     }
 
@@ -101,7 +107,7 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
     if (m_depthCandidates.size() > 500) m_depthCandidates.clear();
 
     bool quietScan = ConfigManager::Get().Data().quietResourceScan;
-    if (mvScore > 0.5f) {
+    if (mvScore >= 0.5f) {
         bool found = false;
         for (auto& cand : m_motionCandidates) {
             if (cand.pResource.Get() == pResource) {
@@ -121,10 +127,14 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
         if (mvScore >= m_bestMotionScore) {
             m_bestMotionScore = mvScore;
             m_bestMotion = pResource;
+            if (!quietScan) {
+                LOG_INFO("[MFG] New BEST MV: %dx%d Fmt:%d Score:%.2f Ptr:%p", 
+                    desc.Width, desc.Height, desc.Format, mvScore, pResource);
+            }
         }
     }
 
-    if (depthScore > 0.5f) {
+    if (depthScore >= 0.5f) {
         bool found = false;
         for (auto& cand : m_depthCandidates) {
             if (cand.pResource.Get() == pResource) {
@@ -140,10 +150,14 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
         if (depthScore >= m_bestDepthScore) {
             m_bestDepthScore = depthScore;
             m_bestDepth = pResource;
+            if (!quietScan) {
+                LOG_INFO("[MFG] New BEST Depth: %dx%d Fmt:%d Score:%.2f Ptr:%p", 
+                    desc.Width, desc.Height, desc.Format, depthScore, pResource);
+            }
         }
     }
 
-    if (colorScore > 0.5f) {
+    if (colorScore >= 0.5f) {
         bool found = false;
         for (auto& cand : m_colorCandidates) {
             if (cand.pResource.Get() == pResource) {
@@ -177,8 +191,14 @@ float ResourceDetector::ScoreMotionVector(const D3D12_RESOURCE_DESC& desc) {
     // Motion vectors are usually R16G16
     if (desc.Format == DXGI_FORMAT_R16G16_FLOAT) score += 0.8f;
     else if (desc.Format == DXGI_FORMAT_R16G16_UNORM) score += 0.6f;
+    else if (desc.Format == DXGI_FORMAT_R16G16_SNORM) score += 0.6f;
+    else if (desc.Format == DXGI_FORMAT_R16G16_SINT) score += 0.5f;
+    else if (desc.Format == DXGI_FORMAT_R16G16_UINT) score += 0.5f;
     else if (desc.Format == DXGI_FORMAT_R32G32_FLOAT) score += 0.4f;
+    else if (desc.Format == DXGI_FORMAT_R32G32_SINT) score += 0.3f;
+    else if (desc.Format == DXGI_FORMAT_R32G32_UINT) score += 0.3f;
     else if (desc.Format == DXGI_FORMAT_R16G16_TYPELESS) score += 0.5f; // Typeless
+    else if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) score += 0.3f;
     else return 0.0f; // Not a likely MV format
 
     if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return 0.0f;
@@ -205,9 +225,13 @@ float ResourceDetector::ScoreDepth(const D3D12_RESOURCE_DESC& desc) {
     float score = 0.0f;
     
     if (desc.Format == DXGI_FORMAT_D32_FLOAT) score += 0.9f;
+    else if (desc.Format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT) score += 0.8f;
     else if (desc.Format == DXGI_FORMAT_R32_FLOAT) score += 0.7f; // Read-only depth
     else if (desc.Format == DXGI_FORMAT_D24_UNORM_S8_UINT) score += 0.5f;
     else if (desc.Format == DXGI_FORMAT_R32_TYPELESS) score += 0.6f; // Typeless Depth
+    else if (desc.Format == DXGI_FORMAT_R24G8_TYPELESS) score += 0.5f;
+    else if (desc.Format == DXGI_FORMAT_R24_UNORM_X8_TYPELESS) score += 0.5f;
+    else if (desc.Format == DXGI_FORMAT_R32G8X24_TYPELESS) score += 0.5f;
     else return 0.0f;
 
     if (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) score += 0.2f;

@@ -220,7 +220,7 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
 
     // OPTIMIZATION: Fast path - check known location first
 
-    if (s_lastCameraCbv != 0) {
+        if (s_lastCameraCbv != 0) {
 
         for (const auto& info : g_cbvInfos) {
 
@@ -526,14 +526,20 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::Close() {
 HRESULT STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::Reset(ID3D12CommandAllocator* pAllocator, ID3D12PipelineState* pInitialState) { return m_pReal->Reset(pAllocator, pInitialState); }
 
 void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::ResourceBarrier(UINT NumBarriers, const D3D12_RESOURCE_BARRIER* pBarriers) {
-    // DISABLED: Too expensive.
-    /*
-    for (UINT i = 0; i < NumBarriers; i++) {
-        if (pBarriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION) {
-            ResourceDetector::Get().RegisterResource(pBarriers[i].Transition.pResource);
+    if (pBarriers) {
+        static uint64_t s_lastScanFrame = 0;
+        uint64_t currentFrame = StreamlineIntegration::Get().GetFrameCount();
+        if (currentFrame != s_lastScanFrame) {
+            s_lastScanFrame = currentFrame;
+            UINT scanned = 0;
+            for (UINT i = 0; i < NumBarriers && scanned < RESOURCE_BARRIER_SCAN_MAX; i++) {
+                if (pBarriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION) {
+                    ResourceDetector::Get().RegisterResource(pBarriers[i].Transition.pResource, true);
+                    scanned++;
+                }
+            }
         }
     }
-    */
     m_pReal->ResourceBarrier(NumBarriers, pBarriers);
 }
 

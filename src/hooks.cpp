@@ -176,7 +176,7 @@ void STDMETHODCALLTYPE HookedResourceBarrier(ID3D12GraphicsCommandList* pThis, U
             UINT scanned = 0;
             for (UINT i = 0; i < NumBarriers && scanned < RESOURCE_BARRIER_SCAN_MAX; i++) {
                 if (pBarriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION) {
-                    ResourceDetector::Get().RegisterResource(pBarriers[i].Transition.pResource);
+                    ResourceDetector::Get().RegisterResource(pBarriers[i].Transition.pResource, true);
                     scanned++;
                 }
             }

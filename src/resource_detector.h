@@ -19,6 +19,7 @@ public:
     static ResourceDetector& Get();
 
     void RegisterResource(ID3D12Resource* pResource);
+    void RegisterResource(ID3D12Resource* pResource, bool allowDuplicate);
     
     ID3D12Resource* GetBestMotionVectorCandidate();
     ID3D12Resource* GetBestDepthCandidate();

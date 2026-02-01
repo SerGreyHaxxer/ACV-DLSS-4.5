@@ -144,6 +144,7 @@ void StreamlineIntegration::Shutdown() {
 
 void StreamlineIntegration::NewFrame(IDXGISwapChain* pSwapChain) {
     if (!m_initialized) return;
+    m_needNewFrameToken = true;
     if (m_needFeatureReload) {
         LOG_INFO("Reloading Streamline features...");
         Shutdown();
@@ -155,6 +156,7 @@ void StreamlineIntegration::NewFrame(IDXGISwapChain* pSwapChain) {
     uint32_t prevFrameIndex = m_frameIndex;
     sl::Result res = slGetNewFrameToken(m_frameToken, &m_frameIndex);
     if (SL_FAILED(res)) return;
+    m_needNewFrameToken = false;
     if (m_frameGenMultiplier >= 2) {
         g_mfgDebug.baseFrames++;
         if (!g_mfgDebug.firstFrame && m_frameIndex > prevFrameIndex + 1) g_mfgDebug.generatedFramesDetected += (m_frameIndex - prevFrameIndex - 1);
@@ -228,9 +230,18 @@ void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain* pSwapChain) {
     EnsureCommandList();
     if (!m_pCommandList || !m_pCommandAllocator || !m_pCommandQueue) return;
     if (m_viewportWidth == 0 || m_viewportHeight == 0) return;
-    if (!m_colorBuffer || !m_motionVectors || !m_depthBuffer) return;
+    if (!m_colorBuffer || !m_motionVectors || !m_depthBuffer) {
+        LOG_WARN("[MFG] Missing buffers: color=%p depth=%p mv=%p", m_colorBuffer.Get(), m_depthBuffer.Get(), m_motionVectors.Get());
+        return;
+    }
+    D3D12_RESOURCE_DESC colorDesc = m_colorBuffer->GetDesc();
+    D3D12_RESOURCE_DESC depthDesc = m_depthBuffer->GetDesc();
     D3D12_RESOURCE_DESC mvDesc = m_motionVectors->GetDesc();
-    if (mvDesc.Width == 0 || mvDesc.Height == 0) return;
+    if (colorDesc.Width == 0 || colorDesc.Height == 0 || depthDesc.Width == 0 || depthDesc.Height == 0 || mvDesc.Width == 0 || mvDesc.Height == 0) {
+        LOG_WARN("[MFG] Invalid buffer sizes: color=%llux%llu depth=%llux%llu mv=%llux%llu",
+            colorDesc.Width, colorDesc.Height, depthDesc.Width, depthDesc.Height, mvDesc.Width, mvDesc.Height);
+        return;
+    }
     m_mvecScaleX = (float)m_viewportWidth / (float)mvDesc.Width;
     m_mvecScaleY = (float)m_viewportHeight / (float)mvDesc.Height;
     m_pCommandAllocator->Reset();
@@ -263,6 +274,7 @@ void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain* pSwapChain) {
     ID3D12CommandList* lists[] = { m_pCommandList.Get() };
     m_pCommandQueue->ExecuteCommandLists(1, lists);
 }
+
 
 void StreamlineIntegration::SetDLSSModeIndex(int modeIndex) {
     static const sl::DLSSMode kUiToMode[] = { sl::DLSSMode::eOff, sl::DLSSMode::eMaxPerformance, sl::DLSSMode::eBalanced, sl::DLSSMode::eMaxQuality, sl::DLSSMode::eUltraQuality, sl::DLSSMode::eDLAA };
@@ -352,6 +364,7 @@ void StreamlineIntegration::TagResources() {
         sl::ResourceTag(&colorOut, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilPresent, &fullExtent),
         sl::ResourceTag(&depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &fullExtent),
         sl::ResourceTag(&mvec, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &fullExtent),
+        sl::ResourceTag(&colorOut, sl::kBufferTypeBackbuffer, sl::ResourceLifecycle::eValidUntilPresent, &fullExtent),
     };
     m_viewport = sl::ViewportHandle(0);
     slSetTagForFrame(*m_frameToken, m_viewport, tags, static_cast<uint32_t>(std::size(tags)), nullptr);
@@ -376,7 +389,7 @@ void StreamlineIntegration::UpdateOptions() {
         slDLSSSetOptions(m_viewport, dlssOptions);
     }
     if (m_frameGenMultiplier >= 2) {
-        sl::ReflexOptions reflexOptions = {}; reflexOptions.mode = sl::ReflexMode::eLowLatencyWithBoost; reflexOptions.useMarkersToOptimize = true; slReflexSetOptions(reflexOptions);
+        sl::ReflexOptions reflexOptions = {}; reflexOptions.mode = sl::ReflexMode::eLowLatencyWithBoost; reflexOptions.useMarkersToOptimize = false; slReflexSetOptions(reflexOptions);
         if (m_dlssgSupported) {
             sl::DLSSGOptions fgOptions{}; fgOptions.mode = sl::DLSSGMode::eOn; fgOptions.numFramesToGenerate = (m_frameGenMultiplier > 1) ? (m_frameGenMultiplier - 1) : 1;
             m_viewport = sl::ViewportHandle(0);
