@@ -370,10 +370,23 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12Device::CreateCommittedResource(const D3D
 
 HRESULT STDMETHODCALLTYPE WrappedID3D12Device::CreatePlacedResource(ID3D12Heap* pH, UINT64 HO, const D3D12_RESOURCE_DESC* pD, D3D12_RESOURCE_STATES IS, const D3D12_CLEAR_VALUE* pO, REFIID riid, void** ppv) {
     HRESULT hr = m_pReal->CreatePlacedResource(pH, HO, pD, IS, pO, riid, ppv);
-    if (SUCCEEDED(hr) && ppv && *ppv && pD && pD->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
-        DXGI_FORMAT f = pD->Format;
-        if (f == DXGI_FORMAT_R16G16_FLOAT || f == DXGI_FORMAT_R16G16_UNORM || f == DXGI_FORMAT_R16G16_TYPELESS || f == DXGI_FORMAT_D32_FLOAT || f == DXGI_FORMAT_R32_FLOAT || f == DXGI_FORMAT_R32_TYPELESS || f == DXGI_FORMAT_B8G8R8A8_UNORM || f == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || f == DXGI_FORMAT_R8G8B8A8_UNORM || f == DXGI_FORMAT_R10G10B10A2_UNORM) {
-            ResourceDetector::Get().RegisterResource((ID3D12Resource*)*ppv);
+    if (SUCCEEDED(hr) && ppv && *ppv && pD) {
+        ID3D12Resource* pRes = (ID3D12Resource*)*ppv;
+        
+        if (pD->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+            DXGI_FORMAT f = pD->Format;
+            if (f == DXGI_FORMAT_R16G16_FLOAT || f == DXGI_FORMAT_R16G16_UNORM || f == DXGI_FORMAT_R16G16_TYPELESS || f == DXGI_FORMAT_D32_FLOAT || f == DXGI_FORMAT_R32_FLOAT || f == DXGI_FORMAT_R32_TYPELESS || f == DXGI_FORMAT_B8G8R8A8_UNORM || f == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || f == DXGI_FORMAT_R8G8B8A8_UNORM || f == DXGI_FORMAT_R10G10B10A2_UNORM) {
+                ResourceDetector::Get().RegisterResource(pRes);
+            }
+        }
+        else if (pD->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER && pH) {
+            D3D12_HEAP_DESC hDesc = pH->GetDesc();
+            if (hDesc.Properties.Type == D3D12_HEAP_TYPE_UPLOAD) {
+                uint8_t* mapped = nullptr; D3D12_RANGE range = { 0, 0 };
+                if (SUCCEEDED(pRes->Map(0, &range, reinterpret_cast<void**>(&mapped))) && mapped) {
+                    RegisterCbv(pRes, pD->Width, mapped);
+                }
+            }
         }
     }
     return hr;

@@ -180,7 +180,19 @@ void STDMETHODCALLTYPE HookedResourceBarrier(ID3D12GraphicsCommandList* pThis, U
 HRESULT STDMETHODCALLTYPE Hooked_CreatePlacedResource(ID3D12Device* pThis, ID3D12Heap* pHeap, UINT64 HeapOffset, const D3D12_RESOURCE_DESC* pDesc, D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE* pOptimizedClearValue, REFIID riid, void** ppvResource) {
     HRESULT hr = g_OriginalCreatePlacedResource(pThis, pHeap, HeapOffset, pDesc, InitialState, pOptimizedClearValue, riid, ppvResource);
     if (SUCCEEDED(hr) && ppvResource && *ppvResource) {
-        ResourceDetector::Get().RegisterResource((ID3D12Resource*)*ppvResource);
+        ID3D12Resource* pRes = (ID3D12Resource*)*ppvResource;
+        ResourceDetector::Get().RegisterResource(pRes);
+        
+        // Check for CBV
+        if (pDesc && pDesc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER && pHeap) {
+            D3D12_HEAP_DESC hDesc = pHeap->GetDesc();
+            if (hDesc.Properties.Type == D3D12_HEAP_TYPE_UPLOAD) {
+                uint8_t* mapped = nullptr; D3D12_RANGE range = { 0, 0 };
+                if (SUCCEEDED(pRes->Map(0, &range, reinterpret_cast<void**>(&mapped))) && mapped) {
+                    RegisterCbv(pRes, pDesc->Width, mapped);
+                }
+            }
+        }
     }
     return hr;
 }
@@ -188,7 +200,16 @@ HRESULT STDMETHODCALLTYPE Hooked_CreatePlacedResource(ID3D12Device* pThis, ID3D1
 HRESULT STDMETHODCALLTYPE Hooked_CreateCommittedResource(ID3D12Device* pThis, const D3D12_HEAP_PROPERTIES* pHeapProperties, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC* pDesc, D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE* pOptimizedClearValue, REFIID riid, void** ppvResource) {
     HRESULT hr = g_OriginalCreateCommittedResource(pThis, pHeapProperties, HeapFlags, pDesc, InitialResourceState, pOptimizedClearValue, riid, ppvResource);
     if (SUCCEEDED(hr) && ppvResource && *ppvResource) {
-        ResourceDetector::Get().RegisterResource((ID3D12Resource*)*ppvResource);
+        ID3D12Resource* pRes = (ID3D12Resource*)*ppvResource;
+        ResourceDetector::Get().RegisterResource(pRes);
+
+        // Check for CBV
+        if (pDesc && pHeapProperties && pHeapProperties->Type == D3D12_HEAP_TYPE_UPLOAD && pDesc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
+            uint8_t* mapped = nullptr; D3D12_RANGE range = { 0, 0 };
+            if (SUCCEEDED(pRes->Map(0, &range, reinterpret_cast<void**>(&mapped))) && mapped) {
+                RegisterCbv(pRes, pDesc->Width, mapped);
+            }
+        }
     }
     return hr;
 }
