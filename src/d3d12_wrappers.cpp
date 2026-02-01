@@ -46,10 +46,24 @@ namespace {
     float ScoreMatrixPair(const float* view, const float* proj) {
         float score = 0.0f;
         if (!LooksLikeMatrix(view) || !LooksLikeMatrix(proj)) return 0.0f;
+        
+        // View Matrix [15] is always 1.0
         if (fabsf(view[15] - 1.0f) < 0.01f) score += 0.2f;
-        if (fabsf(proj[15] - 1.0f) < 0.01f) score += 0.2f;
-        if (fabsf(proj[11] + 1.0f) < 0.2f) score += 0.3f; 
-        if (fabsf(view[3]) < 10000.0f && fabsf(view[7]) < 10000.0f && fabsf(view[11]) < 10000.0f) score += 0.3f;
+        
+        // Projection Matrix Checks
+        // Perspective: [15]=0, [11]=+/-1. This is what we want for 3D.
+        bool isPerspective = fabsf(proj[15]) < 0.01f && fabsf(fabsf(proj[11]) - 1.0f) < 0.1f;
+        
+        // Orthographic: [15]=1, [11]=0. This is usually UI.
+        bool isOrtho = fabsf(proj[15] - 1.0f) < 0.01f && fabsf(proj[11]) < 0.1f;
+
+        if (isPerspective) score += 0.6f; // High score for 3D perspective
+        else if (isOrtho) score += 0.0f;  // Ignore UI matrices
+        
+        // Sanity check translation elements
+        if (fabsf(view[3]) < 1.0f && fabsf(view[7]) < 1.0f && fabsf(view[11]) < 1.0f) score += 0.1f;
+        if (fabsf(view[12]) < 100000.0f && fabsf(view[13]) < 100000.0f && fabsf(view[14]) < 100000.0f) score += 0.1f;
+
         return score;
     }
 
