@@ -72,10 +72,11 @@ namespace {
         float bestScore = 0.0f;
         size_t bestOffset = 0;
         
-        // Optimization: Don't scan huge buffers completely, check first 16MB
-        size_t scanLimit = (size > 16777216) ? 16777216 : size;
+        // Optimization: Scan FULL buffer but use 256-byte alignment (D3D12 requirement)
+        // This makes scanning 64MB 4x faster than before (was 64-byte stride)
+        size_t scanLimit = size;
 
-        for (size_t offset = 0; offset + sizeof(float) * 32 <= scanLimit; offset += sizeof(float) * 16) {
+        for (size_t offset = 0; offset + sizeof(float) * 32 <= scanLimit; offset += 256) {
             const float* view = reinterpret_cast<const float*>(data + offset);
             const float* proj = view + 16;
             float score = ScoreMatrixPair(view, proj);
@@ -90,8 +91,6 @@ namespace {
         memcpy(outView, view, sizeof(float) * 16);
         memcpy(outProj, proj, sizeof(float) * 16);
         if (outScore) *outScore = bestScore;
-        // Hack: store offset in score decimals or return via param? 
-        // We'll just trust the caller knows we return the best one found.
         return true;
     }
 
@@ -296,41 +295,75 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
 
         
 
-        float tempView[16], tempProj[16], score = 0.0f;
+                float tempView[16], tempProj[16], score = 0.0f;
 
         
 
-        // Optimization: Don't scan huge buffers completely, check first 16MB
-
-        size_t scanLimit = (info.size > 16777216) ? 16777216 : info.size;
-
-        size_t foundOffset = 0;
-
-        bool foundInBuf = false;
-
-
-
-        for (size_t offset = 0; offset + sizeof(float) * 32 <= scanLimit; offset += sizeof(float) * 16) {
-
-            const float* view = reinterpret_cast<const float*>(info.cpuPtr + offset);
-
-            const float* proj = view + 16;
-
-            float s = ScoreMatrixPair(view, proj);
-
-            if (s > score) {
-
-                score = s;
-
-                foundOffset = offset;
-
-            }
-
-        }
+                
 
         
 
-        if (score >= 0.4f) {
+                // Optimization: Scan FULL buffer with 256-byte alignment
+
+        
+
+                size_t scanLimit = info.size;
+
+        
+
+                size_t foundOffset = 0;
+
+        
+
+                bool foundInBuf = false;
+
+        
+
+        
+
+        
+
+                for (size_t offset = 0; offset + sizeof(float) * 32 <= scanLimit; offset += 256) {
+
+        
+
+                    const float* view = reinterpret_cast<const float*>(info.cpuPtr + offset);
+
+        
+
+                    const float* proj = view + 16;
+
+        
+
+                    float s = ScoreMatrixPair(view, proj);
+
+        
+
+                    if (s > score) {
+
+        
+
+                        score = s;
+
+        
+
+                        foundOffset = offset;
+
+        
+
+                    }
+
+        
+
+                }
+
+        
+
+                
+
+        
+
+                if (score >= 0.4f) {
 
             foundInBuf = true;
 
