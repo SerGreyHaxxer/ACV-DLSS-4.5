@@ -233,6 +233,26 @@ ID3D12Resource* ResourceDetector::GetBestDepthCandidate() {
 
 ID3D12Resource* ResourceDetector::GetBestColorCandidate() {
     std::lock_guard<std::mutex> lock(m_mutex);
+    
+    // Heuristic: If we have a Motion Vector, prefer a Color buffer with matching resolution.
+    // This solves issues where the game upscales (Color=4K) but MVs are native (e.g. 1080p).
+    if (m_bestMotion) {
+        D3D12_RESOURCE_DESC mvDesc = m_bestMotion->GetDesc();
+        ID3D12Resource* bestMatch = nullptr;
+        float bestMatchScore = 0.0f;
+
+        for (const auto& cand : m_colorCandidates) {
+            if (cand.desc.Width == mvDesc.Width && cand.desc.Height == mvDesc.Height) {
+                if (cand.score > bestMatchScore && cand.score > 0.6f) {
+                    bestMatchScore = cand.score;
+                    bestMatch = cand.pResource.Get();
+                }
+            }
+        }
+        
+        if (bestMatch) return bestMatch;
+    }
+
     return m_bestColor.Get();
 }
 
