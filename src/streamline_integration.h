@@ -28,6 +28,7 @@ public:
     // Lifecycle
     bool Initialize(ID3D12Device* pDevice);
     void Shutdown();
+    bool IsInitialized() const { return m_initialized; }
     
     // Per-Frame Updates
     void NewFrame(IDXGISwapChain* pSwapChain);
@@ -78,6 +79,11 @@ public:
     // MFG Debug
     void PrintMFGStatus();
 
+    // Feature Support Getters
+    bool IsDLSSSupported() const { return m_dlssSupported; }
+    bool IsFrameGenSupported() const { return m_dlssgSupported; }
+    bool IsReflexSupported() const { return m_reflexSupported; }
+
 private:
     StreamlineIntegration() = default;
     ~StreamlineIntegration() = default;
@@ -98,6 +104,7 @@ private:
     bool m_dlssgSupported = false;
     bool m_mfgSupported = false;
     bool m_rayReconstructionSupported = false;
+    bool m_reflexSupported = false;
     
     // Current viewport
     unsigned int m_viewportWidth = 0;

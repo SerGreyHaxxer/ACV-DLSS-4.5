@@ -117,6 +117,16 @@ HRESULT WINAPI Hooked_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Mi
 PFN_ExecuteCommandLists g_OriginalExecuteCommandLists = nullptr;
 
 void STDMETHODCALLTYPE HookedExecuteCommandLists(ID3D12CommandQueue* pThis, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists) {
+    // Lazy Init for Streamline if we missed the D3D12CreateDevice hook
+    if (!StreamlineIntegration::Get().IsInitialized()) {
+        ID3D12Device* pDevice = nullptr;
+        if (SUCCEEDED(pThis->GetDevice(__uuidof(ID3D12Device), (void**)&pDevice))) {
+            LOG_INFO("Lazy initializing Streamline via ExecuteCommandLists...");
+            StreamlineIntegration::Get().Initialize(pDevice);
+            pDevice->Release();
+        }
+    }
+
     ResourceDetector::Get().NewFrame();
     StreamlineIntegration::Get().SetCommandQueue(pThis);
 
