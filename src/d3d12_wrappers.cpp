@@ -7,6 +7,7 @@
 #include <cfloat>
 #include <cmath>
 #include <atomic>
+#include <wrl/client.h>
 
 namespace {
     struct CameraCandidate {
@@ -23,7 +24,7 @@ namespace {
     CameraCandidate g_bestCamera;
     std::atomic<bool> g_loggedCamera(false);
     struct UploadCbvInfo {
-        ID3D12Resource* resource = nullptr;
+        Microsoft::WRL::ComPtr<ID3D12Resource> resource;
         D3D12_GPU_VIRTUAL_ADDRESS gpuBase = 0;
         uint64_t size = 0;
         uint8_t* cpuPtr = nullptr;
@@ -132,7 +133,7 @@ namespace {
 void RegisterCbv(ID3D12Resource* pResource, UINT64 size, uint8_t* cpuPtr) {
     std::lock_guard<std::mutex> lock(g_cbvMutex);
     UploadCbvInfo info{};
-    info.resource = pResource;
+    info.resource = pResource; // Smart pointer assignment
     info.gpuBase = pResource->GetGPUVirtualAddress();
     info.size = size;
     info.cpuPtr = cpuPtr;
@@ -198,7 +199,6 @@ D3D12_COMMAND_LIST_TYPE STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::GetT
 
 HRESULT STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::Close() {
     NotifyWrappedCommandListUsed();
-    ResourceDetector::Get().AnalyzeCommandList(this);
     float jitterX = 0.0f, jitterY = 0.0f;
     TryGetPatternJitter(jitterX, jitterY);
     CameraCandidate cam{};

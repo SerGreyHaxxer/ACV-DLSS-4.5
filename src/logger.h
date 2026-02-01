@@ -152,7 +152,8 @@ private:
         
         std::string msg = "[INIT] [" + std::string(level) + "] " + std::string(buffer);
         
-        // Push directly to queue so the thread handles it uniformly
+        // Push directly to queue with lock to ensure thread safety
+        std::lock_guard<std::mutex> lock(queueMutex);
         logQueue.push(msg);
     }
 };

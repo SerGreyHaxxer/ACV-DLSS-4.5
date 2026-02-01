@@ -12,6 +12,8 @@ struct ResourceCandidate {
     uint64_t lastFrameSeen;
 };
 
+#include <atomic> // Added
+
 class ResourceDetector {
 public:
     static ResourceDetector& Get();
@@ -41,10 +43,10 @@ private:
     std::vector<ResourceCandidate> m_depthCandidates;
     std::vector<ResourceCandidate> m_colorCandidates;
     
-    uint64_t m_frameCount = 0;
-    ID3D12Resource* m_bestMotion = nullptr;
-    ID3D12Resource* m_bestDepth = nullptr;
-    ID3D12Resource* m_bestColor = nullptr;
+    std::atomic<uint64_t> m_frameCount{0};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_bestMotion;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_bestDepth;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_bestColor;
     float m_bestMotionScore = 0.0f;
     float m_bestDepthScore = 0.0f;
     float m_bestColorScore = 0.0f;

@@ -41,13 +41,32 @@ void ResourceDetector::Clear() {
     LOG_INFO("Resource detector explicitly cleared.");
 }
 
+// Define a GUID for our tag: {25CDDAA4-B1C6-41E5-9C52-FE69FC2E6A3D}
+static const GUID RD_GEN_TAG = { 0x25cddaa4, 0xb1c6, 0x41e5, { 0x9c, 0x52, 0xfe, 0x69, 0xfc, 0x2e, 0x6a, 0x3d } };
+
 void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
     if (!pResource) return;
+
+    // OPTIMIZATION: Check if we've already processed this resource in the current "generation"
+    // We clear candidates every 900 frames. We can use frameCount / 900 as a generation ID.
+    uint64_t currentFrame = m_frameCount.load(std::memory_order_relaxed);
+    uint64_t currentGen = currentFrame / 900;
+    
+    uint64_t lastSeenGen = 0;
+    UINT dataSize = sizeof(uint64_t);
+    if (SUCCEEDED(pResource->GetPrivateData(RD_GEN_TAG, &dataSize, &lastSeenGen))) {
+        if (lastSeenGen == currentGen) {
+            return; // Already processed this generation
+        }
+    }
+
+    // Mark it as seen for this generation immediately
+    pResource->SetPrivateData(RD_GEN_TAG, sizeof(uint64_t), &currentGen);
 
     D3D12_RESOURCE_DESC desc = pResource->GetDesc();
     
     // EXTREME DEBUGGING: Log everything for the first 2000 resources
-    static uint64_t s_globalCounter = 0;
+    static std::atomic<uint64_t> s_globalCounter(0);
     if (s_globalCounter < 2000) {
         LOG_INFO("[EXTREME] Res: %dx%d Fmt:%d Dim:%d Flags:%d", 
             (int)desc.Width, (int)desc.Height, (int)desc.Format, (int)desc.Dimension, (int)desc.Flags);
@@ -60,12 +79,6 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
     // Ignore small buffers (likely UI icons or constant buffers)
     if (desc.Width < 64 || desc.Height < 64) return;
 
-    uint64_t frameCount = 0;
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        frameCount = m_frameCount;
-    }
-
     // Score for Motion Vectors
     float mvScore = ScoreMotionVector(desc);
 
@@ -76,7 +89,7 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
     float colorScore = ScoreColor(desc);
     
     // Debug logging for all potential candidates
-    static uint64_t s_debugCounter = 0;
+    static std::atomic<uint64_t> s_debugCounter(0);
     if (colorScore > 0.0f || mvScore > 0.0f || depthScore > 0.0f) {
         if (s_debugCounter < 50) { // Log first 50 candidates
             LOG_INFO("[MFG] Resource candidate: %dx%d Fmt:%d Flags:%d ColorScore:%.2f MVScore:%.2f DepthScore:%.2f", 
@@ -95,13 +108,13 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
         bool found = false;
         for (auto& cand : m_motionCandidates) {
             if (cand.pResource.Get() == pResource) {
-                cand.lastFrameSeen = frameCount;
+                cand.lastFrameSeen = currentFrame;
                 found = true;
                 break;
             }
         }
         if (!found) {
-            m_motionCandidates.push_back({pResource, mvScore, desc, frameCount});
+            m_motionCandidates.push_back({pResource, mvScore, desc, currentFrame});
             LOG_DEBUG("Found MV Candidate: %dx%d Fmt:%d Score:%.2f", 
                 desc.Width, desc.Height, desc.Format, mvScore);
         }
@@ -115,13 +128,13 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
         bool found = false;
         for (auto& cand : m_depthCandidates) {
             if (cand.pResource.Get() == pResource) {
-                cand.lastFrameSeen = frameCount;
+                cand.lastFrameSeen = currentFrame;
                 found = true;
                 break;
             }
         }
         if (!found) {
-            m_depthCandidates.push_back({pResource, depthScore, desc, frameCount});
+            m_depthCandidates.push_back({pResource, depthScore, desc, currentFrame});
         }
         if (depthScore >= m_bestDepthScore) {
             m_bestDepthScore = depthScore;
@@ -133,13 +146,13 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
         bool found = false;
         for (auto& cand : m_colorCandidates) {
             if (cand.pResource.Get() == pResource) {
-                cand.lastFrameSeen = frameCount;
+                cand.lastFrameSeen = currentFrame;
                 found = true;
                 break;
             }
         }
         if (!found) {
-            m_colorCandidates.push_back({pResource, colorScore, desc, frameCount});
+            m_colorCandidates.push_back({pResource, colorScore, desc, currentFrame});
             LOG_INFO("[MFG] Found Color Candidate: %dx%d Fmt:%d Score:%.2f", 
                 desc.Width, desc.Height, desc.Format, colorScore);
         }
@@ -208,22 +221,22 @@ float ResourceDetector::ScoreColor(const D3D12_RESOURCE_DESC& desc) {
 
 ID3D12Resource* ResourceDetector::GetBestMotionVectorCandidate() {
     std::lock_guard<std::mutex> lock(m_mutex);
-    return m_bestMotion;
+    return m_bestMotion.Get();
 }
 
 ID3D12Resource* ResourceDetector::GetBestDepthCandidate() {
     std::lock_guard<std::mutex> lock(m_mutex);
-    return m_bestDepth;
+    return m_bestDepth.Get();
 }
 
 ID3D12Resource* ResourceDetector::GetBestColorCandidate() {
     std::lock_guard<std::mutex> lock(m_mutex);
-    return m_bestColor;
+    return m_bestColor.Get();
 }
 
 uint64_t ResourceDetector::GetFrameCount() {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_frameCount;
+    // Atomic load
+    return m_frameCount.load();
 }
 
 std::string ResourceDetector::GetDebugInfo() {
