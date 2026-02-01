@@ -423,18 +423,29 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::Close() {
     NotifyWrappedCommandListUsed();
     float jitterX = 0.0f, jitterY = 0.0f;
     TryGetPatternJitter(jitterX, jitterY);
-    CameraCandidate cam{};
-    if (!FetchCamera(cam)) {
+    
+    // Throttle scanning to once per frame
+    static uint64_t s_lastScanFrame = 0;
+    uint64_t currentFrame = ResourceDetector::Get().GetFrameCount();
+    
+    if (currentFrame > s_lastScanFrame) {
         float view[16], proj[16], score = 0.0f;
-        if (TryScanAllCbvsForCamera(view, proj, &score, false)) {
-            UpdateBestCamera(view, proj, jitterX, jitterY);
+        static int s_camLog = 0;
+        bool doLog = (++s_camLog % 300 == 0); 
+
+        if (TryScanAllCbvsForCamera(view, proj, &score, doLog)) {
+            // Found it!
+            UpdateBestCamera(view, proj, jitterX, jitterY); // Update global best
+            StreamlineIntegration::Get().SetCameraData(view, proj, jitterX, jitterY);
+        } else {
+            StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
         }
-    }
-    if (FetchCamera(cam)) {
-        StreamlineIntegration::Get().SetCameraData(cam.view, cam.proj, cam.jitterX, cam.jitterY);
+        s_lastScanFrame = currentFrame;
     } else {
+        // Just update jitter using cached matrices
         StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
     }
+
     StreamlineIntegration::Get().EvaluateDLSS(this);
     return m_pReal->Close();
 }
