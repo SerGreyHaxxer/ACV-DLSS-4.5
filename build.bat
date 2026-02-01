@@ -13,15 +13,21 @@ echo DLSS 4 Proxy DLL Build Script
 echo ============================================
 
 REM Check for NVIDIA Streamline SDK
-set "STREAMLINE_SDK=%USERPROFILE%\Downloads\streamline-sdk-v2.10.3"
+if exist "external\streamline\lib\x64\sl.interposer.lib" (
+    set "STREAMLINE_SDK=external\streamline"
+) else (
+    set "STREAMLINE_SDK=%USERPROFILE%\Downloads\streamline-sdk-v2.10.3"
+)
+
 if not exist "%STREAMLINE_SDK%\lib\x64\sl.interposer.lib" (
     echo ERROR: NVIDIA Streamline SDK not found!
-    echo Expected at: %STREAMLINE_SDK%
+    echo Checked local: external\streamline
+    echo Checked global: %USERPROFILE%\Downloads\streamline-sdk-v2.10.3
     echo.
     echo Please download the SDK from:
     echo https://developer.nvidia.com/rtx/streamline
     echo.
-    echo Or update this script with the correct path.
+    echo Or place it in external\streamline
     exit /b 1
 )
 echo Found Streamline SDK: %STREAMLINE_SDK%
@@ -85,7 +91,7 @@ cl /LD /EHsc /std:c++17 /O2 ^
     /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX ^
     /I. ^
     /I"local_headers" ^
-    /I"%USERPROFILE%\Downloads\streamline-sdk-v2.10.3\include" ^
+    /I"%STREAMLINE_SDK%\include" ^
     /Fe:bin\dxgi.dll ^
     main.cpp ^
     src\proxy.cpp ^
@@ -102,7 +108,7 @@ cl /LD /EHsc /std:c++17 /O2 ^
     src\iat_utils.cpp ^
     /link ^
     d3d12.lib dxgi.lib dxguid.lib user32.lib dbghelp.lib gdi32.lib shell32.lib Advapi32.lib ^
-    "%USERPROFILE%\Downloads\streamline-sdk-v2.10.3\lib\x64\sl.interposer.lib" ^
+    "%STREAMLINE_SDK%\lib\x64\sl.interposer.lib" ^
     /DEF:dxgi.def ^
     /DLL
 

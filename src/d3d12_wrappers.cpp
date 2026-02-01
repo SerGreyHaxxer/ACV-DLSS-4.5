@@ -62,16 +62,20 @@ namespace {
         
         // Sanity check translation elements
         if (fabsf(view[3]) < 1.0f && fabsf(view[7]) < 1.0f && fabsf(view[11]) < 1.0f) score += 0.1f;
-        if (fabsf(view[12]) < 100000.0f && fabsf(view[13]) < 100000.0f && fabsf(view[14]) < 100000.0f) score += 0.1f;
+        if (fabsf(view[12]) < CAMERA_POS_TOLERANCE && fabsf(view[13]) < CAMERA_POS_TOLERANCE && fabsf(view[14]) < CAMERA_POS_TOLERANCE) score += 0.1f;
 
         return score;
     }
 
     bool TryExtractCameraFromBuffer(const uint8_t* data, size_t size, float* outView, float* outProj, float* outScore) {
-        if (!data || size < sizeof(float) * 32) return false;
+        if (!data || size < CAMERA_CBV_MIN_SIZE) return false;
         float bestScore = 0.0f;
         size_t bestOffset = 0;
-        for (size_t offset = 0; offset + sizeof(float) * 32 <= size; offset += sizeof(float) * 16) {
+        
+        // Optimization: Don't scan huge buffers completely, check first 4KB
+        size_t scanLimit = (size > 4096) ? 4096 : size;
+
+        for (size_t offset = 0; offset + sizeof(float) * 32 <= scanLimit; offset += sizeof(float) * 16) {
             const float* view = reinterpret_cast<const float*>(data + offset);
             const float* proj = view + 16;
             float score = ScoreMatrixPair(view, proj);
@@ -154,6 +158,8 @@ void RegisterCbv(ID3D12Resource* pResource, UINT64 size, uint8_t* cpuPtr) {
     g_cbvInfos.push_back(info);
 }
 
+static D3D12_GPU_VIRTUAL_ADDRESS s_lastCameraCbv = 0;
+
 bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates) {
     std::lock_guard<std::mutex> lock(g_cbvMutex);
     auto it = std::remove_if(g_cbvInfos.begin(), g_cbvInfos.end(), [](const UploadCbvInfo& info) {
@@ -165,21 +171,45 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
         return false;
     });
     if (it != g_cbvInfos.end()) g_cbvInfos.erase(it, g_cbvInfos.end());
+
+    // OPTIMIZATION: Check last known good buffer first
+    if (s_lastCameraCbv != 0) {
+        for (const auto& info : g_cbvInfos) {
+            if (info.gpuBase == s_lastCameraCbv) {
+                float tempView[16], tempProj[16], score = 0.0f;
+                if (TryExtractCameraFromBuffer(info.cpuPtr, static_cast<size_t>(info.size), tempView, tempProj, &score)) {
+                    memcpy(outView, tempView, sizeof(float) * 16);
+                    memcpy(outProj, tempProj, sizeof(float) * 16);
+                    if (outScore) *outScore = score;
+                    return true;
+                }
+            }
+        }
+    }
+
     float bestScore = 0.0f;
     bool found = false;
+    D3D12_GPU_VIRTUAL_ADDRESS foundGpuBase = 0;
+
     for (const auto& info : g_cbvInfos) {
-        if (!info.cpuPtr || info.size < sizeof(float) * 32) continue;
+        if (!info.cpuPtr || info.size < CAMERA_CBV_MIN_SIZE) continue;
         float tempView[16], tempProj[16], score = 0.0f;
         if (TryExtractCameraFromBuffer(info.cpuPtr, static_cast<size_t>(info.size), tempView, tempProj, &score)) {
             if (score > bestScore) {
                 bestScore = score;
                 memcpy(outView, tempView, sizeof(float) * 16);
                 memcpy(outProj, tempProj, sizeof(float) * 16);
+                foundGpuBase = info.gpuBase;
                 found = true;
             }
         }
     }
-    if (found && outScore) *outScore = bestScore;
+
+    if (found) {
+        s_lastCameraCbv = foundGpuBase;
+        if (outScore) *outScore = bestScore;
+    }
+
     return found;
 }
 

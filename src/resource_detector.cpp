@@ -1,5 +1,6 @@
 #include "resource_detector.h"
 #include "logger.h"
+#include "dlss4_config.h"
 #include <sstream>
 #include <iomanip>
 
@@ -13,7 +14,7 @@ void ResourceDetector::NewFrame() {
     m_frameCount++;
     
     // Periodically clear old candidates to adapt to resolution changes
-    if (m_frameCount % 900 == 0) {
+    if (m_frameCount % RESOURCE_CLEANUP_INTERVAL == 0) {
         m_motionCandidates.clear();
         m_depthCandidates.clear();
         m_colorCandidates.clear();
@@ -48,9 +49,8 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
     if (!pResource) return;
 
     // OPTIMIZATION: Check if we've already processed this resource in the current "generation"
-    // We clear candidates every 900 frames. We can use frameCount / 900 as a generation ID.
     uint64_t currentFrame = m_frameCount.load(std::memory_order_relaxed);
-    uint64_t currentGen = currentFrame / 900;
+    uint64_t currentGen = currentFrame / RESOURCE_CLEANUP_INTERVAL;
     
     uint64_t lastSeenGen = 0;
     UINT dataSize = sizeof(uint64_t);
@@ -65,16 +65,6 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
 
     D3D12_RESOURCE_DESC desc = pResource->GetDesc();
     
-    // EXTREME DEBUGGING: Log everything for the first 2000 resources
-    /*
-    static std::atomic<uint64_t> s_globalCounter(0);
-    if (s_globalCounter < 2000) {
-        LOG_INFO("[EXTREME] Res: %dx%d Fmt:%d Dim:%d Flags:%d", 
-            (int)desc.Width, (int)desc.Height, (int)desc.Format, (int)desc.Dimension, (int)desc.Flags);
-        s_globalCounter++;
-    }
-    */
-
     // Ignore non-texture resources
     if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return;
     
@@ -90,21 +80,16 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
     // Score for Color (Input)
     float colorScore = ScoreColor(desc);
     
-    // Debug logging for all potential candidates
-    static std::atomic<uint64_t> s_debugCounter(0);
-    if (colorScore > 0.0f || mvScore > 0.0f || depthScore > 0.0f) {
-        if (s_debugCounter < 50) { // Log first 50 candidates
-            LOG_INFO("[MFG] Resource candidate: %dx%d Fmt:%d Flags:%d ColorScore:%.2f MVScore:%.2f DepthScore:%.2f", 
-                desc.Width, desc.Height, desc.Format, desc.Flags, colorScore, mvScore, depthScore);
-            s_debugCounter++;
-        }
-    }
-    
     if (mvScore <= 0.5f && depthScore <= 0.5f && colorScore <= 0.5f) {
         return;
     }
 
     std::lock_guard<std::mutex> lock(m_mutex);
+
+    // Safety cap to prevent unbounded growth if GetPrivateData fails
+    if (m_colorCandidates.size() > 500) m_colorCandidates.clear();
+    if (m_motionCandidates.size() > 500) m_motionCandidates.clear();
+    if (m_depthCandidates.size() > 500) m_depthCandidates.clear();
 
     if (mvScore > 0.5f) {
         bool found = false;

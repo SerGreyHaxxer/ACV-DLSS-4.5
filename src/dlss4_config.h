@@ -59,3 +59,10 @@
 
 // Application ID for NGX (Spoofing Generic/Dev ID to force DLSS enablement)
 #define NGX_APP_ID 0        // Generic/Development AppID
+
+// -------------------------------
+// Resource Detector & Camera Heuristics
+// -------------------------------
+#define RESOURCE_CLEANUP_INTERVAL 900 // Frames between clearing resource cache
+#define CAMERA_CBV_MIN_SIZE (sizeof(float) * 32) // Minimum size for camera constant buffer
+#define CAMERA_POS_TOLERANCE 100000.0f // Max reasonable value for camera position

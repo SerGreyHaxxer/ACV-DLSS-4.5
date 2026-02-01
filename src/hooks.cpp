@@ -52,14 +52,16 @@ void SetPatternJitterAddress(uintptr_t address) {
 bool TryGetPatternJitter(float& jitterX, float& jitterY) {
     uintptr_t addr = g_JitterAddress.load();
     if (!addr) return false;
-    __try {
-        const float* vals = reinterpret_cast<const float*>(addr);
-        jitterX = vals[0];
-        jitterY = vals[1];
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
+    
+    // Safely check if memory is readable
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi)) == 0) return false;
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return false;
+
+    const float* vals = reinterpret_cast<const float*>(addr);
+    jitterX = vals[0];
+    jitterY = vals[1];
+    return true;
 }
 
 // ============================================================================
@@ -204,8 +206,9 @@ HRESULT STDMETHODCALLTYPE Hooked_Close(ID3D12GraphicsCommandList* pThis) {
 // ============================================================================
 
 void HookFactoryIfNeeded(void* pFactory) {
+    if (g_HooksInitialized.load(std::memory_order_acquire)) return;
     std::lock_guard<std::mutex> lock(g_HookMutex);
-    if (g_HooksInitialized) return;
+    if (g_HooksInitialized.load(std::memory_order_relaxed)) return;
     if (!pFactory) return;
     
     // Pattern Scan for Jitter
