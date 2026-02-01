@@ -442,11 +442,14 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::Close() {
 HRESULT STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::Reset(ID3D12CommandAllocator* pAllocator, ID3D12PipelineState* pInitialState) { return m_pReal->Reset(pAllocator, pInitialState); }
 
 void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::ResourceBarrier(UINT NumBarriers, const D3D12_RESOURCE_BARRIER* pBarriers) {
+    // DISABLED: Too expensive.
+    /*
     for (UINT i = 0; i < NumBarriers; i++) {
         if (pBarriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION) {
             ResourceDetector::Get().RegisterResource(pBarriers[i].Transition.pResource);
         }
     }
+    */
     m_pReal->ResourceBarrier(NumBarriers, pBarriers);
 }
 

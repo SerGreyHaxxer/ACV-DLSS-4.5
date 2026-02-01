@@ -167,6 +167,8 @@ typedef HRESULT(STDMETHODCALLTYPE* PFN_Close)(ID3D12GraphicsCommandList*);
 PFN_Close g_OriginalClose = nullptr;
 
 void STDMETHODCALLTYPE HookedResourceBarrier(ID3D12GraphicsCommandList* pThis, UINT NumBarriers, const D3D12_RESOURCE_BARRIER* pBarriers) {
+    // DISABLED: Too expensive. We catch resources at creation.
+    /*
     if (pBarriers) {
         for (UINT i = 0; i < NumBarriers; i++) {
             if (pBarriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION) {
@@ -174,6 +176,7 @@ void STDMETHODCALLTYPE HookedResourceBarrier(ID3D12GraphicsCommandList* pThis, U
             }
         }
     }
+    */
     g_OriginalResourceBarrier(pThis, NumBarriers, pBarriers);
 }
 
