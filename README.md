@@ -8,7 +8,7 @@ This mod replaces the game's TAA with **NVIDIA DLSS 4.5** and adds **Frame Gener
 
 ---
 
-## ðŸš€ Easy Installation
+## [!] Easy Installation
 
 ### 1. Build
 Double-click `build.bat`.
@@ -26,14 +26,14 @@ Launch Assassin's Creed Valhalla.
 
 ---
 
-## ðŸ“‹ Requirements
+## [?] Requirements
 *   **GPU:** NVIDIA RTX 20/30/40/50 series. (Frame Gen requires RTX 40/50).
 *   **OS:** Windows 10/11.
 *   **Driver:** Latest NVIDIA Drivers (560+).
 
 ---
 
-## ðŸ› ï¸ Troubleshooting
+## [X] Troubleshooting
 *   **Menu won't open?** Check `dlss4_proxy.log` in the game folder.
 *   **Low FPS?** Make sure you set Resolution Scale to 50% in the game settings. The mod upscales this back to 4K.
 *   **Crashes?** Disable overlays (Ubisoft Connect, Discord, MSI Afterburner).
