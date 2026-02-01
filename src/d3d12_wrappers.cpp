@@ -426,7 +426,7 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::Close() {
     
     // Throttle scanning to once per frame
     static uint64_t s_lastScanFrame = 0;
-    uint64_t currentFrame = ResourceDetector::Get().GetFrameCount();
+    uint64_t currentFrame = StreamlineIntegration::Get().GetFrameCount();
     
     if (currentFrame > s_lastScanFrame) {
         float view[16], proj[16], score = 0.0f;

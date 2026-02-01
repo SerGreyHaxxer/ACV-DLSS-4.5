@@ -83,6 +83,9 @@ public:
     bool IsDLSSSupported() const { return m_dlssSupported; }
     bool IsFrameGenSupported() const { return m_dlssgSupported; }
     bool IsReflexSupported() const { return m_reflexSupported; }
+    
+    // Frame Tracking
+    uint32_t GetFrameCount() const { return m_frameIndex; }
 
 private:
     StreamlineIntegration() = default;

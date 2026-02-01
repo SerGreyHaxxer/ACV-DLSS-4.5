@@ -223,9 +223,9 @@ HRESULT STDMETHODCALLTYPE Hooked_Close(ID3D12GraphicsCommandList* pThis) {
         TryGetPatternJitter(jitterX, jitterY);
         
         static uint64_t s_lastScanFrame = 0;
-        uint64_t currentFrame = ResourceDetector::Get().GetFrameCount();
+        uint64_t currentFrame = StreamlineIntegration::Get().GetFrameCount();
         
-        // Scan only once per frame to avoid CPU kill
+        // Scan only once per frame (Present) to avoid CPU kill
         if (currentFrame > s_lastScanFrame) {
             float view[16], proj[16], score = 0.0f;
             static int s_camLog = 0;
@@ -234,12 +234,10 @@ HRESULT STDMETHODCALLTYPE Hooked_Close(ID3D12GraphicsCommandList* pThis) {
             if (TryScanAllCbvsForCamera(view, proj, &score, doLog)) {
                 StreamlineIntegration::Get().SetCameraData(view, proj, jitterX, jitterY);
             } else {
-                // If scan fails, we still pass Jitter to SetCameraData (which uses cached matrices if available)
                 StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
             }
             s_lastScanFrame = currentFrame;
         } else {
-            // Same frame, just update Jitter (cheap)
             StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
         }
         
