@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <dxgi1_4.h>
 #include <d3d12.h>
+#include <vector>
 
 struct ImGui_ImplDX12_InitInfo;
 
@@ -29,10 +30,13 @@ private:
     void ReleaseRenderTargets();
     void ApplyStyle();
     void BuildMainMenu();
+    void BuildSetupWizard();
     void BuildFPSOverlay();
     void BuildVignette();
     void BuildDebugWindow();
     void BuildTexturesIfNeeded();
+    void UpdateCursorState();
+    void UpdateInputState();
     static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 public:
     void AllocateSrv(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* out_cpu, D3D12_GPU_DESCRIPTOR_HANDLE* out_gpu);
@@ -47,8 +51,11 @@ private:
     bool m_showDebug = false;
     int* m_pendingHotkeyTarget = nullptr;
     bool m_needRebuildTextures = true;
+    bool m_cursorUnlocked = false;
     UINT m_width = 0;
     UINT m_height = 0;
+    RECT m_prevClip = {};
+    bool m_showSetupWizard = false;
 
     float m_cachedTotalFPS = 0.0f;
     float m_cachedJitterX = 0.0f;
@@ -65,8 +72,9 @@ private:
     IDXGISwapChain3* m_swapChain = nullptr;
     ID3D12DescriptorHeap* m_srvHeap = nullptr;
     ID3D12DescriptorHeap* m_rtvHeap = nullptr;
-    ID3D12GraphicsCommandList* m_commandList = nullptr;
-    ID3D12CommandAllocator* m_commandAllocator = nullptr;
+    std::vector<ID3D12GraphicsCommandList*> m_commandLists;
+    std::vector<ID3D12CommandAllocator*> m_commandAllocators;
+    std::vector<UINT64> m_frameFenceValues;
     ID3D12Fence* m_fence = nullptr;
     HANDLE m_fenceEvent = nullptr;
     UINT64 m_fenceValue = 0;

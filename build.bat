@@ -31,6 +31,24 @@ if not exist "%STREAMLINE_SDK%\lib\x64\sl.interposer.lib" (
     exit /b 1
 )
 echo Found Streamline SDK: %STREAMLINE_SDK%
+set "STREAMLINE_BIN=%STREAMLINE_SDK%\bin\x64"
+
+REM Check for NVIDIA NVAPI SDK (GPU metrics)
+if exist "external\nvapi\nvapi-main\amd64\nvapi64.lib" (
+    set "NVAPI_SDK=external\nvapi\nvapi-main"
+) else (
+    set "NVAPI_SDK=%USERPROFILE%\Downloads\nvapi-main"
+)
+if not exist "%NVAPI_SDK%\amd64\nvapi64.lib" (
+    echo ERROR: NVIDIA NVAPI SDK not found!
+    echo Checked local: external\nvapi\nvapi-main
+    echo Checked global: %USERPROFILE%\Downloads\nvapi-main
+    echo.
+    echo Please download NVAPI from:
+    echo https://github.com/NVIDIA/nvapi
+    exit /b 1
+)
+echo Found NVAPI SDK: %NVAPI_SDK%
 
 REM Check if cl.exe is available
 where cl >nul 2>&1
@@ -92,6 +110,7 @@ cl /LD /EHsc /std:c++17 /O2 ^
     /I. ^
     /I"local_headers" ^
     /I"%STREAMLINE_SDK%\include" ^
+    /I"%NVAPI_SDK%" ^
     /I"external\imgui" ^
     /Fe:bin\dxgi.dll ^
     main.cpp ^
@@ -117,6 +136,7 @@ cl /LD /EHsc /std:c++17 /O2 ^
     /link ^
     d3d12.lib dxgi.lib dxguid.lib user32.lib dbghelp.lib gdi32.lib shell32.lib Advapi32.lib ^
     "%STREAMLINE_SDK%\lib\x64\sl.interposer.lib" ^
+    "%NVAPI_SDK%\amd64\nvapi64.lib" ^
     /DEF:dxgi.def ^
     /DLL
 
@@ -129,6 +149,7 @@ if %errorlevel% equ 0 (
     echo.
     echo Deploying to game folder...
     set "DLSS4_SKIP_PAUSE=1"
+    set "DLSS4_SDK_BIN=%STREAMLINE_BIN%"
     powershell -ExecutionPolicy Bypass -File "Install.ps1"
     echo ============================================
 ) else (

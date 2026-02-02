@@ -27,6 +27,7 @@ public:
     
     // Internal
     void HandleKey(int vKey);
+    bool HasHookInstalled() const { return m_hHook != nullptr; }
 
 private:
     InputHandler() = default;

@@ -4,6 +4,7 @@
 #include "config_manager.h"
 #include <sstream>
 #include <iomanip>
+#include <algorithm>
 
 ResourceDetector& ResourceDetector::Get() {
     static ResourceDetector instance;
@@ -13,6 +14,25 @@ ResourceDetector& ResourceDetector::Get() {
 void ResourceDetector::NewFrame() {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_frameCount++;
+    const uint64_t currentFrame = m_frameCount.load();
+    if (!m_motionCandidates.empty()) {
+        m_motionCandidates.erase(std::remove_if(m_motionCandidates.begin(), m_motionCandidates.end(),
+            [currentFrame](const ResourceCandidate& cand) {
+                return (currentFrame - cand.lastFrameSeen) > RESOURCE_STALE_FRAMES;
+            }), m_motionCandidates.end());
+    }
+    if (!m_depthCandidates.empty()) {
+        m_depthCandidates.erase(std::remove_if(m_depthCandidates.begin(), m_depthCandidates.end(),
+            [currentFrame](const ResourceCandidate& cand) {
+                return (currentFrame - cand.lastFrameSeen) > RESOURCE_STALE_FRAMES;
+            }), m_depthCandidates.end());
+    }
+    if (!m_colorCandidates.empty()) {
+        m_colorCandidates.erase(std::remove_if(m_colorCandidates.begin(), m_colorCandidates.end(),
+            [currentFrame](const ResourceCandidate& cand) {
+                return (currentFrame - cand.lastFrameSeen) > RESOURCE_STALE_FRAMES;
+            }), m_colorCandidates.end());
+    }
     
     // Periodically clear old candidates to adapt to resolution changes
     if (m_frameCount % RESOURCE_CLEANUP_INTERVAL == 0) {
@@ -179,77 +199,110 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDup
     bool quietScan = ConfigManager::Get().Data().quietResourceScan;
     if (mvScore >= 0.5f) {
         bool found = false;
+        ResourceCandidate* target = nullptr;
+        uint64_t lastSeenFrame = currentFrame;
         for (auto& cand : m_motionCandidates) {
             if (cand.pResource.Get() == pResource) {
+                lastSeenFrame = cand.lastFrameSeen;
                 cand.lastFrameSeen = currentFrame;
                 cand.score = mvScore;
+                cand.seenCount = std::min<uint32_t>(cand.seenCount + 1, RESOURCE_FREQUENCY_HIT_CAP);
+                target = &cand;
                 found = true;
                 break;
             }
         }
         if (!found) {
-            m_motionCandidates.push_back({pResource, mvScore, desc, currentFrame});
+            m_motionCandidates.push_back({pResource, mvScore, desc, currentFrame, 1});
+            target = &m_motionCandidates.back();
             if (!quietScan) {
                 LOG_DEBUG("Found MV Candidate: %dx%d Fmt:%d Score:%.2f", 
                     desc.Width, desc.Height, desc.Format, mvScore);
             }
         }
-        if (mvScore >= m_bestMotionScore) {
-            m_bestMotionScore = mvScore;
+        float adjusted = mvScore;
+        if (currentFrame - lastSeenFrame <= RESOURCE_RECENCY_FRAMES) adjusted += RESOURCE_RECENCY_BONUS;
+        if (target) {
+            adjusted += RESOURCE_FREQUENCY_BONUS * (std::min<uint32_t>(target->seenCount, RESOURCE_FREQUENCY_HIT_CAP) / (float)RESOURCE_FREQUENCY_HIT_CAP);
+        }
+        if (adjusted >= m_bestMotionScore) {
+            m_bestMotionScore = adjusted;
             m_bestMotion = pResource;
             if (!quietScan) {
                 LOG_INFO("[DLSSG] New BEST MV: %dx%d Fmt:%d Score:%.2f Ptr:%p", 
-                    desc.Width, desc.Height, desc.Format, mvScore, pResource);
+                    desc.Width, desc.Height, desc.Format, adjusted, pResource);
             }
         }
     }
 
     if (depthScore >= 0.5f) {
         bool found = false;
+        ResourceCandidate* target = nullptr;
+        uint64_t lastSeenFrame = currentFrame;
         for (auto& cand : m_depthCandidates) {
             if (cand.pResource.Get() == pResource) {
+                lastSeenFrame = cand.lastFrameSeen;
                 cand.lastFrameSeen = currentFrame;
                 cand.score = depthScore;
+                cand.seenCount = std::min<uint32_t>(cand.seenCount + 1, RESOURCE_FREQUENCY_HIT_CAP);
+                target = &cand;
                 found = true;
                 break;
             }
         }
         if (!found) {
-            m_depthCandidates.push_back({pResource, depthScore, desc, currentFrame});
+            m_depthCandidates.push_back({pResource, depthScore, desc, currentFrame, 1});
+            target = &m_depthCandidates.back();
         }
-        if (depthScore >= m_bestDepthScore) {
-            m_bestDepthScore = depthScore;
+        float adjusted = depthScore;
+        if (currentFrame - lastSeenFrame <= RESOURCE_RECENCY_FRAMES) adjusted += RESOURCE_RECENCY_BONUS;
+        if (target) {
+            adjusted += RESOURCE_FREQUENCY_BONUS * (std::min<uint32_t>(target->seenCount, RESOURCE_FREQUENCY_HIT_CAP) / (float)RESOURCE_FREQUENCY_HIT_CAP);
+        }
+        if (adjusted >= m_bestDepthScore) {
+            m_bestDepthScore = adjusted;
             m_bestDepth = pResource;
             if (!quietScan) {
                 LOG_INFO("[DLSSG] New BEST Depth: %dx%d Fmt:%d Score:%.2f Ptr:%p", 
-                    desc.Width, desc.Height, desc.Format, depthScore, pResource);
+                    desc.Width, desc.Height, desc.Format, adjusted, pResource);
             }
         }
     }
 
     if (colorScore >= 0.5f) {
         bool found = false;
+        ResourceCandidate* target = nullptr;
+        uint64_t lastSeenFrame = currentFrame;
         for (auto& cand : m_colorCandidates) {
             if (cand.pResource.Get() == pResource) {
+                lastSeenFrame = cand.lastFrameSeen;
                 cand.lastFrameSeen = currentFrame;
                 cand.score = colorScore;
+                cand.seenCount = std::min<uint32_t>(cand.seenCount + 1, RESOURCE_FREQUENCY_HIT_CAP);
+                target = &cand;
                 found = true;
                 break;
             }
         }
         if (!found) {
-            m_colorCandidates.push_back({pResource, colorScore, desc, currentFrame});
+            m_colorCandidates.push_back({pResource, colorScore, desc, currentFrame, 1});
+            target = &m_colorCandidates.back();
             if (!quietScan) {
                 LOG_INFO("[DLSSG] Found Color Candidate: %dx%d Fmt:%d Score:%.2f", 
                     desc.Width, desc.Height, desc.Format, colorScore);
             }
         }
-        if (colorScore >= m_bestColorScore) {
-            m_bestColorScore = colorScore;
+        float adjusted = colorScore;
+        if (currentFrame - lastSeenFrame <= RESOURCE_RECENCY_FRAMES) adjusted += RESOURCE_RECENCY_BONUS;
+        if (target) {
+            adjusted += RESOURCE_FREQUENCY_BONUS * (std::min<uint32_t>(target->seenCount, RESOURCE_FREQUENCY_HIT_CAP) / (float)RESOURCE_FREQUENCY_HIT_CAP);
+        }
+        if (adjusted >= m_bestColorScore) {
+            m_bestColorScore = adjusted;
             m_bestColor = pResource;
             if (!quietScan) {
                 LOG_INFO("[DLSSG] New BEST Color: %dx%d Fmt:%d Score:%.2f Ptr:%p", 
-                    desc.Width, desc.Height, desc.Format, colorScore, pResource);
+                    desc.Width, desc.Height, desc.Format, adjusted, pResource);
             }
         }
     }
@@ -257,6 +310,9 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDup
 
 float ResourceDetector::ScoreMotionVector(const D3D12_RESOURCE_DESC& desc) {
     float score = 0.0f;
+
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return 0.0f;
+    if (desc.Width < 64 || desc.Height < 64) return 0.0f;
 
     // Motion vectors are usually R16G16
     if (desc.Format == DXGI_FORMAT_R16G16_FLOAT) score += 0.8f;
@@ -270,9 +326,6 @@ float ResourceDetector::ScoreMotionVector(const D3D12_RESOURCE_DESC& desc) {
     else if (desc.Format == DXGI_FORMAT_R16G16_TYPELESS) score += 0.5f; // Typeless
     else if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) score += 0.3f;
     else return 0.0f; // Not a likely MV format
-
-    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return 0.0f;
-    
     // Flags: often allow UAV (for compute generation)
     if (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) score += 0.2f;
     if (desc.SampleDesc.Count > 1) score -= RESOURCE_MSAA_PENALTY;
@@ -294,6 +347,9 @@ float ResourceDetector::ScoreMotionVector(const D3D12_RESOURCE_DESC& desc) {
 float ResourceDetector::ScoreDepth(const D3D12_RESOURCE_DESC& desc) {
     float score = 0.0f;
     
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return 0.0f;
+    if (desc.Width < 64 || desc.Height < 64) return 0.0f;
+
     if (desc.Format == DXGI_FORMAT_D32_FLOAT) score += 0.9f;
     else if (desc.Format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT) score += 0.8f;
     else if (desc.Format == DXGI_FORMAT_R32_FLOAT) score += 0.7f; // Read-only depth
@@ -324,6 +380,9 @@ float ResourceDetector::ScoreDepth(const D3D12_RESOURCE_DESC& desc) {
 float ResourceDetector::ScoreColor(const D3D12_RESOURCE_DESC& desc) {
     float score = 0.0f;
     
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return 0.0f;
+    if (desc.Width < 64 || desc.Height < 64) return 0.0f;
+
     // Standard Backbuffer Formats
     if (desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) score += 0.5f;
     else if (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) score += 0.5f; // Added BGRA (Format 87/91)
@@ -424,7 +483,8 @@ std::string ResourceDetector::GetDebugInfo() {
             ss << "Ptr: " << (void*)c.pResource.Get() 
                << " | " << c.desc.Width << "x" << c.desc.Height 
                << " | Fmt: " << c.desc.Format 
-               << " | Score: " << std::fixed << std::setprecision(2) << c.score 
+               << " | Score: " << std::fixed << std::setprecision(2) << c.score
+               << " | Hits: " << c.seenCount
                << " | Last: " << c.lastFrameSeen << "\r\n";
         }
         ss << "\r\n";

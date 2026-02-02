@@ -1,6 +1,7 @@
 #include "proxy.h"
 #include "logger.h"
 #include "config_manager.h"
+#include "crash_handler.h"
 #include "hooks.h"
 #include "dxgi_wrappers.h"
 #include <string>
@@ -11,7 +12,16 @@
 
 // Simple startup logger to debug early crashes (Duplicated from main.cpp)
 // Force C linkage to be safe
+static std::atomic<bool> s_startupTraceEnabled(true);
+
+void SetStartupTraceEnabled(bool enabled) {
+    s_startupTraceEnabled.store(enabled);
+}
+
 extern "C" void LogStartup(const char* msg) {
+    if (!s_startupTraceEnabled.load()) {
+        return;
+    }
     FILE* fp;
     if (fopen_s(&fp, "startup_trace.log", "a") == 0) {
         fprintf(fp, "[PROXY] %s\n", msg);
@@ -73,6 +83,8 @@ bool InitializeProxy() {
         LOG_INFO("[DLSSG] d3d12.dll not yet loaded - proxy loaded first (good!)");
     }
     if (!s_LoggerInitAttempted.exchange(true)) {
+        InstallCrashHandler();
+        LogStartup("Crash Handler Installed");
         if (!Logger::Instance().Initialize(DLSS4_LOG_FILE)) {
             LogStartup("Logger Init Failed");
             OutputDebugStringA("DLSS4 Proxy: Failed to initialize logger\n");

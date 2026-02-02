@@ -11,11 +11,22 @@ ConfigManager& ConfigManager::Get() {
 }
 
 void ConfigManager::Load() {
+    if (m_filePath.empty()) {
+        char path[MAX_PATH]{};
+        if (GetModuleFileNameA(nullptr, path, MAX_PATH) > 0) {
+            std::string base(path);
+            size_t pos = base.find_last_of("\\/");
+            if (pos != std::string::npos) base.resize(pos + 1);
+            m_filePath = base + "dlss_settings.ini";
+        } else {
+            m_filePath = "dlss_settings.ini";
+        }
+    }
     char buf[32];
     
-    m_config.dlssMode = GetPrivateProfileIntA("Settings", "DLSSMode", 6, m_filePath.c_str());
+    m_config.dlssMode = GetPrivateProfileIntA("Settings", "DLSSMode", 5, m_filePath.c_str());
     m_config.frameGenMultiplier = GetPrivateProfileIntA("Settings", "FrameGenMultiplier", 4, m_filePath.c_str());
-    m_config.dlssPreset = GetPrivateProfileIntA("Settings", "DLSSPreset", 6, m_filePath.c_str());
+    m_config.dlssPreset = GetPrivateProfileIntA("Settings", "DLSSPreset", 0, m_filePath.c_str());
     m_config.reflexEnabled = GetPrivateProfileIntA("Settings", "Reflex", 1, m_filePath.c_str()) != 0;
     m_config.smartFgEnabled = GetPrivateProfileIntA("Settings", "SmartFG", 0, m_filePath.c_str()) != 0;
     m_config.smartFgAutoDisable = GetPrivateProfileIntA("Settings", "SmartFGAutoDisable", 1, m_filePath.c_str()) != 0;
@@ -32,6 +43,8 @@ void ConfigManager::Load() {
     m_config.vignetteHotkey = GetPrivateProfileIntA("Settings", "VignetteHotkey", 0x76, m_filePath.c_str());
     m_config.uiPosX = GetPrivateProfileIntA("Settings", "UIPosX", 50, m_filePath.c_str());
     m_config.uiPosY = GetPrivateProfileIntA("Settings", "UIPosY", 50, m_filePath.c_str());
+    m_config.setupWizardCompleted = GetPrivateProfileIntA("Settings", "WizardComplete", 0, m_filePath.c_str()) != 0;
+    m_config.setupWizardForceShow = GetPrivateProfileIntA("Settings", "WizardForceShow", 0, m_filePath.c_str()) != 0;
     
     GetPrivateProfileStringA("Settings", "Sharpness", "0.5", buf, 32, m_filePath.c_str());
     m_config.sharpness = (float)atof(buf);
@@ -44,8 +57,24 @@ void ConfigManager::Load() {
 
     GetPrivateProfileStringA("Settings", "MVecScaleY", "1.0", buf, 32, m_filePath.c_str());
     m_config.mvecScaleY = (float)atof(buf);
+    m_config.mvecScaleAuto = GetPrivateProfileIntA("Settings", "MVecScaleAuto", 1, m_filePath.c_str()) != 0;
 
     m_config.rayReconstructionEnabled = GetPrivateProfileIntA("Settings", "RayReconstruction", 1, m_filePath.c_str()) != 0;
+    m_config.deepDvcEnabled = GetPrivateProfileIntA("Settings", "DeepDVC", 0, m_filePath.c_str()) != 0;
+
+    GetPrivateProfileStringA("Settings", "DeepDVCIntensity", "0.50", buf, 32, m_filePath.c_str());
+    m_config.deepDvcIntensity = (float)atof(buf);
+    GetPrivateProfileStringA("Settings", "DeepDVCSaturation", "0.25", buf, 32, m_filePath.c_str());
+    m_config.deepDvcSaturation = (float)atof(buf);
+    m_config.deepDvcAdaptiveEnabled = GetPrivateProfileIntA("Settings", "DeepDVCAdaptive", 0, m_filePath.c_str()) != 0;
+    GetPrivateProfileStringA("Settings", "DeepDVCAdaptiveStrength", "0.60", buf, 32, m_filePath.c_str());
+    m_config.deepDvcAdaptiveStrength = (float)atof(buf);
+    GetPrivateProfileStringA("Settings", "DeepDVCAdaptiveMin", "0.20", buf, 32, m_filePath.c_str());
+    m_config.deepDvcAdaptiveMin = (float)atof(buf);
+    GetPrivateProfileStringA("Settings", "DeepDVCAdaptiveMax", "0.90", buf, 32, m_filePath.c_str());
+    m_config.deepDvcAdaptiveMax = (float)atof(buf);
+    GetPrivateProfileStringA("Settings", "DeepDVCAdaptiveSmoothing", "0.15", buf, 32, m_filePath.c_str());
+    m_config.deepDvcAdaptiveSmoothing = (float)atof(buf);
 
     GetPrivateProfileStringA("Settings", "SmartFGAutoDisableFPS", "120.0", buf, 32, m_filePath.c_str());
     m_config.smartFgAutoDisableFps = (float)atof(buf);
@@ -74,9 +103,13 @@ void ConfigManager::Load() {
     GetPrivateProfileStringA("Settings", "RRDenoiserStrength", "0.50", buf, 32, m_filePath.c_str());
     m_config.rrDenoiserStrength = (float)atof(buf);
 
-    if (m_config.dlssMode < 0 || m_config.dlssMode > 6) {
-        LOG_WARN("Config: DLSSMode out of range (%d), clamping to 6", m_config.dlssMode);
-        m_config.dlssMode = 6;
+    if (m_config.deepDvcAdaptiveMin > m_config.deepDvcAdaptiveMax) {
+        std::swap(m_config.deepDvcAdaptiveMin, m_config.deepDvcAdaptiveMax);
+    }
+
+    if (m_config.dlssMode < 0 || m_config.dlssMode > 5) {
+        LOG_WARN("Config: DLSSMode out of range (%d), clamping to 5", m_config.dlssMode);
+        m_config.dlssMode = 5;
     }
     if (m_config.frameGenMultiplier < 0 || m_config.frameGenMultiplier > 4 || m_config.frameGenMultiplier == 1) {
         int original = m_config.frameGenMultiplier;
@@ -109,6 +142,10 @@ void ConfigManager::Load() {
         if (m_config.mvecScaleY < 0.0f) m_config.mvecScaleY = 0.0f;
         if (m_config.mvecScaleY > 4.0f) m_config.mvecScaleY = 4.0f;
     }
+    if (m_config.mvecScaleAuto && (m_config.mvecScaleX < 0.5f || m_config.mvecScaleX > 3.0f ||
+        m_config.mvecScaleY < 0.5f || m_config.mvecScaleY > 3.0f)) {
+        LOG_WARN("Config: MVecScaleAuto enabled but manual values look odd; keeping auto scaling");
+    }
     if (m_config.smartFgAutoDisableFps < 30.0f || m_config.smartFgAutoDisableFps > 300.0f) {
         LOG_WARN("Config: SmartFGAutoDisableFPS out of range (%.1f), clamping to 30..300", m_config.smartFgAutoDisableFps);
         m_config.smartFgAutoDisableFps = std::clamp(m_config.smartFgAutoDisableFps, 30.0f, 300.0f);
@@ -128,6 +165,30 @@ void ConfigManager::Load() {
     if (m_config.rrDenoiserStrength < 0.0f || m_config.rrDenoiserStrength > 1.0f) {
         LOG_WARN("Config: RRDenoiserStrength out of range (%.2f), clamping to 0..1", m_config.rrDenoiserStrength);
         m_config.rrDenoiserStrength = std::clamp(m_config.rrDenoiserStrength, 0.0f, 1.0f);
+    }
+    if (m_config.deepDvcIntensity < 0.0f || m_config.deepDvcIntensity > 1.0f) {
+        LOG_WARN("Config: DeepDVCIntensity out of range (%.2f), clamping to 0..1", m_config.deepDvcIntensity);
+        m_config.deepDvcIntensity = std::clamp(m_config.deepDvcIntensity, 0.0f, 1.0f);
+    }
+    if (m_config.deepDvcSaturation < 0.0f || m_config.deepDvcSaturation > 1.0f) {
+        LOG_WARN("Config: DeepDVCSaturation out of range (%.2f), clamping to 0..1", m_config.deepDvcSaturation);
+        m_config.deepDvcSaturation = std::clamp(m_config.deepDvcSaturation, 0.0f, 1.0f);
+    }
+    if (m_config.deepDvcAdaptiveStrength < 0.0f || m_config.deepDvcAdaptiveStrength > 1.0f) {
+        LOG_WARN("Config: DeepDVCAdaptiveStrength out of range (%.2f), clamping to 0..1", m_config.deepDvcAdaptiveStrength);
+        m_config.deepDvcAdaptiveStrength = std::clamp(m_config.deepDvcAdaptiveStrength, 0.0f, 1.0f);
+    }
+    if (m_config.deepDvcAdaptiveMin < 0.0f || m_config.deepDvcAdaptiveMin > 1.0f) {
+        LOG_WARN("Config: DeepDVCAdaptiveMin out of range (%.2f), clamping to 0..1", m_config.deepDvcAdaptiveMin);
+        m_config.deepDvcAdaptiveMin = std::clamp(m_config.deepDvcAdaptiveMin, 0.0f, 1.0f);
+    }
+    if (m_config.deepDvcAdaptiveMax < 0.0f || m_config.deepDvcAdaptiveMax > 1.0f) {
+        LOG_WARN("Config: DeepDVCAdaptiveMax out of range (%.2f), clamping to 0..1", m_config.deepDvcAdaptiveMax);
+        m_config.deepDvcAdaptiveMax = std::clamp(m_config.deepDvcAdaptiveMax, 0.0f, 1.0f);
+    }
+    if (m_config.deepDvcAdaptiveSmoothing < 0.01f || m_config.deepDvcAdaptiveSmoothing > 1.0f) {
+        LOG_WARN("Config: DeepDVCAdaptiveSmoothing out of range (%.2f), clamping to 0.01..1", m_config.deepDvcAdaptiveSmoothing);
+        m_config.deepDvcAdaptiveSmoothing = std::clamp(m_config.deepDvcAdaptiveSmoothing, 0.01f, 1.0f);
     }
     if (m_config.logVerbosity < 0 || m_config.logVerbosity > 2) {
         LOG_WARN("Config: LogVerbosity out of range (%d), clamping to 0..2", m_config.logVerbosity);
@@ -163,6 +224,17 @@ void ConfigManager::Load() {
 }
 
 void ConfigManager::Save() {
+    if (m_filePath.empty()) {
+        char path[MAX_PATH]{};
+        if (GetModuleFileNameA(nullptr, path, MAX_PATH) > 0) {
+            std::string base(path);
+            size_t pos = base.find_last_of("\\/");
+            if (pos != std::string::npos) base.resize(pos + 1);
+            m_filePath = base + "dlss_settings.ini";
+        } else {
+            m_filePath = "dlss_settings.ini";
+        }
+    }
     char buf[32];
     
     WritePrivateProfileStringA("Settings", "DLSSMode", std::to_string(m_config.dlssMode).c_str(), m_filePath.c_str());
@@ -184,6 +256,8 @@ void ConfigManager::Save() {
     WritePrivateProfileStringA("Settings", "VignetteHotkey", std::to_string(m_config.vignetteHotkey).c_str(), m_filePath.c_str());
     WritePrivateProfileStringA("Settings", "UIPosX", std::to_string(m_config.uiPosX).c_str(), m_filePath.c_str());
     WritePrivateProfileStringA("Settings", "UIPosY", std::to_string(m_config.uiPosY).c_str(), m_filePath.c_str());
+    WritePrivateProfileStringA("Settings", "WizardComplete", std::to_string(m_config.setupWizardCompleted ? 1 : 0).c_str(), m_filePath.c_str());
+    WritePrivateProfileStringA("Settings", "WizardForceShow", std::to_string(m_config.setupWizardForceShow ? 1 : 0).c_str(), m_filePath.c_str());
     
     sprintf_s(buf, "%.2f", m_config.sharpness);
     WritePrivateProfileStringA("Settings", "Sharpness", buf, m_filePath.c_str());
@@ -196,8 +270,10 @@ void ConfigManager::Save() {
 
     sprintf_s(buf, "%.2f", m_config.mvecScaleY);
     WritePrivateProfileStringA("Settings", "MVecScaleY", buf, m_filePath.c_str());
+    WritePrivateProfileStringA("Settings", "MVecScaleAuto", std::to_string(m_config.mvecScaleAuto ? 1 : 0).c_str(), m_filePath.c_str());
 
     WritePrivateProfileStringA("Settings", "RayReconstruction", std::to_string(m_config.rayReconstructionEnabled ? 1 : 0).c_str(), m_filePath.c_str());
+    WritePrivateProfileStringA("Settings", "DeepDVC", std::to_string(m_config.deepDvcEnabled ? 1 : 0).c_str(), m_filePath.c_str());
 
     sprintf_s(buf, "%.1f", m_config.smartFgAutoDisableFps);
     WritePrivateProfileStringA("Settings", "SmartFGAutoDisableFPS", buf, m_filePath.c_str());
@@ -225,6 +301,20 @@ void ConfigManager::Save() {
     WritePrivateProfileStringA("Settings", "RRPreset", std::to_string(m_config.rrPreset).c_str(), m_filePath.c_str());
     sprintf_s(buf, "%.2f", m_config.rrDenoiserStrength);
     WritePrivateProfileStringA("Settings", "RRDenoiserStrength", buf, m_filePath.c_str());
+
+    sprintf_s(buf, "%.2f", m_config.deepDvcIntensity);
+    WritePrivateProfileStringA("Settings", "DeepDVCIntensity", buf, m_filePath.c_str());
+    sprintf_s(buf, "%.2f", m_config.deepDvcSaturation);
+    WritePrivateProfileStringA("Settings", "DeepDVCSaturation", buf, m_filePath.c_str());
+    WritePrivateProfileStringA("Settings", "DeepDVCAdaptive", std::to_string(m_config.deepDvcAdaptiveEnabled ? 1 : 0).c_str(), m_filePath.c_str());
+    sprintf_s(buf, "%.2f", m_config.deepDvcAdaptiveStrength);
+    WritePrivateProfileStringA("Settings", "DeepDVCAdaptiveStrength", buf, m_filePath.c_str());
+    sprintf_s(buf, "%.2f", m_config.deepDvcAdaptiveMin);
+    WritePrivateProfileStringA("Settings", "DeepDVCAdaptiveMin", buf, m_filePath.c_str());
+    sprintf_s(buf, "%.2f", m_config.deepDvcAdaptiveMax);
+    WritePrivateProfileStringA("Settings", "DeepDVCAdaptiveMax", buf, m_filePath.c_str());
+    sprintf_s(buf, "%.2f", m_config.deepDvcAdaptiveSmoothing);
+    WritePrivateProfileStringA("Settings", "DeepDVCAdaptiveSmoothing", buf, m_filePath.c_str());
 }
 
 void ConfigManager::ResetToDefaults() {

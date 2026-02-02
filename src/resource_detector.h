@@ -11,6 +11,7 @@ struct ResourceCandidate {
     float score;
     D3D12_RESOURCE_DESC desc;
     uint64_t lastFrameSeen;
+    uint32_t seenCount;
 };
 
 #include <atomic> // Added

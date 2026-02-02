@@ -63,10 +63,14 @@ Write-Host "Found Game: $gamePath" -ForegroundColor Green
 # 3. Locate SDK Files (Auto-Search Downloads)
 $sdkSource = $null
 $downloads = "$env:USERPROFILE\Downloads"
-$sdkDlls = @("sl.common.dll", "sl.dlss.dll", "sl.dlss_g.dll", "sl.interposer.dll", "sl.reflex.dll", "nvngx_dlss.dll", "nvngx_dlssg.dll")
+$sdkDlls = @("sl.common.dll", "sl.dlss.dll", "sl.dlss_g.dll", "sl.dlss_d.dll", "sl.deepdvc.dll", "sl.interposer.dll", "sl.reflex.dll", "nvngx_dlss.dll", "nvngx_dlssg.dll", "nvngx_dlssd.dll", "nvngx_deepdvc.dll")
 
-# Check bin first
-if ((Test-Path "bin\sl.interposer.dll") -and (Test-Path "bin\nvngx_dlss.dll")) {
+# Prefer explicit SDK bin if supplied by build script
+if ($env:DLSS4_SDK_BIN -and (Test-Path "$env:DLSS4_SDK_BIN\sl.interposer.dll")) {
+    $sdkSource = $env:DLSS4_SDK_BIN
+}
+# Check bin first (ensure DeepDVC bits are present)
+elseif ((Test-Path "bin\sl.interposer.dll") -and (Test-Path "bin\nvngx_dlss.dll") -and (Test-Path "bin\sl.deepdvc.dll") -and (Test-Path "bin\nvngx_deepdvc.dll")) {
     $sdkSource = "bin"
 } 
 # Check external
@@ -82,6 +86,10 @@ else {
     if ($sdkFolders) {
         $found = $sdkFolders[0].FullName + "\lib\x64"
         if (Test-Path "$found\sl.interposer.dll") { $sdkSource = $found }
+        if (-not $sdkSource) {
+            $found = $sdkFolders[0].FullName + "\bin\x64"
+            if (Test-Path "$found\sl.interposer.dll") { $sdkSource = $found }
+        }
     }
     
     if (-not $sdkSource -and $sdkZips) {
@@ -92,6 +100,14 @@ else {
              # Try nested folder structure
              $nested = Get-ChildItem "$downloads\temp_sdk_extract" -Directory
              if ($nested) { $sdkSource = "$downloads\temp_sdk_extract\" + $nested[0].Name + "\lib\x64" }
+        }
+        if (-not (Test-Path "$sdkSource\sl.interposer.dll")) {
+             $sdkSource = "$downloads\temp_sdk_extract\bin\x64"
+        }
+        if (-not (Test-Path "$sdkSource\sl.interposer.dll")) {
+             # Try nested bin\x64
+             $nested = Get-ChildItem "$downloads\temp_sdk_extract" -Directory
+             if ($nested) { $sdkSource = "$downloads\temp_sdk_extract\" + $nested[0].Name + "\bin\x64" }
         }
     }
 }

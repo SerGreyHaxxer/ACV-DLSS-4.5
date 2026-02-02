@@ -115,7 +115,7 @@ public:
         queueCV.notify_one();
     }
 
-    void Close() {
+    void Close(bool flush = true) {
         {
             std::lock_guard<std::mutex> lock(queueMutex);
             if (!running) return;
@@ -127,16 +127,25 @@ public:
             loggerThread.join();
         }
 
-        // Flush remaining queue
-        while (!logQueue.empty()) {
-            if (logFile) fprintf(logFile, "%s\n", logQueue.front().c_str());
-            logQueue.pop();
-        }
+        if (flush) {
+            // Flush remaining queue
+            while (!logQueue.empty()) {
+                if (logFile) fprintf(logFile, "%s\n", logQueue.front().c_str());
+                logQueue.pop();
+            }
 
-        if (logFile) {
-            fprintf(logFile, "[INFO] Logger shutting down.\n");
-            fclose(logFile);
-            logFile = nullptr;
+            if (logFile) {
+                fprintf(logFile, "[INFO] Logger shutting down.\n");
+                fclose(logFile);
+                logFile = nullptr;
+            }
+        } else {
+            std::queue<std::string> empty;
+            logQueue.swap(empty);
+            if (logFile) {
+                fclose(logFile);
+                logFile = nullptr;
+            }
         }
         initialized = false;
     }

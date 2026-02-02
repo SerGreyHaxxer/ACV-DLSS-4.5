@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include "resource_detector.h"
 #include "logger.h"
 
@@ -19,7 +20,12 @@ class WrappedID3D12Device;
 
 // Helper to register CBVs for camera scanning
 void RegisterCbv(ID3D12Resource* pResource, UINT64 size, uint8_t* cpuPtr);
+void TrackCbvDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE handle, const D3D12_CONSTANT_BUFFER_VIEW_DESC* desc);
+void TrackRootCbvAddress(D3D12_GPU_VIRTUAL_ADDRESS address);
 bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates, bool allowFullScan);
+bool TryScanDescriptorCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates);
+bool TryScanRootCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates);
+void GetCameraScanCounts(uint64_t& cbvCount, uint64_t& descCount, uint64_t& rootCount);
 bool GetLastCameraStats(float& outScore, uint64_t& outFrame);
 void ResetCameraScanCache();
 uint64_t GetLastCameraFoundFrame();
@@ -174,7 +180,7 @@ public:
     HRESULT STDMETHODCALLTYPE CreateDescriptorHeap(const D3D12_DESCRIPTOR_HEAP_DESC* pDescriptorHeapDesc, REFIID riid, void** ppvHeap) override;
     UINT STDMETHODCALLTYPE GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapType) override { return m_pReal->GetDescriptorHandleIncrementSize(DescriptorHeapType); }
     HRESULT STDMETHODCALLTYPE CreateRootSignature(UINT nodeMask, const void* pBlobWithRootSignature, SIZE_T blobLengthInBytes, REFIID riid, void** ppvRootSignature) override { return m_pReal->CreateRootSignature(nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid, ppvRootSignature); }
-    void STDMETHODCALLTYPE CreateConstantBufferView(const D3D12_CONSTANT_BUFFER_VIEW_DESC* pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) override { m_pReal->CreateConstantBufferView(pDesc, DestDescriptor); }
+    void STDMETHODCALLTYPE CreateConstantBufferView(const D3D12_CONSTANT_BUFFER_VIEW_DESC* pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) override;
     void STDMETHODCALLTYPE CreateShaderResourceView(ID3D12Resource* pResource, const D3D12_SHADER_RESOURCE_VIEW_DESC* pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) override;
     void STDMETHODCALLTYPE CreateUnorderedAccessView(ID3D12Resource* pResource, ID3D12Resource* pCounterResource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) override;
     void STDMETHODCALLTYPE CreateRenderTargetView(ID3D12Resource* pResource, const D3D12_RENDER_TARGET_VIEW_DESC* pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) override;

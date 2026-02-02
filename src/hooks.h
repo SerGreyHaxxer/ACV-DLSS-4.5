@@ -25,6 +25,7 @@ void InstallLoadLibraryHook();
 bool InitializeHooks();
 void CleanupHooks();
 void InitDescriptorHooks();
+void EnsureD3D12VTableHooks(ID3D12Device* device);
 void NotifyWrappedCommandListUsed();
 bool IsWrappedCommandListUsed();
 void SetPatternJitterAddress(uintptr_t address);

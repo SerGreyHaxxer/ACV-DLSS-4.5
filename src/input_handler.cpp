@@ -70,8 +70,10 @@ void InputHandler::UninstallHook() {
 void InputHandler::HandleKey(int vKey) {
     for (auto& cb : m_callbacks) {
         if (cb.vKey == vKey) {
+            if (cb.wasPressed) continue;
             LOG_DEBUG("Global Hotkey Triggered: %s", cb.name.c_str());
             if (cb.callback) cb.callback();
+            cb.wasPressed = true;
         }
     }
 }

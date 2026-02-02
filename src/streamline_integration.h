@@ -12,6 +12,7 @@
 #include <sl_dlss.h>
 #include <sl_dlss_g.h>
 #include <sl_dlss_d.h>
+#include <sl_deepdvc.h>
 #include "sl_reflex.h"
 
 // ============================================================================
@@ -46,6 +47,7 @@ public:
     // Feature Execution
     void EvaluateDLSS(ID3D12GraphicsCommandList* pCmdList);
     void EvaluateFrameGen(IDXGISwapChain* pSwapChain);
+    void EvaluateDeepDVC(IDXGISwapChain* pSwapChain);
 
     // Configuration
     void SetDLSSMode(int mode); // 0=Off, 1=Perf, 2=Bal, 3=Qual...
@@ -66,6 +68,23 @@ public:
     float GetRRDenoiserStrength() const { return m_rrDenoiserStrength; }
     bool IsDLSSRRActive() const { return m_rrLoaded && m_rayReconstructionEnabled; }
     void UpdateFrameTiming(float baseFps);
+    void SetDeepDVCEnabled(bool enabled);
+    void SetDeepDVCIntensity(float intensity);
+    void SetDeepDVCSaturation(float saturation);
+    void SetDeepDVCAdaptiveEnabled(bool enabled);
+    void SetDeepDVCAdaptiveStrength(float strength);
+    void SetDeepDVCAdaptiveMin(float minValue);
+    void SetDeepDVCAdaptiveMax(float maxValue);
+    void SetDeepDVCAdaptiveSmoothing(float smoothing);
+    bool IsDeepDVCSupported() const { return m_deepDvcSupported; }
+    bool IsDeepDVCEnabled() const { return m_deepDvcEnabled; }
+    float GetDeepDVCIntensity() const { return m_deepDvcIntensity; }
+    float GetDeepDVCSaturation() const { return m_deepDvcSaturation; }
+    bool IsDeepDVCAdaptiveEnabled() const { return m_deepDvcAdaptiveEnabled; }
+    float GetDeepDVCAdaptiveStrength() const { return m_deepDvcAdaptiveStrength; }
+    float GetDeepDVCAdaptiveMin() const { return m_deepDvcAdaptiveMin; }
+    float GetDeepDVCAdaptiveMax() const { return m_deepDvcAdaptiveMax; }
+    float GetDeepDVCAdaptiveSmoothing() const { return m_deepDvcAdaptiveSmoothing; }
     void SetSmartFGEnabled(bool enabled);
     void SetSmartFGAutoDisable(bool enabled);
     void SetSmartFGAutoDisableThreshold(float fps);
@@ -79,6 +98,8 @@ public:
     float GetSmartFGSceneChangeThreshold() const { return m_smartFgSceneChangeThreshold; }
     float GetSmartFGInterpolationQuality() const { return m_smartFgInterpolationQuality; }
     bool IsSmartFGTemporarilyDisabled() const { return m_smartFgForceDisable; }
+    bool IsFrameGenDisabledDueToInvalidParam() const { return m_disableFGDueToInvalidParam; }
+    sl::DLSSGStatus GetFrameGenStatus() const { return m_dlssgStatus; }
 
     // DLSS mode mapping (UI index to SDK enum)
     void SetDLSSModeIndex(int modeIndex);
@@ -98,7 +119,10 @@ public:
     void NotifySwapChainResize(UINT width, UINT height);
     bool HasCameraData() const { return m_hasCameraData; }
     void GetLastCameraJitter(float& x, float& y) const { x = m_lastJitterX; y = m_lastJitterY; }
+    float GetLastCameraDelta() const { return m_lastCameraDelta; }
     UINT GetDescriptorSize() const { return m_cbvSrvUavDescriptorSize; }
+    float GetFgActualMultiplier() const { return m_fgActualMultiplier; }
+    float GetLastBaseFps() const { return m_lastBaseFps; }
     
     // Frame Generation Debug (DLSS-G)
     void PrintDLSSGStatus();
@@ -107,6 +131,7 @@ public:
     bool IsDLSSSupported() const { return m_dlssSupported; }
     bool IsFrameGenSupported() const { return m_dlssgSupported; }
     bool IsReflexSupported() const { return m_reflexSupported; }
+    bool IsDeepDVCLoaded() const { return m_deepDvcLoaded; }
     
     // Frame Tracking
     uint32_t GetFrameCount() const { return m_frameIndex; }
@@ -130,6 +155,7 @@ private:
     bool m_dlssgSupported = false;
     bool m_rayReconstructionSupported = false;
     bool m_reflexSupported = false;
+    bool m_deepDvcSupported = false;
     
     // Current viewport
     unsigned int m_viewportWidth = 0;
@@ -176,6 +202,20 @@ private:
     bool m_rayReconstructionEnabled = true;
     bool m_reflexEnabled = true;
     bool m_hudFixEnabled = false;
+    bool m_deepDvcEnabled = false;
+    float m_deepDvcIntensity = 0.5f;
+    float m_deepDvcSaturation = 0.25f;
+    bool m_deepDvcAdaptiveEnabled = false;
+    float m_deepDvcAdaptiveStrength = 0.6f;
+    float m_deepDvcAdaptiveMin = 0.2f;
+    float m_deepDvcAdaptiveMax = 0.9f;
+    float m_deepDvcAdaptiveSmoothing = 0.15f;
+    float m_deepDvcAdaptiveIntensity = 0.5f;
+    float m_deepDvcAdaptiveSaturation = 0.25f;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_lumaReadback;
+    DXGI_FORMAT m_lumaReadbackFormat = DXGI_FORMAT_UNKNOWN;
+    UINT m_lumaRowPitch = 0;
+    uint64_t m_deepDvcLastSampleMs = 0;
     bool m_hasCameraData = false;
     float m_lastJitterX = 0.0f;
     float m_lastJitterY = 0.0f;
@@ -187,12 +227,13 @@ private:
     float m_mvecScaleX = 1.0f;
     float m_mvecScaleY = 1.0f;
 
-    sl::Feature m_featuresToLoad[5] = {};
+    sl::Feature m_featuresToLoad[6] = {};
     uint32_t m_featureCount = 0;
     UINT m_cbvSrvUavDescriptorSize = 0;
     bool m_dlssgLoaded = false;
     bool m_reflexLoaded = false;
     bool m_rrLoaded = false;
+    bool m_deepDvcLoaded = false;
     bool m_needFeatureReload = false;
     bool m_forceTagging = true;
     uint32_t m_dlssgInvalidParamFrames = 0;
@@ -203,6 +244,7 @@ private:
     float m_smartFgSceneChangeThreshold = 0.25f;
     float m_smartFgInterpolationQuality = 0.5f;
     float m_lastBaseFps = 0.0f;
+    float m_fgActualMultiplier = 1.0f;
     bool m_smartFgForceDisable = false;
     int m_smartFgLastMultiplier = 0;
     std::chrono::steady_clock::time_point m_sceneChangeCooldownUntil{};
@@ -211,15 +253,20 @@ private:
     float m_prevView[16] = {};
     float m_prevProj[16] = {};
     bool m_hasPrevMatrices = false;
+    float m_lastCameraDelta = 0.0f;
     uint32_t m_rrInvalidParamFrames = 0;
+    bool m_disableRRDueToInvalidParam = false;
+    bool m_disableFGDueToInvalidParam = false;
 
     void UpdateSwapChain(IDXGISwapChain* pSwapChain);
     void UpdateOptions();
     void TagResources();
     void EnsureCommandList();
-    void WaitForGpu();
     bool EnsureFrameToken();
     void UpdateSmartFGState();
+    void UpdateDeepDVCOptions();
+    void UpdateDeepDVCAdaptive();
+    float EstimateSceneLuma(ID3D12Resource* resource);
     
     // DLSS-G Debug tracking
     struct DLSSGStats {

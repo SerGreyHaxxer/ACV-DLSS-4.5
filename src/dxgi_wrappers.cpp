@@ -23,13 +23,10 @@ struct ScopedInterface {
 };
 
 WrappedIDXGIFactory::WrappedIDXGIFactory(IDXGIFactory* pReal) : m_pReal(pReal), m_refCount(1) {
-    if (m_pReal) m_pReal->AddRef();
     LogStartup("WrappedIDXGIFactory Created");
 }
 
-WrappedIDXGIFactory::~WrappedIDXGIFactory() {
-    if (m_pReal) m_pReal->Release();
-}
+WrappedIDXGIFactory::~WrappedIDXGIFactory() = default;
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::QueryInterface(REFIID riid, void** ppvObject) {
     if (!ppvObject) return E_POINTER;
@@ -43,9 +40,10 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::QueryInterface(REFIID riid, void*
     return E_NOINTERFACE;
 }
 
-ULONG STDMETHODCALLTYPE WrappedIDXGIFactory::AddRef() { return InterlockedIncrement(&m_refCount); }
+ULONG STDMETHODCALLTYPE WrappedIDXGIFactory::AddRef() { if (m_pReal) m_pReal->AddRef(); return InterlockedIncrement(&m_refCount); }
 ULONG STDMETHODCALLTYPE WrappedIDXGIFactory::Release() {
     ULONG r = InterlockedDecrement(&m_refCount);
+    if (m_pReal) m_pReal->Release();
     if ((LONG)r <= 0) {
         if ((LONG)r < 0) {
             LogStartup("WARNING: WrappedIDXGIFactory refcount underflow");
@@ -125,7 +123,9 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChain(IUnknown* pDevice
     LogStartup("WrappedFactory::CreateSwapChain");
     InstallD3D12Hooks();
     HookFactoryIfNeeded(m_pReal);
+    LogStartup("WrappedFactory::CreateSwapChain calling real");
     HRESULT hr = m_pReal->CreateSwapChain(pDevice, pDesc, ppSwapChain);
+    LogStartup("WrappedFactory::CreateSwapChain returned");
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
         WrappedIDXGISwapChain* wrapper = new WrappedIDXGISwapChain(*ppSwapChain, pDevice);
         *ppSwapChain = wrapper;
@@ -136,7 +136,9 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChain(IUnknown* pDevice
 HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc, IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain) {
     LogStartup("WrappedFactory::CreateSwapChainForHwnd");
     ScopedInterface<IDXGIFactory2> real(m_pReal); if (!real) return E_NOINTERFACE;
+    LogStartup("WrappedFactory::CreateSwapChainForHwnd calling real");
     HRESULT hr = real->CreateSwapChainForHwnd(pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+    LogStartup("WrappedFactory::CreateSwapChainForHwnd returned");
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
         WrappedIDXGISwapChain* wrapper = new WrappedIDXGISwapChain((IDXGISwapChain*)*ppSwapChain, pDevice);
         *ppSwapChain = (IDXGISwapChain1*)wrapper;
@@ -147,7 +149,9 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChainForHwnd(IUnknown* 
 HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChainForCoreWindow(IUnknown* pDevice, IUnknown* pWindow, const DXGI_SWAP_CHAIN_DESC1* pDesc, IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain) {
     LogStartup("WrappedFactory::CreateSwapChainForCoreWindow");
     ScopedInterface<IDXGIFactory2> real(m_pReal); if (!real) return E_NOINTERFACE;
+    LogStartup("WrappedFactory::CreateSwapChainForCoreWindow calling real");
     HRESULT hr = real->CreateSwapChainForCoreWindow(pDevice, pWindow, pDesc, pRestrictToOutput, ppSwapChain);
+    LogStartup("WrappedFactory::CreateSwapChainForCoreWindow returned");
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
         WrappedIDXGISwapChain* wrapper = new WrappedIDXGISwapChain((IDXGISwapChain*)*ppSwapChain, pDevice);
         *ppSwapChain = (IDXGISwapChain1*)wrapper;
@@ -158,7 +162,9 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChainForCoreWindow(IUnk
 HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChainForComposition(IUnknown* pDevice, const DXGI_SWAP_CHAIN_DESC1* pDesc, IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain) {
     LogStartup("WrappedFactory::CreateSwapChainForComposition");
     ScopedInterface<IDXGIFactory2> real(m_pReal); if (!real) return E_NOINTERFACE;
+    LogStartup("WrappedFactory::CreateSwapChainForComposition calling real");
     HRESULT hr = real->CreateSwapChainForComposition(pDevice, pDesc, pRestrictToOutput, ppSwapChain);
+    LogStartup("WrappedFactory::CreateSwapChainForComposition returned");
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
         WrappedIDXGISwapChain* wrapper = new WrappedIDXGISwapChain((IDXGISwapChain*)*ppSwapChain, pDevice);
         *ppSwapChain = (IDXGISwapChain1*)wrapper;
@@ -167,20 +173,36 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChainForComposition(IUn
 }
 
 WrappedIDXGISwapChain::WrappedIDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice) : m_pReal(pReal), m_refCount(1) {
-    if (m_pReal) m_pReal->AddRef();
+    LogStartup("WrappedIDXGISwapChain ctor entry");
     ID3D12Device* d3d12Device = nullptr;
     if (pDevice && SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12Device), (void**)&d3d12Device))) {
+        LogStartup("WrappedIDXGISwapChain got ID3D12Device");
         m_initialized = StreamlineIntegration::Get().Initialize(d3d12Device);
         d3d12Device->Release();
+        LogStartup("WrappedIDXGISwapChain Streamline init complete");
     }
     ID3D12CommandQueue* queue = nullptr;
     if (pDevice && SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue), (void**)&queue))) {
+        LogStartup("WrappedIDXGISwapChain got command queue");
         StreamlineIntegration::Get().SetCommandQueue(queue);
+        if (!m_initialized) {
+            ID3D12Device* queueDevice = nullptr;
+            if (SUCCEEDED(queue->GetDevice(__uuidof(ID3D12Device), (void**)&queueDevice))) {
+                LogStartup("WrappedIDXGISwapChain got device from command queue");
+                m_initialized = StreamlineIntegration::Get().Initialize(queueDevice);
+                queueDevice->Release();
+                LogStartup("WrappedIDXGISwapChain Streamline init complete (queue)");
+            } else {
+                LogStartup("WrappedIDXGISwapChain GetDevice from command queue failed");
+            }
+        }
         queue->Release();
+        LogStartup("WrappedIDXGISwapChain command queue set");
     }
+    LogStartup("WrappedIDXGISwapChain ctor exit");
 }
 
-WrappedIDXGISwapChain::~WrappedIDXGISwapChain() { if (m_pReal) m_pReal->Release(); }
+WrappedIDXGISwapChain::~WrappedIDXGISwapChain() = default;
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::QueryInterface(REFIID riid, void** ppvObject) {
     if (!ppvObject) return E_POINTER;
@@ -194,9 +216,10 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::QueryInterface(REFIID riid, voi
     return m_pReal->QueryInterface(riid, ppvObject);
 }
 
-ULONG STDMETHODCALLTYPE WrappedIDXGISwapChain::AddRef() { return InterlockedIncrement(&m_refCount); }
+ULONG STDMETHODCALLTYPE WrappedIDXGISwapChain::AddRef() { if (m_pReal) m_pReal->AddRef(); return InterlockedIncrement(&m_refCount); }
 ULONG STDMETHODCALLTYPE WrappedIDXGISwapChain::Release() {
     ULONG r = InterlockedDecrement(&m_refCount);
+    if (m_pReal) m_pReal->Release();
     if ((LONG)r <= 0) {
         if ((LONG)r < 0) {
             LogStartup("WARNING: WrappedIDXGISwapChain refcount underflow");
@@ -209,6 +232,8 @@ ULONG STDMETHODCALLTYPE WrappedIDXGISwapChain::Release() {
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present(UINT SyncInterval, UINT Flags) {
     static std::atomic<bool> inputsRegistered(false);
+    static uint64_t s_hbLast = 0;
+    static uint64_t s_hbFrames = 0;
     bool expected = false;
     if (inputsRegistered.compare_exchange_strong(expected, true)) {
         ModConfig& cfg = ConfigManager::Get().Data();
@@ -232,6 +257,13 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present(UINT SyncInterval, UINT
         InputHandler::Get().InstallHook(); // Global Hook
     }
     InputHandler::Get().ProcessInput();
+
+    s_hbFrames++;
+    uint64_t hbNow = GetTickCount64();
+    if (hbNow - s_hbLast >= 2000) {
+        LOG_DEBUG("[HB] Present tick (frames=%llu)", (unsigned long long)s_hbFrames);
+        s_hbLast = hbNow;
+    }
     
     // FPS LOGIC
     static uint64_t lastTime = 0;
@@ -255,12 +287,19 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present(UINT SyncInterval, UINT
     ImGuiOverlay::Get().Initialize(m_pReal);
     StreamlineIntegration::Get().NewFrame(m_pReal);
     StreamlineIntegration::Get().EvaluateFrameGen(m_pReal);
+    StreamlineIntegration::Get().EvaluateDeepDVC(m_pReal);
     ImGuiOverlay::Get().Render();
-    return m_pReal->Present(0, Flags | DXGI_PRESENT_ALLOW_TEARING);
+    UINT presentFlags = Flags;
+    if (SyncInterval == 0) {
+        presentFlags |= DXGI_PRESENT_ALLOW_TEARING;
+    }
+    return m_pReal->Present(SyncInterval, presentFlags);
 }
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present1(UINT Sync, UINT Flags, const DXGI_PRESENT_PARAMETERS* p) {
     static std::atomic<bool> inputsRegistered1(false);
+    static uint64_t s_hbLast1 = 0;
+    static uint64_t s_hbFrames1 = 0;
     bool expected = false;
     if (inputsRegistered1.compare_exchange_strong(expected, true)) {
         ModConfig& cfg = ConfigManager::Get().Data();
@@ -285,6 +324,13 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present1(UINT Sync, UINT Flags,
     }
     InputHandler::Get().ProcessInput();
 
+    s_hbFrames1++;
+    uint64_t hbNow = GetTickCount64();
+    if (hbNow - s_hbLast1 >= 2000) {
+        LOG_DEBUG("[HB] Present1 tick (frames=%llu)", (unsigned long long)s_hbFrames1);
+        s_hbLast1 = hbNow;
+    }
+
     if (!StreamlineIntegration::Get().HasCameraData()) {
         float jx = 0.0f, jy = 0.0f;
         StreamlineIntegration::Get().GetLastCameraJitter(jx, jy);
@@ -293,8 +339,13 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present1(UINT Sync, UINT Flags,
     ImGuiOverlay::Get().Initialize(m_pReal);
     StreamlineIntegration::Get().NewFrame(m_pReal);
     StreamlineIntegration::Get().EvaluateFrameGen(m_pReal);
+    StreamlineIntegration::Get().EvaluateDeepDVC(m_pReal);
     ImGuiOverlay::Get().Render();
-    ScopedInterface<IDXGISwapChain1> real(m_pReal); return real ? real->Present1(0, Flags | DXGI_PRESENT_ALLOW_TEARING, p) : E_NOINTERFACE;
+    UINT presentFlags = Flags;
+    if (Sync == 0) {
+        presentFlags |= DXGI_PRESENT_ALLOW_TEARING;
+    }
+    ScopedInterface<IDXGISwapChain1> real(m_pReal); return real ? real->Present1(Sync, presentFlags, p) : E_NOINTERFACE;
 }
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::ResizeBuffers(UINT C, UINT W, UINT H, DXGI_FORMAT F, UINT FL) {

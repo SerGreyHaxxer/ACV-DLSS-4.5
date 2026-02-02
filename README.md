@@ -2,9 +2,11 @@
 
 **Unlock 200+ FPS with DLSS 4.5 & Frame Generation.**
 
+![DLSS 4.5 Control Panel](assets/Screenshot-2026-02-02-153102.png)
+
 ![Version](https://img.shields.io/badge/Version-4.5-blue) ![Status](https://img.shields.io/badge/Status-Working-brightgreen)
 
-This mod replaces the game's standard TAA with **NVIDIA DLSS 4.5** (AI Upscaling) and adds **Frame Generation (DLSS-G)**, allowing you to multiply your FPS by up to 4x on supported RTX cards.
+This mod replaces the game's standard TAA with **NVIDIA DLSS 4.5** (AI Upscaling), adds **Frame Generation (DLSS-G)**, and supports **DeepDVC (RTX Dynamic Vibrance)** for adaptive color enhancement.
 
 ---
 

@@ -4,6 +4,7 @@
 #include "dlss4_config.h"
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <cfloat>
 #include <cmath>
@@ -44,6 +45,14 @@ namespace {
     std::vector<DescriptorRecord> g_descriptorRecords;
     std::unordered_map<uintptr_t, Microsoft::WRL::ComPtr<ID3D12Resource>> g_descriptorResources;
     std::unordered_map<uintptr_t, DXGI_FORMAT> g_descriptorFormats;
+    struct CbvGpuAddrEntry {
+        D3D12_GPU_VIRTUAL_ADDRESS addr = 0;
+        uint64_t lastFrame = 0;
+    };
+    std::unordered_map<uintptr_t, CbvGpuAddrEntry> g_cbvGpuAddrs;
+    std::vector<D3D12_GPU_VIRTUAL_ADDRESS> g_rootCbvAddrs;
+    std::atomic<uint64_t> g_cbvDescriptorCount(0);
+    std::atomic<uint64_t> g_cbvGpuAddrCount(0);
 
     bool IsLikelyMotionVectorFormat(DXGI_FORMAT format) {
         switch (format) {
@@ -101,6 +110,26 @@ namespace {
         return true;
     }
 
+    void TrackCbvDescriptorInternal(D3D12_CPU_DESCRIPTOR_HANDLE handle, const D3D12_CONSTANT_BUFFER_VIEW_DESC* desc) {
+        if (!handle.ptr || !desc || desc->BufferLocation == 0) return;
+        std::lock_guard<std::mutex> lock(g_descriptorMutex);
+        g_cbvGpuAddrs[handle.ptr] = { desc->BufferLocation, StreamlineIntegration::Get().GetFrameCount() };
+        g_cbvDescriptorCount++;
+    }
+
+    void TrackRootCbvAddressInternal(D3D12_GPU_VIRTUAL_ADDRESS address) {
+        if (!address) return;
+        std::lock_guard<std::mutex> lock(g_descriptorMutex);
+        auto it = std::find(g_rootCbvAddrs.begin(), g_rootCbvAddrs.end(), address);
+        if (it != g_rootCbvAddrs.end()) g_rootCbvAddrs.erase(it);
+        g_rootCbvAddrs.push_back(address);
+        const size_t maxKeep = CAMERA_DESCRIPTOR_SCAN_MAX * CAMERA_SCAN_EXTENDED_MULTIPLIER;
+        if (g_rootCbvAddrs.size() > maxKeep) {
+            g_rootCbvAddrs.erase(g_rootCbvAddrs.begin(), g_rootCbvAddrs.begin() + (g_rootCbvAddrs.size() - maxKeep));
+        }
+        g_cbvGpuAddrCount++;
+    }
+
     bool IsFinite(float v) { return v == v && v > -FLT_MAX && v < FLT_MAX; }
     bool LooksLikeMatrix(const float* m) {
         for (int i = 0; i < 16; ++i) {
@@ -108,6 +137,17 @@ namespace {
         }
         return true;
     }
+
+    static void TransposeMatrix(const float* in, float* out) {
+        out[0] = in[0];  out[1] = in[4];  out[2] = in[8];  out[3] = in[12];
+        out[4] = in[1];  out[5] = in[5];  out[6] = in[9];  out[7] = in[13];
+        out[8] = in[2];  out[9] = in[6];  out[10] = in[10]; out[11] = in[14];
+        out[12] = in[3]; out[13] = in[7]; out[14] = in[11]; out[15] = in[15];
+    }
+
+    static float Dot3(const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+    static void GetRow3(const float* m, int row, float* out) { out[0] = m[row * 4 + 0]; out[1] = m[row * 4 + 1]; out[2] = m[row * 4 + 2]; }
+    static float Length3(const float* v) { return sqrtf(Dot3(v, v)); }
 
     float ScoreMatrixPair(const float* view, const float* proj) {
         float score = 0.0f;
@@ -117,19 +157,41 @@ namespace {
         if (fabsf(view[15] - 1.0f) < 0.01f) score += 0.2f;
         
         // Projection Matrix Checks
-        // Perspective: [15]=0, [11]=+/-1. This is what we want for 3D.
-        bool isPerspective = fabsf(proj[15]) < 0.01f && fabsf(fabsf(proj[11]) - 1.0f) < 0.1f;
+        // Strong perspective: [15]=0, [11]=+/-1.
+        bool isStrongPerspective = fabsf(proj[15]) < 0.01f && fabsf(fabsf(proj[11]) - 1.0f) < 0.1f;
+        // Weak perspective: tolerate titles that pack projection differently.
+        bool isWeakPerspective = fabsf(proj[15]) < 0.8f && fabsf(proj[11]) > 0.2f;
         
         // Orthographic: [15]=1, [11]=0. This is usually UI.
         bool isOrtho = fabsf(proj[15] - 1.0f) < 0.01f && fabsf(proj[11]) < 0.1f;
 
-        if (isPerspective) score += 0.6f; // High score for 3D perspective
+        if (isStrongPerspective) score += 0.6f; // High score for 3D perspective
+        else if (isWeakPerspective) score += 0.3f;
         else if (isOrtho) score += 0.0f;  // Ignore UI matrices
         
         // Sanity check translation elements
         if (fabsf(view[3]) < 1.0f && fabsf(view[7]) < 1.0f && fabsf(view[11]) < 1.0f) score += 0.1f;
         if (fabsf(view[12]) < CAMERA_POS_TOLERANCE && fabsf(view[13]) < CAMERA_POS_TOLERANCE && fabsf(view[14]) < CAMERA_POS_TOLERANCE) score += 0.1f;
+        
+        float r0[3], r1[3], r2[3];
+        GetRow3(view, 0, r0);
+        GetRow3(view, 1, r1);
+        GetRow3(view, 2, r2);
+        float len0 = Length3(r0);
+        float len1 = Length3(r1);
+        float len2 = Length3(r2);
+        if (len0 > 0.1f && len1 > 0.1f && len2 > 0.1f) {
+            float orthoScore = 0.0f;
+            float d01 = fabsf(Dot3(r0, r1) / (len0 * len1));
+            float d02 = fabsf(Dot3(r0, r2) / (len0 * len2));
+            float d12 = fabsf(Dot3(r1, r2) / (len1 * len2));
+            if (d01 < 0.2f) orthoScore += 0.1f;
+            if (d02 < 0.2f) orthoScore += 0.1f;
+            if (d12 < 0.2f) orthoScore += 0.1f;
+            score += orthoScore;
+        }
 
+        if (fabsf(view[15] - 1.0f) > 0.1f) return 0.0f;
         return score;
     }
 
@@ -143,26 +205,50 @@ namespace {
                 const float* view = reinterpret_cast<const float*>(data + offset);
                 const float* proj = view + 16;
                 float score = ScoreMatrixPair(view, proj);
-                if (score > bestScoreOut) {
-                    bestScoreOut = score;
-                    bestOffsetOut = offset;
-                }
+                if (score > bestScoreOut) { bestScoreOut = score; bestOffsetOut = offset; }
+                
+                float tView[16], tProj[16];
+                TransposeMatrix(view, tView);
+                TransposeMatrix(proj, tProj);
+                float tScore = ScoreMatrixPair(tView, tProj);
+                if (tScore > bestScoreOut) { bestScoreOut = tScore; bestOffsetOut = offset; }
             }
         };
         
         // Fast path: 256-byte alignment (D3D12 requirement). Fallback: 64-byte stride if nothing scores.
         scanWithStride(256, bestScore, bestOffset);
-        if (bestScore < 0.4f) {
+        if (bestScore < 0.6f) {
+            bestScore = 0.0f;
+            bestOffset = 0;
+            scanWithStride(CAMERA_SCAN_MED_STRIDE, bestScore, bestOffset);
+        }
+        if (bestScore < 0.6f) {
             bestScore = 0.0f;
             bestOffset = 0;
             scanWithStride(64, bestScore, bestOffset);
         }
-        if (bestScore < 0.4f) return false;
+        if (bestScore < 0.6f) {
+            bestScore = 0.0f;
+            bestOffset = 0;
+            scanWithStride(CAMERA_SCAN_FINE_STRIDE, bestScore, bestOffset);
+        }
+        if (bestScore < 0.6f) return false;
         const float* view = reinterpret_cast<const float*>(data + bestOffset);
         const float* proj = view + 16;
-        memcpy(outView, view, sizeof(float) * 16);
-        memcpy(outProj, proj, sizeof(float) * 16);
-        if (outScore) *outScore = bestScore;
+        float score = ScoreMatrixPair(view, proj);
+        float tView[16], tProj[16];
+        TransposeMatrix(view, tView);
+        TransposeMatrix(proj, tProj);
+        float tScore = ScoreMatrixPair(tView, tProj);
+        if (tScore > score) {
+            memcpy(outView, tView, sizeof(float) * 16);
+            memcpy(outProj, tProj, sizeof(float) * 16);
+            if (outScore) *outScore = tScore;
+        } else {
+            memcpy(outView, view, sizeof(float) * 16);
+            memcpy(outProj, proj, sizeof(float) * 16);
+            if (outScore) *outScore = score;
+        }
         if (outOffset) *outOffset = bestOffset;
         return true;
     }
@@ -200,8 +286,19 @@ namespace {
 
     void UpdateBestCamera(const float* view, const float* proj, float jitterX, float jitterY) {
         float score = ScoreMatrixPair(view, proj);
-        if (score < 0.4f) return;
+        if (score < 0.6f) return;
         std::lock_guard<std::mutex> lock(g_cameraMutex);
+        float stabilityBonus = 0.0f;
+        if (g_bestCamera.valid) {
+            float deltaSum = 0.0f;
+            for (int i = 0; i < 16; ++i) {
+                deltaSum += fabsf(g_bestCamera.view[i] - view[i]);
+                deltaSum += fabsf(g_bestCamera.proj[i] - proj[i]);
+            }
+            if (deltaSum < 0.2f) stabilityBonus = 0.2f;
+            else if (deltaSum < 1.0f) stabilityBonus = 0.1f;
+        }
+        score += stabilityBonus;
         g_bestCamera.score = score;
         memcpy(g_bestCamera.view, view, sizeof(float) * 16);
         memcpy(g_bestCamera.proj, proj, sizeof(float) * 16);
@@ -234,6 +331,23 @@ bool GetLastCameraStats(float& outScore, uint64_t& outFrame) {
     return true;
 }
 
+void TrackCbvDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE handle, const D3D12_CONSTANT_BUFFER_VIEW_DESC* desc) {
+    TrackCbvDescriptorInternal(handle, desc);
+}
+
+void TrackRootCbvAddress(D3D12_GPU_VIRTUAL_ADDRESS address) {
+    TrackRootCbvAddressInternal(address);
+}
+
+void GetCameraScanCounts(uint64_t& cbvCount, uint64_t& descCount, uint64_t& rootCount) {
+    cbvCount = g_cbvInfos.size();
+    {
+        std::lock_guard<std::mutex> lock(g_descriptorMutex);
+        descCount = g_cbvGpuAddrs.size();
+        rootCount = g_rootCbvAddrs.size();
+    }
+}
+
 void RegisterCbv(ID3D12Resource* pResource, UINT64 size, uint8_t* cpuPtr) {
     std::lock_guard<std::mutex> lock(g_cbvMutex);
     UploadCbvInfo info{};
@@ -255,6 +369,14 @@ void ResetCameraScanCache() {
     s_lastCameraOffset = 0;
     g_lastFullScanFrame.store(0);
     g_lastCameraFoundFrame.store(0);
+    g_loggedCamera.store(false);
+    {
+        std::lock_guard<std::mutex> dlock(g_descriptorMutex);
+        g_cbvGpuAddrs.clear();
+        g_rootCbvAddrs.clear();
+    }
+    g_cbvDescriptorCount.store(0);
+    g_cbvGpuAddrCount.store(0);
 }
 
 uint64_t GetLastCameraFoundFrame() {
@@ -262,63 +384,46 @@ uint64_t GetLastCameraFoundFrame() {
 }
 
 bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates, bool allowFullScan) {
-
     std::lock_guard<std::mutex> lock(g_cbvMutex);
 
     auto it = std::remove_if(g_cbvInfos.begin(), g_cbvInfos.end(), [](const UploadCbvInfo& info) {
-
         if (!info.cpuPtr) return true;
-
         MEMORY_BASIC_INFORMATION mbi;
-
         if (VirtualQuery(info.cpuPtr, &mbi, sizeof(mbi)) == 0) return true;
-
         if (mbi.State != MEM_COMMIT) return true;
-
         if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return true;
-
         return false;
-
     });
-
     if (it != g_cbvInfos.end()) g_cbvInfos.erase(it, g_cbvInfos.end());
 
-
-
     // OPTIMIZATION: Fast path - check known location first
-
-        if (s_lastCameraCbv != 0) {
-
+    if (s_lastCameraCbv != 0) {
         for (const auto& info : g_cbvInfos) {
-
             if (info.gpuBase == s_lastCameraCbv) {
-
-                // Direct read at cached offset
-
                 if (s_lastCameraOffset + sizeof(float) * 32 <= info.size) {
-
                     const float* view = reinterpret_cast<const float*>(info.cpuPtr + s_lastCameraOffset);
-
                     const float* proj = view + 16;
-
                     float score = ScoreMatrixPair(view, proj);
-
-                    if (score > 0.4f) { // Still valid?
-
-                        memcpy(outView, view, sizeof(float) * 16);
-
-                        memcpy(outProj, proj, sizeof(float) * 16);
-
-                        if (outScore) *outScore = score;
-
+                    float bestScore = score;
+                    bool useTranspose = false;
+                    float tView[16], tProj[16];
+                    TransposeMatrix(view, tView);
+                    TransposeMatrix(proj, tProj);
+                    float tScore = ScoreMatrixPair(tView, tProj);
+                    if (tScore > bestScore) { bestScore = tScore; useTranspose = true; }
+                    if (bestScore > 0.6f) {
+                        if (useTranspose) {
+                            memcpy(outView, tView, sizeof(float) * 16);
+                            memcpy(outProj, tProj, sizeof(float) * 16);
+                        } else {
+                            memcpy(outView, view, sizeof(float) * 16);
+                            memcpy(outProj, proj, sizeof(float) * 16);
+                        }
+                        if (outScore) *outScore = bestScore;
                         g_lastCameraFoundFrame.store(StreamlineIntegration::Get().GetFrameCount());
                         return true;
-
                     }
-
                 }
-
-                // If invalid at offset, fall back to full scan of this buffer
 
                 float tempView[16], tempProj[16], score = 0.0f;
                 size_t newOffset = 0;
@@ -330,38 +435,18 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
                     g_lastCameraFoundFrame.store(StreamlineIntegration::Get().GetFrameCount());
                     return true;
                 }
-
             }
-
         }
-
     }
-
-
 
     float bestScore = 0.0f;
-
     bool found = false;
-
     D3D12_GPU_VIRTUAL_ADDRESS foundGpuBase = 0;
 
-    
-
-    // Full Scan (Slow path) - Limit frequency?
-
-    // We rely on the Fast Path to catch 99% of cases.
-
-    
-
     if (g_cbvInfos.empty() && logCandidates) {
-
         LOG_INFO("[CAM] No CBVs registered! Check RegisterCbv hooks.");
-
         return false;
-
     }
-
-
 
     if (!allowFullScan) {
         return false;
@@ -369,148 +454,28 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
     g_lastFullScanFrame.store(StreamlineIntegration::Get().GetFrameCount());
 
     uint32_t scanned = 0;
+    const uint32_t maxScan = CAMERA_SCAN_MAX_CBVS_PER_FRAME * CAMERA_SCAN_EXTENDED_MULTIPLIER;
     for (const auto& info : g_cbvInfos) {
-
         if (!info.cpuPtr || info.size < CAMERA_CBV_MIN_SIZE) continue;
-        if (scanned++ >= CAMERA_SCAN_MAX_CBVS_PER_FRAME) break;
+        if (scanned++ >= maxScan) break;
 
-        
-
-        // We need the offset from TryExtract to cache it.
-
-        // Copy-paste TryExtract logic here to capture offset, or modify TryExtract?
-
-        // Modifying TryExtract is cleaner.
-
-        // But I can't modify the header signature easily.
-
-        // I'll just inline the logic for the "winner".
-
-        
-
-                float tempView[16], tempProj[16], score = 0.0f;
-
-        
-
-                
-
-        
-
-                // Optimization: Scan FULL buffer with 256-byte alignment
-
-        
-
-                size_t scanLimit = info.size;
-
-        
-
-                size_t foundOffset = 0;
-
-        
-
-                bool foundInBuf = false;
-
-        
-
-        
-
-        
-
-                for (size_t offset = 0; offset + sizeof(float) * 32 <= scanLimit; offset += 256) {
-
-                    
-
-                    const float* view = reinterpret_cast<const float*>(info.cpuPtr + offset);
-
-        
-
-                    const float* proj = view + 16;
-
-        
-
-                    float s = ScoreMatrixPair(view, proj);
-
-        
-
-                    if (s > score) {
-
-        
-
-                        score = s;
-
-        
-
-                        foundOffset = offset;
-
-        
-
-                    }
-
-        
-
-                }
-
-                if (score < 0.4f) {
-                    score = 0.0f;
-                    foundOffset = 0;
-                    for (size_t offset = 0; offset + sizeof(float) * 32 <= scanLimit; offset += 64) {
-                        const float* view = reinterpret_cast<const float*>(info.cpuPtr + offset);
-                        const float* proj = view + 16;
-                        float s = ScoreMatrixPair(view, proj);
-                        if (s > score) {
-                            score = s;
-                            foundOffset = offset;
-                        }
-                    }
-                }
-
-        
-
-                
-
-        
-
-                if (score >= 0.4f) {
-
-            foundInBuf = true;
-
-            memcpy(tempView, info.cpuPtr + foundOffset, sizeof(float) * 16);
-
-            memcpy(tempProj, info.cpuPtr + foundOffset + sizeof(float) * 16, sizeof(float) * 16);
-
-            
-
+        float tempView[16], tempProj[16], score = 0.0f;
+        size_t foundOffset = 0;
+        if (TryExtractCameraFromBuffer(info.cpuPtr, static_cast<size_t>(info.size), tempView, tempProj, &score, &foundOffset)) {
             if (logCandidates && score > 0.0f) {
-
-                 LOG_INFO("[CAM] Candidate GPU:0x%llx Size:%llu Score:%.2f View[15]:%.2f Proj[15]:%.2f Proj[11]:%.2f", 
-
+                LOG_INFO("[CAM] Candidate GPU:0x%llx Size:%llu Score:%.2f View[15]:%.2f Proj[15]:%.2f Proj[11]:%.2f",
                     info.gpuBase, info.size, score, tempView[15], tempProj[15], tempProj[11]);
-
             }
-
-
-
             if (score > bestScore) {
-
                 bestScore = score;
-
                 memcpy(outView, tempView, sizeof(float) * 16);
-
                 memcpy(outProj, tempProj, sizeof(float) * 16);
-
                 foundGpuBase = info.gpuBase;
-
                 s_lastCameraOffset = foundOffset; // Cache it!
-
                 found = true;
-
             }
-
         }
-
     }
-
-
 
     if (found) {
         s_lastCameraCbv = foundGpuBase;
@@ -521,10 +486,97 @@ bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bo
         LOG_INFO("[CAM] Scan failed. Checked %llu CBVs. Best Score: %.2f", (uint64_t)g_cbvInfos.size(), bestScore);
     }
 
-    
-
     return found;
-
+}
+bool TryScanDescriptorCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates) {
+    std::vector<std::pair<D3D12_GPU_VIRTUAL_ADDRESS, uint64_t>> addrs;
+    {
+        std::lock_guard<std::mutex> lock(g_descriptorMutex);
+        addrs.reserve(g_cbvGpuAddrs.size());
+        for (const auto& entry : g_cbvGpuAddrs) {
+            addrs.push_back({ entry.second.addr, entry.second.lastFrame });
+        }
+    }
+    if (addrs.empty()) {
+        if (logCandidates) {
+            LOG_INFO("[CAM] No CBV descriptors captured (CBV descriptors: %llu, GPU addr hits: %llu).",
+                (unsigned long long)g_cbvDescriptorCount.load(), (unsigned long long)g_cbvGpuAddrCount.load());
+        }
+        return false;
+    }
+    float bestScore = 0.0f;
+    bool found = false;
+    uint64_t currentFrame = StreamlineIntegration::Get().GetFrameCount();
+    uint64_t lastFound = g_lastCameraFoundFrame.load();
+    bool stale = lastFound == 0 || (currentFrame > lastFound + CAMERA_SCAN_STALE_FRAMES);
+    uint32_t maxScan = stale ? (CAMERA_DESCRIPTOR_SCAN_MAX * CAMERA_SCAN_EXTENDED_MULTIPLIER) : CAMERA_DESCRIPTOR_SCAN_MAX;
+    std::sort(addrs.begin(), addrs.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    std::unordered_set<D3D12_GPU_VIRTUAL_ADDRESS> seen;
+    uint32_t scanned = 0;
+    for (const auto& entry : addrs) {
+        if (scanned >= maxScan) break;
+        if (!seen.insert(entry.first).second) continue;
+        scanned++;
+        const uint8_t* data = nullptr;
+        size_t size = 0;
+        if (!TryGetCbvData(entry.first, &data, &size)) continue;
+        float tempView[16], tempProj[16], score = 0.0f;
+        size_t offset = 0;
+        if (!TryExtractCameraFromBuffer(data, size, tempView, tempProj, &score, &offset)) continue;
+        if (score > bestScore) {
+            bestScore = score;
+            memcpy(outView, tempView, sizeof(float) * 16);
+            memcpy(outProj, tempProj, sizeof(float) * 16);
+            found = true;
+        }
+    }
+    if (logCandidates) {
+        LOG_INFO("[CAM] Descriptor scan: candidates=%llu scanned=%u bestScore=%.2f",
+            (unsigned long long)addrs.size(), scanned, bestScore);
+    }
+    if (found && outScore) *outScore = bestScore;
+    return found;
+}
+bool TryScanRootCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates) {
+    std::vector<D3D12_GPU_VIRTUAL_ADDRESS> addrs;
+    {
+        std::lock_guard<std::mutex> lock(g_descriptorMutex);
+        addrs = g_rootCbvAddrs;
+    }
+    if (addrs.empty()) {
+        if (logCandidates) {
+            LOG_INFO("[CAM] No root CBV addresses captured yet.");
+        }
+        return false;
+    }
+    float bestScore = 0.0f;
+    bool found = false;
+    uint64_t currentFrame = StreamlineIntegration::Get().GetFrameCount();
+    uint64_t lastFound = g_lastCameraFoundFrame.load();
+    bool stale = lastFound == 0 || (currentFrame > lastFound + CAMERA_SCAN_STALE_FRAMES);
+    uint32_t maxScan = stale ? (CAMERA_DESCRIPTOR_SCAN_MAX * CAMERA_SCAN_EXTENDED_MULTIPLIER) : CAMERA_DESCRIPTOR_SCAN_MAX;
+    uint32_t scanned = 0;
+    for (size_t i = addrs.size(); i-- > 0;) {
+        if (scanned++ >= maxScan) break;
+        const uint8_t* data = nullptr;
+        size_t size = 0;
+        if (!TryGetCbvData(addrs[i], &data, &size)) continue;
+        float tempView[16], tempProj[16], score = 0.0f;
+        size_t offset = 0;
+        if (!TryExtractCameraFromBuffer(data, size, tempView, tempProj, &score, &offset)) continue;
+        if (score > bestScore) {
+            bestScore = score;
+            memcpy(outView, tempView, sizeof(float) * 16);
+            memcpy(outProj, tempProj, sizeof(float) * 16);
+            found = true;
+        }
+    }
+    if (logCandidates) {
+        LOG_INFO("[CAM] Root CBV scan: candidates=%llu scanned=%u bestScore=%.2f",
+            (unsigned long long)addrs.size(), scanned, bestScore);
+    }
+    if (found && outScore) *outScore = bestScore;
+    return found;
 }
 WrappedID3D12GraphicsCommandList::WrappedID3D12GraphicsCommandList(ID3D12GraphicsCommandList* pReal, WrappedID3D12Device* pDeviceWrapper) 
     : m_pReal(pReal), m_pDeviceWrapper(pDeviceWrapper), m_refCount(1) {
@@ -556,12 +608,24 @@ D3D12_COMMAND_LIST_TYPE STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::GetT
 
 HRESULT STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::Close() {
     NotifyWrappedCommandListUsed();
+    static uint64_t s_hbLast = 0;
+    static uint64_t s_hbCloseCount = 0;
     float jitterX = 0.0f, jitterY = 0.0f;
-    TryGetPatternJitter(jitterX, jitterY);
+    if (!TryGetPatternJitter(jitterX, jitterY)) {
+        jitterX = 0.0f;
+        jitterY = 0.0f;
+    }
+
+    s_hbCloseCount++;
+    uint64_t hbNow = GetTickCount64();
+    if (hbNow - s_hbLast >= 2000) {
+        LOG_DEBUG("[HB] Wrapped_Close tick (calls=%llu)", (unsigned long long)s_hbCloseCount);
+        s_hbLast = hbNow;
+    }
     
     // Throttle scanning to once per frame
     static uint64_t s_lastScanFrame = 0;
-    uint64_t currentFrame = StreamlineIntegration::Get().GetFrameCount();
+    uint64_t currentFrame = ResourceDetector::Get().GetFrameCount();
     
     if (currentFrame > s_lastScanFrame) {
         float view[16], proj[16], score = 0.0f;
@@ -573,12 +637,33 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::Close() {
         bool forceFull = stale || (currentFrame % CAMERA_SCAN_FORCE_FULL_FRAMES == 0);
         bool allowFull = forceFull || (currentFrame > lastFull + CAMERA_SCAN_MIN_INTERVAL_FRAMES);
 
-        if (TryScanAllCbvsForCamera(view, proj, &score, doLog, allowFull)) {
-            // Found it!
-            UpdateBestCamera(view, proj, jitterX, jitterY); // Update global best
+        if (doLog) {
+            uint64_t cbvCount = g_cbvInfos.size();
+            uint64_t descCount = 0;
+            uint64_t rootCount = 0;
+            {
+                std::lock_guard<std::mutex> lock(g_descriptorMutex);
+                descCount = g_cbvGpuAddrs.size();
+                rootCount = g_rootCbvAddrs.size();
+            }
+            LOG_INFO("[CAM] Scan start (frame %llu): CBVs=%llu DescCBVs=%llu RootCBVs=%llu",
+                currentFrame, (unsigned long long)cbvCount, (unsigned long long)descCount, (unsigned long long)rootCount);
+        }
+        bool found = TryScanAllCbvsForCamera(view, proj, &score, doLog, allowFull);
+        if (!found) {
+            found = TryScanDescriptorCbvsForCamera(view, proj, &score, doLog);
+        }
+        if (!found) {
+            found = TryScanRootCbvsForCamera(view, proj, &score, doLog);
+        }
+        if (found) {
+            UpdateBestCamera(view, proj, jitterX, jitterY);
             StreamlineIntegration::Get().SetCameraData(view, proj, jitterX, jitterY);
         } else {
             StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
+            if (doLog) {
+                LOG_WARN("[CAM] Camera scan failed (frame %llu)", currentFrame);
+            }
         }
         s_lastScanFrame = currentFrame;
     } else {
@@ -802,4 +887,11 @@ void STDMETHODCALLTYPE WrappedID3D12Device::CreateSampler(const D3D12_SAMPLER_DE
         if (bias != 0.0f) { nD.MipLODBias += bias; if (nD.MipLODBias < -3.0f) nD.MipLODBias = -3.0f; }
         m_pReal->CreateSampler(&nD, Dest);
     } else m_pReal->CreateSampler(pD, Dest);
+}
+
+void STDMETHODCALLTYPE WrappedID3D12Device::CreateConstantBufferView(const D3D12_CONSTANT_BUFFER_VIEW_DESC* pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) {
+    m_pReal->CreateConstantBufferView(pDesc, DestDescriptor);
+    if (pDesc && pDesc->BufferLocation) {
+        TrackCbvDescriptor(DestDescriptor, pDesc);
+    }
 }

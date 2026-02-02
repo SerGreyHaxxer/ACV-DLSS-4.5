@@ -2,16 +2,25 @@
 #include <string>
 
 struct ModConfig {
-    int dlssMode = 5; // DLAA default
+    int dlssMode = 5; // DLAA default (UI index)
     int frameGenMultiplier = 4;
-    int dlssPreset = 0; // 0=Default, 1=A, 2=B... 6=F
+    int dlssPreset = 0; // 0=Default, 1=A, 2=B... 7=G
     float sharpness = 0.5f;
     float lodBias = -1.0f;
     float mvecScaleX = 1.0f;
     float mvecScaleY = 1.0f;
+    bool mvecScaleAuto = true;
     bool reflexEnabled = true;
     bool hudFixEnabled = false;
     bool rayReconstructionEnabled = true;
+    bool deepDvcEnabled = false;
+    float deepDvcIntensity = 0.5f;
+    float deepDvcSaturation = 0.25f;
+    bool deepDvcAdaptiveEnabled = false;
+    float deepDvcAdaptiveStrength = 0.6f;
+    float deepDvcAdaptiveMin = 0.2f;
+    float deepDvcAdaptiveMax = 0.9f;
+    float deepDvcAdaptiveSmoothing = 0.15f;
     bool smartFgEnabled = false;
     bool smartFgAutoDisable = true;
     float smartFgAutoDisableFps = 120.0f;
@@ -38,6 +47,8 @@ struct ModConfig {
     float vignetteColorB = 0.93f;
     int rrPreset = 0; // 0=Default, 1=Preset D, 2=Preset E...
     float rrDenoiserStrength = 0.5f;
+    bool setupWizardCompleted = false;
+    bool setupWizardForceShow = false;
 };
 
 class ConfigManager {
@@ -53,5 +64,5 @@ public:
 private:
     ConfigManager() = default;
     ModConfig m_config;
-    std::string m_filePath = "dlss_settings.ini";
+    std::string m_filePath;
 };

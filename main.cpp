@@ -38,20 +38,16 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH:
             LogStartup("DLL_PROCESS_ATTACH Entry");
-            
+
             // Initialize Proxy Global State (CS)
             InitProxyGlobal();
-            
-            // Install crash handler immediately
-            InstallCrashHandler();
-            LogStartup("Crash Handler Installed");
 
             // Disable thread notifications for performance
             DisableThreadLibraryCalls(hModule);
             LogStartup("Thread Library Calls Disabled");
             
             LogStartup("Logger deferred until first DXGI call");
-            
+
             LogStartup("DLL_PROCESS_ATTACH Exit");
             break;
             
@@ -62,6 +58,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         case DLL_PROCESS_DETACH:
             LogStartup("DLL_PROCESS_DETACH Entry");
             LogStartup("DLSS 4 Proxy DLL Unloading...");
+
+            if (lpReserved != nullptr) {
+                LogStartup("Process termination detected; skipping cleanup");
+                break;
+            }
             
             // Cleanup in reverse order
             CleanupHooks();
@@ -75,12 +76,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             UninstallCrashHandler();
             LogStartup("Crash Handler Uninstalled");
             
-            Logger::Instance().Close();
+            Logger::Instance().Close(false);
             LogStartup("Logger Closed");
-            OpenMainLog();
             break;
     }
-    
     return TRUE;
 }
 

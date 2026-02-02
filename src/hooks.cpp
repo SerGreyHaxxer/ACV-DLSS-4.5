@@ -32,10 +32,13 @@ PFN_ResizeBuffers g_OriginalResizeBuffers = nullptr;
 
 static std::mutex g_HookMutex;
 static std::atomic<bool> g_HooksInitialized(false);
+static std::atomic<bool> g_PatternScanDone(false);
 static std::atomic<uint64_t> g_FrameCount(0);
 static std::atomic<uintptr_t> g_JitterAddress(0);
 static std::atomic<bool> g_JitterValid(false);
 static std::atomic<bool> g_WrappedCommandListUsed(false);
+static std::atomic<bool> g_VtableHooksDisabledLogged(false);
+static const bool kDisableVtableHooks = true;
 
 void NotifyWrappedCommandListUsed() {
     g_WrappedCommandListUsed.store(true);
@@ -110,24 +113,95 @@ bool HookVirtualMethodOnce(void* pObject, int index, void* pHook, void** ppOrigi
 // D3D12 DEVICE HOOK
 // ============================================================================
 
+void STDMETHODCALLTYPE HookedExecuteCommandLists(ID3D12CommandQueue* pThis, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists);
+HRESULT STDMETHODCALLTYPE Hooked_CreatePlacedResource(ID3D12Device* pThis, ID3D12Heap* pHeap, UINT64 HeapOffset, const D3D12_RESOURCE_DESC* pDesc, D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE* pOptimizedClearValue, REFIID riid, void** ppvResource);
+HRESULT STDMETHODCALLTYPE Hooked_CreateCommittedResource(ID3D12Device* pThis, const D3D12_HEAP_PROPERTIES* pHeapProperties, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC* pDesc, D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE* pOptimizedClearValue, REFIID riid, void** ppvResource);
+void STDMETHODCALLTYPE Hooked_CreateConstantBufferView(ID3D12Device* pThis, const D3D12_CONSTANT_BUFFER_VIEW_DESC* pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor);
+HRESULT STDMETHODCALLTYPE Hooked_Close(ID3D12GraphicsCommandList* pThis);
+void STDMETHODCALLTYPE HookedResourceBarrier(ID3D12GraphicsCommandList* pThis, UINT NumBarriers, const D3D12_RESOURCE_BARRIER* pBarriers);
+void STDMETHODCALLTYPE Hooked_SetGraphicsRootConstantBufferView(ID3D12GraphicsCommandList* pThis, UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation);
+void STDMETHODCALLTYPE Hooked_SetComputeRootConstantBufferView(ID3D12GraphicsCommandList* pThis, UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation);
+
+typedef void(STDMETHODCALLTYPE* PFN_ResourceBarrier)(ID3D12GraphicsCommandList*, UINT, const D3D12_RESOURCE_BARRIER*);
+typedef HRESULT(STDMETHODCALLTYPE* PFN_CreatePlacedResource)(ID3D12Device*, ID3D12Heap*, UINT64, const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID, void**);
+typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateCommittedResource)(ID3D12Device*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS, const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID, void**);
+typedef void(STDMETHODCALLTYPE* PFN_CreateConstantBufferView)(ID3D12Device*, const D3D12_CONSTANT_BUFFER_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
+typedef HRESULT(STDMETHODCALLTYPE* PFN_Close)(ID3D12GraphicsCommandList*);
+typedef void(STDMETHODCALLTYPE* PFN_SetGraphicsRootConstantBufferView)(ID3D12GraphicsCommandList*, UINT, D3D12_GPU_VIRTUAL_ADDRESS);
+typedef void(STDMETHODCALLTYPE* PFN_SetComputeRootConstantBufferView)(ID3D12GraphicsCommandList*, UINT, D3D12_GPU_VIRTUAL_ADDRESS);
+
+PFN_ExecuteCommandLists g_OriginalExecuteCommandLists = nullptr;
+PFN_ResourceBarrier g_OriginalResourceBarrier = nullptr;
+PFN_CreatePlacedResource g_OriginalCreatePlacedResource = nullptr;
+PFN_CreateCommittedResource g_OriginalCreateCommittedResource = nullptr;
+PFN_CreateConstantBufferView g_OriginalCreateConstantBufferView = nullptr;
+PFN_Close g_OriginalClose = nullptr;
+PFN_SetGraphicsRootConstantBufferView g_OriginalSetGraphicsRootCbv = nullptr;
+PFN_SetComputeRootConstantBufferView g_OriginalSetComputeRootCbv = nullptr;
+
 PFN_D3D12CreateDevice g_OriginalD3D12CreateDevice = nullptr;
 static thread_local bool s_inD3D12CreateDevice = false;
 
+void EnsureD3D12VTableHooks(ID3D12Device* pDevice) {
+    if (kDisableVtableHooks) {
+        if (!g_VtableHooksDisabledLogged.exchange(true)) {
+            LogStartup("[HOOK] Vtable hooks disabled (diagnostic build)");
+        }
+        return;
+    }
+    if (g_HooksInitialized.load(std::memory_order_acquire) || !pDevice) return;
+    std::lock_guard<std::mutex> lock(g_HookMutex);
+    if (g_HooksInitialized.load(std::memory_order_relaxed)) return;
+    LogStartup("[HOOK] Installing vtable hooks (deferred)");
+    D3D12_COMMAND_QUEUE_DESC qd = { D3D12_COMMAND_LIST_TYPE_DIRECT };
+    ID3D12CommandQueue* pQueue = nullptr;
+    pDevice->CreateCommandQueue(&qd, __uuidof(ID3D12CommandQueue), (void**)&pQueue);
+    ID3D12CommandAllocator* pAlloc = nullptr;
+    pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, __uuidof(ID3D12CommandAllocator), (void**)&pAlloc);
+    ID3D12GraphicsCommandList* pList = nullptr;
+    pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, pAlloc, nullptr, __uuidof(ID3D12GraphicsCommandList), (void**)&pList);
+
+    if (pQueue) HookVirtualMethod(pQueue, 10, HookedExecuteCommandLists, (void**)&g_OriginalExecuteCommandLists);
+    HookVirtualMethodOnce(pDevice, 17, Hooked_CreateConstantBufferView, (void**)&g_OriginalCreateConstantBufferView);
+    HookVirtualMethodOnce(pDevice, 27, Hooked_CreateCommittedResource, (void**)&g_OriginalCreateCommittedResource);
+    HookVirtualMethodOnce(pDevice, 29, Hooked_CreatePlacedResource, (void**)&g_OriginalCreatePlacedResource);
+    if (pList) {
+        HookVirtualMethodOnce(pList, 9, Hooked_Close, (void**)&g_OriginalClose);
+        HookVirtualMethodOnce(pList, 26, HookedResourceBarrier, (void**)&g_OriginalResourceBarrier);
+        HookVirtualMethodOnce(pList, 38, Hooked_SetGraphicsRootConstantBufferView, (void**)&g_OriginalSetGraphicsRootCbv);
+        HookVirtualMethodOnce(pList, 37, Hooked_SetComputeRootConstantBufferView, (void**)&g_OriginalSetComputeRootCbv);
+    }
+
+    if (pList) pList->Release();
+    if (pAlloc) pAlloc->Release();
+    if (pQueue) pQueue->Release();
+    g_HooksInitialized = true;
+    LogStartup("[HOOK] Vtable hooks installed (deferred)");
+}
+
 HRESULT WINAPI Hooked_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REFIID riid, void** ppDevice) {
+    LogStartup("[HOOK] D3D12CreateDevice entry");
     if (s_inD3D12CreateDevice) return g_OriginalD3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice);
     s_inD3D12CreateDevice = true;
     
     if (!g_OriginalD3D12CreateDevice) { s_inD3D12CreateDevice = false; return E_FAIL; }
 
-    ID3D12Device* pRealDevice = nullptr;
-    HRESULT hr = g_OriginalD3D12CreateDevice(pAdapter, MinimumFeatureLevel, __uuidof(ID3D12Device), (void**)&pRealDevice);
+    HRESULT hr = g_OriginalD3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice);
+    if (FAILED(hr)) {
+        LogStartup("[HOOK] D3D12CreateDevice failed");
+    }
 
-    if (SUCCEEDED(hr) && pRealDevice) {
-        StreamlineIntegration::Get().Initialize(pRealDevice);
-        WrappedID3D12Device* pWrappedDevice = new WrappedID3D12Device(pRealDevice);
-        hr = pWrappedDevice->QueryInterface(riid, ppDevice);
-        pWrappedDevice->Release(); 
-        pRealDevice->Release();
+    if (SUCCEEDED(hr) && ppDevice && *ppDevice) {
+        LogStartup("[HOOK] D3D12CreateDevice success, initializing Streamline");
+        ID3D12Device* pRealDevice = nullptr;
+        if (SUCCEEDED(((IUnknown*)*ppDevice)->QueryInterface(__uuidof(ID3D12Device), (void**)&pRealDevice))) {
+            StreamlineIntegration::Get().Initialize(pRealDevice);
+            EnsureD3D12VTableHooks(pRealDevice);
+            pRealDevice->Release();
+        } else {
+            LogStartup("[HOOK] QueryInterface(ID3D12Device) failed");
+        }
+        LogStartup("[HOOK] D3D12CreateDevice exit");
     }
     
     s_inD3D12CreateDevice = false;
@@ -137,8 +211,6 @@ HRESULT WINAPI Hooked_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Mi
 // ============================================================================
 // COMMAND QUEUE HOOK
 // ============================================================================
-
-PFN_ExecuteCommandLists g_OriginalExecuteCommandLists = nullptr;
 
 void STDMETHODCALLTYPE HookedExecuteCommandLists(ID3D12CommandQueue* pThis, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists) {
     // Lazy Init for Streamline if we missed the D3D12CreateDevice hook
@@ -153,6 +225,12 @@ void STDMETHODCALLTYPE HookedExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
 
     ResourceDetector::Get().NewFrame();
     StreamlineIntegration::Get().SetCommandQueue(pThis);
+
+    static bool s_camHookBannerLogged = false;
+    if (!s_camHookBannerLogged) {
+        LOG_INFO("[CAM] Camera scan active (Close hook)");
+        s_camHookBannerLogged = true;
+    }
 
     ID3D12Resource* pColor = ResourceDetector::Get().GetBestColorCandidate();
     ID3D12Resource* pDepth = ResourceDetector::Get().GetBestDepthCandidate();
@@ -169,22 +247,10 @@ void STDMETHODCALLTYPE HookedExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
 // SNIFFER HOOKS (GLOBAL VTABLE PATCHING)
 // ============================================================================
 
-typedef void(STDMETHODCALLTYPE* PFN_ResourceBarrier)(ID3D12GraphicsCommandList*, UINT, const D3D12_RESOURCE_BARRIER*);
-PFN_ResourceBarrier g_OriginalResourceBarrier = nullptr;
-
-typedef HRESULT(STDMETHODCALLTYPE* PFN_CreatePlacedResource)(ID3D12Device*, ID3D12Heap*, UINT64, const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID, void**);
-PFN_CreatePlacedResource g_OriginalCreatePlacedResource = nullptr;
-
-typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateCommittedResource)(ID3D12Device*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS, const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID, void**);
-PFN_CreateCommittedResource g_OriginalCreateCommittedResource = nullptr;
-
-typedef HRESULT(STDMETHODCALLTYPE* PFN_Close)(ID3D12GraphicsCommandList*);
-PFN_Close g_OriginalClose = nullptr;
-
 void STDMETHODCALLTYPE HookedResourceBarrier(ID3D12GraphicsCommandList* pThis, UINT NumBarriers, const D3D12_RESOURCE_BARRIER* pBarriers) {
     if (pBarriers) {
         static uint64_t s_lastScanFrame = 0;
-        uint64_t currentFrame = StreamlineIntegration::Get().GetFrameCount();
+        uint64_t currentFrame = ResourceDetector::Get().GetFrameCount();
         if (currentFrame != s_lastScanFrame) {
             s_lastScanFrame = currentFrame;
             UINT scanned = 0;
@@ -236,14 +302,37 @@ HRESULT STDMETHODCALLTYPE Hooked_CreateCommittedResource(ID3D12Device* pThis, co
     return hr;
 }
 
+void STDMETHODCALLTYPE Hooked_CreateConstantBufferView(ID3D12Device* pThis, const D3D12_CONSTANT_BUFFER_VIEW_DESC* pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) {
+    if (!g_OriginalCreateConstantBufferView) return;
+    g_OriginalCreateConstantBufferView(pThis, pDesc, DestDescriptor);
+    if (pDesc && pDesc->BufferLocation) {
+        TrackCbvDescriptor(DestDescriptor, pDesc);
+    }
+}
+
 
 HRESULT STDMETHODCALLTYPE Hooked_Close(ID3D12GraphicsCommandList* pThis) {
     if (!IsWrappedCommandListUsed()) {
+        if (!StreamlineIntegration::Get().IsInitialized()) {
+            return g_OriginalClose(pThis);
+        }
+        static uint64_t s_hbLast = 0;
+        static uint64_t s_hbCloseCount = 0;
         float jitterX = 0.0f, jitterY = 0.0f;
-        TryGetPatternJitter(jitterX, jitterY);
+        if (!TryGetPatternJitter(jitterX, jitterY)) {
+            jitterX = 0.0f;
+            jitterY = 0.0f;
+        }
+
+        s_hbCloseCount++;
+        uint64_t hbNow = GetTickCount64();
+        if (hbNow - s_hbLast >= 2000) {
+            LOG_DEBUG("[HB] Hooked_Close tick (calls=%llu)", (unsigned long long)s_hbCloseCount);
+            s_hbLast = hbNow;
+        }
         
         static uint64_t s_lastScanFrame = 0;
-        uint64_t currentFrame = StreamlineIntegration::Get().GetFrameCount();
+        uint64_t currentFrame = ResourceDetector::Get().GetFrameCount();
         
         // Scan only once per frame (Present) to avoid CPU kill
         if (currentFrame > s_lastScanFrame) {
@@ -255,11 +344,35 @@ HRESULT STDMETHODCALLTYPE Hooked_Close(ID3D12GraphicsCommandList* pThis) {
             bool stale = lastFound == 0 || (currentFrame > lastFound + CAMERA_SCAN_STALE_FRAMES);
             bool forceFull = stale || (currentFrame % CAMERA_SCAN_FORCE_FULL_FRAMES == 0);
             bool allowFull = forceFull || (currentFrame > s_lastScanFrame + CAMERA_SCAN_MIN_INTERVAL_FRAMES);
-            if (TryScanAllCbvsForCamera(view, proj, &score, doLog, allowFull)) {
-                StreamlineIntegration::Get().SetCameraData(view, proj, jitterX, jitterY);
-            } else {
-                StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
+        if (doLog) {
+            float lastScore = 0.0f;
+            uint64_t lastFrame = 0;
+            uint64_t lastFound = GetLastCameraFoundFrame();
+            const bool hasStats = GetLastCameraStats(lastScore, lastFrame);
+            uint64_t cbvCount = 0, descCount = 0, rootCount = 0;
+            GetCameraScanCounts(cbvCount, descCount, rootCount);
+            LOG_INFO("[CAM] Scan start (frame %llu): LastFound=%llu LastScore=%.2f LastFrame=%llu CBVs=%llu DescCBVs=%llu RootCBVs=%llu",
+                currentFrame, lastFound, hasStats ? lastScore : 0.0f, hasStats ? lastFrame : 0,
+                (unsigned long long)cbvCount, (unsigned long long)descCount, (unsigned long long)rootCount);
+        }
+            bool found = TryScanAllCbvsForCamera(view, proj, &score, doLog, allowFull);
+            if (!found) {
+                found = TryScanDescriptorCbvsForCamera(view, proj, &score, doLog);
             }
+            if (!found) {
+                found = TryScanRootCbvsForCamera(view, proj, &score, doLog);
+            }
+        if (found) {
+            StreamlineIntegration::Get().SetCameraData(view, proj, jitterX, jitterY);
+            if (doLog) {
+                LOG_INFO("[CAM] Camera scan found candidate (score %.2f)", score);
+            }
+        } else {
+            StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
+            if (doLog) {
+                LOG_WARN("[CAM] Camera scan failed (frame %llu, score %.2f)", currentFrame, score);
+            }
+        }
             s_lastScanFrame = currentFrame;
         } else {
             StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
@@ -270,59 +383,40 @@ HRESULT STDMETHODCALLTYPE Hooked_Close(ID3D12GraphicsCommandList* pThis) {
     return g_OriginalClose(pThis);
 }
 
+void STDMETHODCALLTYPE Hooked_SetGraphicsRootConstantBufferView(ID3D12GraphicsCommandList* pThis, UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) {
+    TrackRootCbvAddress(BufferLocation);
+    if (g_OriginalSetGraphicsRootCbv) g_OriginalSetGraphicsRootCbv(pThis, RootParameterIndex, BufferLocation);
+}
+
+void STDMETHODCALLTYPE Hooked_SetComputeRootConstantBufferView(ID3D12GraphicsCommandList* pThis, UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) {
+    TrackRootCbvAddress(BufferLocation);
+    if (g_OriginalSetComputeRootCbv) g_OriginalSetComputeRootCbv(pThis, RootParameterIndex, BufferLocation);
+}
+
 // ============================================================================
 // HOOK INIT
 // ============================================================================
 
 void HookFactoryIfNeeded(void* pFactory) {
-    if (g_HooksInitialized.load(std::memory_order_acquire)) return;
-    std::lock_guard<std::mutex> lock(g_HookMutex);
-    if (g_HooksInitialized.load(std::memory_order_relaxed)) return;
     if (!pFactory) return;
+    LogStartup("[HOOK] HookFactoryIfNeeded entry");
     
     // Pattern Scan for Jitter
-    auto jitterOffset = PatternScanner::Scan("ACValhalla.exe", "F3 0F 10 ?? ?? ?? ?? ?? 0F 28 ?? F3 0F 11 ?? ?? ?? ?? ??");
-    if (jitterOffset) {
-        uint8_t* ins = (uint8_t*)*jitterOffset;
-        SetPatternJitterAddress((uintptr_t)(ins + 8 + *(int32_t*)(ins + 4)));
-    }
-    
-    // Create Dummy Objects to get VTable pointers
-    IDXGIFactory4* pFactory4 = nullptr;
-    if (FAILED(((IUnknown*)pFactory)->QueryInterface(__uuidof(IDXGIFactory4), (void**)&pFactory4))) return;
-    IDXGIAdapter1* pAdapter = nullptr;
-    pFactory4->EnumAdapters1(0, &pAdapter);
-    ID3D12Device* pDevice = nullptr;
-    D3D12CreateDevice(pAdapter, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), (void**)&pDevice);
-    
-    if (pDevice) {
-        D3D12_COMMAND_QUEUE_DESC qd = { D3D12_COMMAND_LIST_TYPE_DIRECT };
-        ID3D12CommandQueue* pQueue = nullptr;
-        pDevice->CreateCommandQueue(&qd, __uuidof(ID3D12CommandQueue), (void**)&pQueue);
-        ID3D12CommandAllocator* pAlloc = nullptr;
-        pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, __uuidof(ID3D12CommandAllocator), (void**)&pAlloc);
-        ID3D12GraphicsCommandList* pList = nullptr;
-        pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, pAlloc, nullptr, __uuidof(ID3D12GraphicsCommandList), (void**)&pList);
-
-        // INSTALL GLOBAL VTABLE HOOKS
-        if (pQueue) HookVirtualMethod(pQueue, 10, HookedExecuteCommandLists, (void**)&g_OriginalExecuteCommandLists);
-        if (pDevice) {
-            HookVirtualMethodOnce(pDevice, 27, Hooked_CreateCommittedResource, (void**)&g_OriginalCreateCommittedResource);
-            HookVirtualMethodOnce(pDevice, 29, Hooked_CreatePlacedResource, (void**)&g_OriginalCreatePlacedResource);
+    bool expected = false;
+    if (g_PatternScanDone.compare_exchange_strong(expected, true)) {
+        LogStartup("[HOOK] Pattern scan start");
+        auto jitterOffset = PatternScanner::Scan("ACValhalla.exe", "F3 0F 10 ?? ?? ?? ?? ?? 0F 28 ?? F3 0F 11 ?? ?? ?? ?? ??");
+        if (jitterOffset) {
+            uint8_t* ins = (uint8_t*)*jitterOffset;
+            SetPatternJitterAddress((uintptr_t)(ins + 8 + *(int32_t*)(ins + 4)));
+            LogStartup("[HOOK] Pattern scan found jitter");
+        } else {
+            LogStartup("[HOOK] Pattern scan no match");
         }
-    if (pList) {
-            HookVirtualMethodOnce(pList, 9, Hooked_Close, (void**)&g_OriginalClose);
-            HookVirtualMethodOnce(pList, 26, HookedResourceBarrier, (void**)&g_OriginalResourceBarrier); // THE SNIFFER
-        }
-
-        if (pList) pList->Release();
-        if (pAlloc) pAlloc->Release();
-        if (pQueue) pQueue->Release();
-        pDevice->Release();
+    } else {
+        LogStartup("[HOOK] Pattern scan already done");
     }
-    if (pAdapter) pAdapter->Release();
-    pFactory4->Release();
-    g_HooksInitialized = true;
+    LogStartup("[HOOK] HookFactoryIfNeeded exit");
 }
 
 static std::atomic<bool> g_descriptorHooksInitialized(false);
