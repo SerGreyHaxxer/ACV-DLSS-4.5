@@ -226,7 +226,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present(UINT SyncInterval, UINT
         
         InputHandler::Get().RegisterHotkey(VK_F9, [](){
             MessageBeep(MB_OK);
-            StreamlineIntegration::Get().PrintMFGStatus();
+            StreamlineIntegration::Get().PrintDLSSGStatus();
         }, "Debug DLSS-G Status");
         
         InputHandler::Get().InstallHook(); // Global Hook
@@ -278,7 +278,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present1(UINT Sync, UINT Flags,
         
         InputHandler::Get().RegisterHotkey(VK_F9, [](){
             MessageBeep(MB_OK);
-            StreamlineIntegration::Get().PrintMFGStatus();
+            StreamlineIntegration::Get().PrintDLSSGStatus();
         }, "Debug DLSS-G Status");
         
         InputHandler::Get().InstallHook(); // Global Hook

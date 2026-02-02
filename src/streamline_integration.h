@@ -100,8 +100,8 @@ public:
     void GetLastCameraJitter(float& x, float& y) const { x = m_lastJitterX; y = m_lastJitterY; }
     UINT GetDescriptorSize() const { return m_cbvSrvUavDescriptorSize; }
     
-    // Frame Generation Debug
-    void PrintMFGStatus();
+    // Frame Generation Debug (DLSS-G)
+    void PrintDLSSGStatus();
 
     // Feature Support Getters
     bool IsDLSSSupported() const { return m_dlssSupported; }
@@ -127,9 +127,7 @@ private:
     
     // Feature availability tracking
     bool m_dlssSupported = false;
-    bool m_frameGenSupported = false;
     bool m_dlssgSupported = false;
-    bool m_mfgSupported = false;
     bool m_rayReconstructionSupported = false;
     bool m_reflexSupported = false;
     
@@ -173,7 +171,6 @@ private:
     sl::DLSSDPreset m_rrPreset = sl::DLSSDPreset::eDefault;
     int m_rrPresetIndex = 0;
     float m_rrDenoiserStrength = 0.5f;
-    bool m_useMfg = false;
     int m_frameGenMultiplier = 4; // Default 4x
     bool m_dlssEnabled = true;
     bool m_rayReconstructionEnabled = true;
@@ -198,7 +195,7 @@ private:
     bool m_rrLoaded = false;
     bool m_needFeatureReload = false;
     bool m_forceTagging = true;
-    uint32_t m_mfgInvalidParamFrames = 0;
+    uint32_t m_dlssgInvalidParamFrames = 0;
     bool m_smartFgEnabled = false;
     bool m_smartFgAutoDisable = true;
     float m_smartFgAutoDisableFps = 120.0f;
@@ -214,6 +211,7 @@ private:
     float m_prevView[16] = {};
     float m_prevProj[16] = {};
     bool m_hasPrevMatrices = false;
+    uint32_t m_rrInvalidParamFrames = 0;
 
     void UpdateSwapChain(IDXGISwapChain* pSwapChain);
     void UpdateOptions();
@@ -223,12 +221,12 @@ private:
     bool EnsureFrameToken();
     void UpdateSmartFGState();
     
-    // MFG Debug tracking
-    struct MFGStats {
+    // DLSS-G Debug tracking
+    struct DLSSGStats {
         uint32_t baseFrames = 0;
         uint32_t generatedFrames = 0;
         uint32_t lastFrameIndex = 0;
         float peakMultiplier = 0.0f;
         uint64_t startTime = 0;
-    } m_mfgStats;
+    } m_dlssgStats;
 };

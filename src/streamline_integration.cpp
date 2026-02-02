@@ -23,8 +23,8 @@ StreamlineIntegration& StreamlineIntegration::Get() {
     return instance;
 }
 
-// Frame Generation Debug tracking
-static struct MFGDebugState {
+// Frame Generation Debug tracking (DLSS-G)
+static struct DLSSGDebugState {
     uint32_t baseFrames = 0;
     uint32_t lastReportedFrameIndex = 0;
     uint32_t generatedFramesDetected = 0;
@@ -32,7 +32,7 @@ static struct MFGDebugState {
     bool firstFrame = true;
     float avgFps = 0.0f;
     float peakMultiplier = 0.0f;
-} g_mfgDebug;
+} g_dlssgDebug;
 
 #include <winreg.h>
 
@@ -132,7 +132,6 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
         m_needFeatureReload = true;
     }
 
-    m_useMfg = m_frameGenMultiplier > 2;
     LOG_INFO("Streamline ready. DLSS:%s DLSSG:%s Reflex:%s RR:%s", m_dlssSupported ? "OK" : "NO", m_dlssgSupported ? "OK" : "NO", m_reflexSupported ? "OK" : "NO", m_rayReconstructionSupported ? "OK" : "NO");
     
     // Refresh UI to reflect hardware support
@@ -175,14 +174,14 @@ void StreamlineIntegration::NewFrame(IDXGISwapChain* pSwapChain) {
     if (SL_FAILED(res)) return;
     m_needNewFrameToken = false;
     if (m_frameGenMultiplier >= 2) {
-        g_mfgDebug.baseFrames++;
-        if (!g_mfgDebug.firstFrame && m_frameIndex > prevFrameIndex + 1) g_mfgDebug.generatedFramesDetected += (m_frameIndex - prevFrameIndex - 1);
-        g_mfgDebug.firstFrame = false;
+        g_dlssgDebug.baseFrames++;
+        if (!g_dlssgDebug.firstFrame && m_frameIndex > prevFrameIndex + 1) g_dlssgDebug.generatedFramesDetected += (m_frameIndex - prevFrameIndex - 1);
+        g_dlssgDebug.firstFrame = false;
         auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::seconds>(now - g_mfgDebug.lastReportTime).count() >= 5) {
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - g_dlssgDebug.lastReportTime).count() >= 5) {
             float elapsed = 5.0f;
-            LOG_INFO("[DLSSG] FPS: %.1f (Base: %.1f) Multiplier: %.2fx Status: %s", (g_mfgDebug.baseFrames + g_mfgDebug.generatedFramesDetected) / elapsed, g_mfgDebug.baseFrames / elapsed, (float)(g_mfgDebug.baseFrames + g_mfgDebug.generatedFramesDetected) / (g_mfgDebug.baseFrames ? g_mfgDebug.baseFrames : 1), (g_mfgDebug.generatedFramesDetected > 0) ? "ACTIVE ✓" : "INACTIVE ✗");
-            g_mfgDebug.baseFrames = 0; g_mfgDebug.generatedFramesDetected = 0; g_mfgDebug.lastReportTime = now;
+            LOG_INFO("[DLSSG] FPS: %.1f (Base: %.1f) Multiplier: %.2fx Status: %s", (g_dlssgDebug.baseFrames + g_dlssgDebug.generatedFramesDetected) / elapsed, g_dlssgDebug.baseFrames / elapsed, (float)(g_dlssgDebug.baseFrames + g_dlssgDebug.generatedFramesDetected) / (g_dlssgDebug.baseFrames ? g_dlssgDebug.baseFrames : 1), (g_dlssgDebug.generatedFramesDetected > 0) ? "ACTIVE ✓" : "INACTIVE ✗");
+            g_dlssgDebug.baseFrames = 0; g_dlssgDebug.generatedFramesDetected = 0; g_dlssgDebug.lastReportTime = now;
         }
     }
     UpdateSmartFGState();
@@ -268,6 +267,16 @@ void StreamlineIntegration::EvaluateDLSS(ID3D12GraphicsCommandList* pCmdList) {
         if (SL_FAILED(rrRes)) {
             static uint32_t s_rrFailCount = 0;
             if (s_rrFailCount++ % 60 == 0) LOG_ERROR("[DLSSRR] Evaluation failed: %d", (int)rrRes);
+            if (rrRes == sl::Result::eErrorInvalidParameter) {
+                m_rrInvalidParamFrames++;
+                if (m_rrInvalidParamFrames >= STREAMLINE_INVALID_PARAM_FALLBACK_FRAMES) {
+                    m_rayReconstructionEnabled = false;
+                    m_needFeatureReload = true;
+                    LOG_ERROR("[DLSSRR] Invalid params persist; disabling Ray Reconstruction");
+                }
+            }
+        } else {
+            m_rrInvalidParamFrames = 0;
         }
     }
 }
@@ -310,19 +319,19 @@ void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain* pSwapChain) {
             static uint32_t s_failCount = 0;
             if (s_failCount++ % 60 == 0) LOG_ERROR("[DLSSG] Evaluation failed: %d", (int)fgRes);
             if ((int)fgRes == 31) {
-                m_mfgInvalidParamFrames++;
-                if (m_mfgInvalidParamFrames == MFG_INVALID_PARAM_FALLBACK_FRAMES) {
+                m_dlssgInvalidParamFrames++;
+                if (m_dlssgInvalidParamFrames == STREAMLINE_INVALID_PARAM_FALLBACK_FRAMES) {
                     m_frameGenMultiplier = 2;
                     m_optionsDirty = true;
                     LOG_WARN("[DLSSG] Invalid params persist; forcing FG multiplier to 2x");
-                } else if (m_mfgInvalidParamFrames >= MFG_INVALID_PARAM_DISABLE_FRAMES) {
+                } else if (m_dlssgInvalidParamFrames >= STREAMLINE_INVALID_PARAM_DISABLE_FRAMES) {
                     m_frameGenMultiplier = 0;
                     m_needFeatureReload = true;
                     LOG_ERROR("[DLSSG] Invalid params persist; disabling Frame Generation");
                 }
             }
         } else {
-            m_mfgInvalidParamFrames = 0;
+            m_dlssgInvalidParamFrames = 0;
         }
     }
     m_pCommandList->Close();
@@ -427,12 +436,13 @@ void StreamlineIntegration::ReleaseResources() {
     m_forceTagging = true;
     ResourceDetector::Get().Clear();
     ResetCameraScanCache();
+    m_rrInvalidParamFrames = 0;
 }
 void StreamlineIntegration::NotifySwapChainResize(UINT width, UINT height) {
     m_forceTagging = true;
     ResourceDetector::Get().SetExpectedDimensions(width, height);
 }
-void StreamlineIntegration::PrintMFGStatus() {
+void StreamlineIntegration::PrintDLSSGStatus() {
     LOG_INFO("[DLSSG] Mult:%d Init:%d Supported:%d MaxFrames:%u MinDim:%u Status:0x%x Viewport:%ux%u Buffers:%u",
         m_frameGenMultiplier, m_initialized, m_dlssgSupported, m_dlssgMaxFramesToGenerate, m_dlssgMinWidthOrHeight,
         static_cast<uint32_t>(m_dlssgStatus), m_viewportWidth, m_viewportHeight, m_swapChainBufferCount);
@@ -515,6 +525,7 @@ void StreamlineIntegration::UpdateOptions() {
     if (m_dlssSupported && m_dlssEnabled) {
         sl::DLSSOptions dlssOptions{};
         dlssOptions.mode = m_dlssMode; dlssOptions.outputWidth = m_viewportWidth; dlssOptions.outputHeight = m_viewportHeight; dlssOptions.sharpness = m_sharpness; dlssOptions.colorBuffersHDR = sl::Boolean::eTrue;
+        dlssOptions.useAutoExposure = sl::Boolean::eTrue;
         m_viewport = sl::ViewportHandle(0);
         slDLSSSetOptions(m_viewport, dlssOptions);
     }
@@ -533,11 +544,21 @@ void StreamlineIntegration::UpdateOptions() {
         rrOptions.ultraPerformancePreset = resolved;
         rrOptions.ultraQualityPreset = resolved;
         m_viewport = sl::ViewportHandle(0);
-        slDLSSDSetOptions(m_viewport, rrOptions);
+        sl::Result rrOptRes = slDLSSDSetOptions(m_viewport, rrOptions);
+        if (SL_FAILED(rrOptRes)) {
+            LOG_WARN("[DLSSRR] SetOptions failed: %d", (int)rrOptRes);
+        }
     }
     if (m_frameGenMultiplier >= 2) {
         sl::ReflexOptions reflexOptions = {}; reflexOptions.mode = sl::ReflexMode::eLowLatencyWithBoost; reflexOptions.useMarkersToOptimize = false; slReflexSetOptions(reflexOptions);
         if (m_dlssgSupported) {
+            if (!m_motionVectors || !m_depthBuffer) {
+                static uint32_t s_missingFgBuffersLog = 0;
+                if (s_missingFgBuffersLog++ % 120 == 0) {
+                    LOG_WARN("[DLSSG] Waiting for motion vectors/depth before SetOptions");
+                }
+                return;
+            }
             sl::DLSSGOptions fgOptions{};
             const int requestedMult = m_frameGenMultiplier;
             int desiredMult = requestedMult;
@@ -553,6 +574,16 @@ void StreamlineIntegration::UpdateOptions() {
             fgOptions.colorBufferFormat = static_cast<uint32_t>(m_backBufferFormat);
             fgOptions.mvecDepthWidth = m_viewportWidth;
             fgOptions.mvecDepthHeight = m_viewportHeight;
+            D3D12_RESOURCE_DESC mvDesc = m_motionVectors->GetDesc();
+            D3D12_RESOURCE_DESC depthDesc = m_depthBuffer->GetDesc();
+            DXGI_FORMAT mvFormat = mvDesc.Format;
+            DXGI_FORMAT depthFormat = depthDesc.Format;
+            DXGI_FORMAT mvOverride = ResourceDetector::Get().GetMotionFormatOverride(m_motionVectors.Get());
+            DXGI_FORMAT depthOverride = ResourceDetector::Get().GetDepthFormatOverride(m_depthBuffer.Get());
+            if (mvOverride != DXGI_FORMAT_UNKNOWN) mvFormat = mvOverride;
+            if (depthOverride != DXGI_FORMAT_UNKNOWN) depthFormat = depthOverride;
+            fgOptions.mvecBufferFormat = static_cast<uint32_t>(mvFormat);
+            fgOptions.depthBufferFormat = static_cast<uint32_t>(depthFormat);
             if (m_smartFgEnabled) {
                 fgOptions.flags |= sl::DLSSGFlags::eEnableFullscreenMenuDetection;
                 if (m_smartFgInterpolationQuality <= 0.0f) {

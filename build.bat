@@ -127,10 +127,9 @@ if %errorlevel% equ 0 (
     echo ============================================
     echo Output: bin\dxgi.dll
     echo.
-    echo Next steps:
-    echo   1. Copy bin\dxgi.dll to AC Valhalla folder
-    echo   2. Add nvngx_dlss.dll and nvngx_dlssg.dll
-    echo   3. Run the game!
+    echo Deploying to game folder...
+    set "DLSS4_SKIP_PAUSE=1"
+    powershell -ExecutionPolicy Bypass -File "Install.ps1"
     echo ============================================
 ) else (
     echo.

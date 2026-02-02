@@ -5,13 +5,6 @@ Write-Host "==============================================" -ForegroundColor Cya
 Write-Host "   AC Valhalla DLSS 4.5 Mod Installer" -ForegroundColor Cyan
 Write-Host "==============================================" -ForegroundColor Cyan
 
-# DLSS 4.5 Mod - Automatic Installer
-$ErrorActionPreference = "Stop"
-
-Write-Host "==============================================" -ForegroundColor Cyan
-Write-Host "   AC Valhalla DLSS 4.5 Mod Installer" -ForegroundColor Cyan
-Write-Host "==============================================" -ForegroundColor Cyan
-
 # 1. Verify Mod Binary
 if (-not (Test-Path "bin\dxgi.dll")) {
     Write-Host "Warning: 'bin\dxgi.dll' not found." -ForegroundColor Yellow
@@ -157,7 +150,9 @@ Write-Host "==============================================" -ForegroundColor Gre
 Write-Host "   INSTALLATION COMPLETE" -ForegroundColor Green
 Write-Host "==============================================" -ForegroundColor Green
 Write-Host "1. Launch the game."
-Write-Host "2. Press F5 for the DLSS Menu."
+Write-Host "2. Press your Menu hotkey (default F5) for the DLSS Menu."
 Write-Host "3. Check video settings: Scale 50%, Borderless Windowed."
 Write-Host ""
-Pause
+if (-not $env:DLSS4_SKIP_PAUSE) {
+    Pause
+}
