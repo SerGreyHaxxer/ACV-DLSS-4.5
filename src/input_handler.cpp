@@ -1,5 +1,6 @@
 #include "input_handler.h"
 #include "logger.h"
+#include <stdio.h>
 
 // Global static for the hook procedure
 static InputHandler* g_pInputHandler = nullptr;
@@ -24,6 +25,30 @@ InputHandler& InputHandler::Get() {
 void InputHandler::RegisterHotkey(int vKey, std::function<void()> callback, const char* name) {
     m_callbacks.push_back({vKey, callback, false, std::string(name)});
     LOG_DEBUG("Registered Hotkey: %s (Key: %d)", name, vKey);
+}
+
+void InputHandler::UpdateHotkey(const char* name, int vKey) {
+    for (auto& cb : m_callbacks) {
+        if (cb.name == name) {
+            cb.vKey = vKey;
+            cb.wasPressed = false;
+            LOG_DEBUG("Updated Hotkey: %s (Key: %d)", name, vKey);
+            return;
+        }
+    }
+}
+
+void InputHandler::ClearHotkeys() {
+    m_callbacks.clear();
+}
+
+const char* InputHandler::GetKeyName(int vKey) const {
+    static char buf[64];
+    UINT scan = MapVirtualKeyA(vKey, MAPVK_VK_TO_VSC);
+    LONG lParam = (scan << 16);
+    if (GetKeyNameTextA(lParam, buf, sizeof(buf)) > 0) return buf;
+    snprintf(buf, sizeof(buf), "Key %d", vKey);
+    return buf;
 }
 
 void InputHandler::InstallHook() {

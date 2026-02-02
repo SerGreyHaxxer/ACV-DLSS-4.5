@@ -5,13 +5,13 @@
 #include <vector>
 #include <windows.h>
 #include <wrl/client.h> // Added for ComPtr
+#include <chrono>
 
 #include <sl.h>
 #include <sl_consts.h>
 #include <sl_dlss.h>
 #include <sl_dlss_g.h>
 #include <sl_dlss_d.h>
-#include <sl_dlss_mfg.h>
 #include "sl_reflex.h"
 
 // ============================================================================
@@ -33,6 +33,7 @@ public:
     // Per-Frame Updates
     void NewFrame(IDXGISwapChain* pSwapChain);
     void SetCommandQueue(ID3D12CommandQueue* pQueue);
+    ID3D12CommandQueue* GetCommandQueue() const { return m_pCommandQueue.Get(); }
     
     // Resource Tagging (Call before Evaluate)
     void TagColorBuffer(ID3D12Resource* pResource);
@@ -56,6 +57,28 @@ public:
     void SetMVecScale(float x, float y);
     void SetReflexEnabled(bool enabled);
     void SetHUDFixEnabled(bool enabled);
+    void SetRayReconstructionEnabled(bool enabled);
+    bool IsRayReconstructionSupported() const { return m_rayReconstructionSupported; }
+    bool IsRayReconstructionEnabled() const { return m_rayReconstructionEnabled; }
+    void SetRRPreset(int preset);
+    int GetRRPresetIndex() const { return m_rrPresetIndex; }
+    void SetRRDenoiserStrength(float strength);
+    float GetRRDenoiserStrength() const { return m_rrDenoiserStrength; }
+    bool IsDLSSRRActive() const { return m_rrLoaded && m_rayReconstructionEnabled; }
+    void UpdateFrameTiming(float baseFps);
+    void SetSmartFGEnabled(bool enabled);
+    void SetSmartFGAutoDisable(bool enabled);
+    void SetSmartFGAutoDisableThreshold(float fps);
+    void SetSmartFGSceneChangeEnabled(bool enabled);
+    void SetSmartFGSceneChangeThreshold(float threshold);
+    void SetSmartFGInterpolationQuality(float quality);
+    bool IsSmartFGEnabled() const { return m_smartFgEnabled; }
+    bool IsSmartFGAutoDisableEnabled() const { return m_smartFgAutoDisable; }
+    float GetSmartFGAutoDisableThreshold() const { return m_smartFgAutoDisableFps; }
+    bool IsSmartFGSceneChangeEnabled() const { return m_smartFgSceneChangeEnabled; }
+    float GetSmartFGSceneChangeThreshold() const { return m_smartFgSceneChangeThreshold; }
+    float GetSmartFGInterpolationQuality() const { return m_smartFgInterpolationQuality; }
+    bool IsSmartFGTemporarilyDisabled() const { return m_smartFgForceDisable; }
 
     // DLSS mode mapping (UI index to SDK enum)
     void SetDLSSModeIndex(int modeIndex);
@@ -77,7 +100,7 @@ public:
     void GetLastCameraJitter(float& x, float& y) const { x = m_lastJitterX; y = m_lastJitterY; }
     UINT GetDescriptorSize() const { return m_cbvSrvUavDescriptorSize; }
     
-    // MFG Debug
+    // Frame Generation Debug
     void PrintMFGStatus();
 
     // Feature Support Getters
@@ -114,6 +137,10 @@ private:
     unsigned int m_viewportWidth = 0;
     unsigned int m_viewportHeight = 0;
     DXGI_FORMAT m_backBufferFormat = DXGI_FORMAT_UNKNOWN;
+    uint32_t m_swapChainBufferCount = 0;
+    uint32_t m_dlssgMaxFramesToGenerate = 1;
+    uint32_t m_dlssgMinWidthOrHeight = 0;
+    sl::DLSSGStatus m_dlssgStatus = sl::DLSSGStatus::eOk;
 
     // Streamline runtime state
     sl::ViewportHandle m_viewport = sl::ViewportHandle(0);
@@ -143,6 +170,9 @@ private:
     // User configuration
     sl::DLSSMode m_dlssMode = sl::DLSSMode::eDLAA; // Default Highest Quality
     sl::DLSSPreset m_dlssPreset = sl::DLSSPreset::eDefault;
+    sl::DLSSDPreset m_rrPreset = sl::DLSSDPreset::eDefault;
+    int m_rrPresetIndex = 0;
+    float m_rrDenoiserStrength = 0.5f;
     bool m_useMfg = false;
     int m_frameGenMultiplier = 4; // Default 4x
     bool m_dlssEnabled = true;
@@ -169,6 +199,21 @@ private:
     bool m_needFeatureReload = false;
     bool m_forceTagging = true;
     uint32_t m_mfgInvalidParamFrames = 0;
+    bool m_smartFgEnabled = false;
+    bool m_smartFgAutoDisable = true;
+    float m_smartFgAutoDisableFps = 120.0f;
+    bool m_smartFgSceneChangeEnabled = true;
+    float m_smartFgSceneChangeThreshold = 0.25f;
+    float m_smartFgInterpolationQuality = 0.5f;
+    float m_lastBaseFps = 0.0f;
+    bool m_smartFgForceDisable = false;
+    int m_smartFgLastMultiplier = 0;
+    std::chrono::steady_clock::time_point m_sceneChangeCooldownUntil{};
+    bool m_sceneChangeCooldownActive = false;
+    int m_sceneResetFrames = 0;
+    float m_prevView[16] = {};
+    float m_prevProj[16] = {};
+    bool m_hasPrevMatrices = false;
 
     void UpdateSwapChain(IDXGISwapChain* pSwapChain);
     void UpdateOptions();
@@ -176,6 +221,7 @@ private:
     void EnsureCommandList();
     void WaitForGpu();
     bool EnsureFrameToken();
+    void UpdateSmartFGState();
     
     // MFG Debug tracking
     struct MFGStats {

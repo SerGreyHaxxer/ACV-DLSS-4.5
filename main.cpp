@@ -7,7 +7,7 @@
 // Features:
 //   - DLSS 4 Super Resolution (transformer-based upscaling)
 //   - DLSS 4 Ray Reconstruction (RT denoising)
-//   - DLSS 4 Multi-Frame Generation (up to 4x with RTX 50 series)
+//   - DLSS 4 Frame Generation (DLSS-G, up to 4x where supported)
 //
 // Usage:
 //   1. Compile this project to dxgi.dll

@@ -4,16 +4,16 @@
 // DLSS 4 PROXY CONFIGURATION
 // ============================================================================
 // Adjust these parameters to tune the DLSS 4 behavior.
-// Frame Generation multiplier: 2x, 3x, or 4x (DLSS 4 Multi-Frame Gen max)
+// Frame Generation multiplier: 2x, 3x, or 4x (DLSS-G where supported)
 // ============================================================================
 
 #define DLSS4_PROXY_VERSION "4.5"
 #define DLSS4_LOG_FILE "dlss4_proxy.log"
 
 // -------------------------------
-// DLSS 4 Multi Frame Generation
+// DLSS-G Frame Generation
 // -------------------------------
-// DLSS 4 can generate up to 3 additional frames per rendered frame (4x total).
+// DLSS-G can generate up to 3 additional frames per rendered frame (4x total, GPU/driver dependent).
 // Set to desired multiplier: 2, 3, or 4.
 #define DLSS4_FRAME_GEN_MULTIPLIER 4
 

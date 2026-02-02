@@ -16,6 +16,9 @@ public:
     static InputHandler& Get();
     
     void RegisterHotkey(int vKey, std::function<void()> callback, const char* name);
+    void UpdateHotkey(const char* name, int vKey);
+    void ClearHotkeys();
+    const char* GetKeyName(int vKey) const;
     
     // Global Hook
     void InstallHook();

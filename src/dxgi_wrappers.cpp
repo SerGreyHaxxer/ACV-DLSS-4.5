@@ -1,9 +1,10 @@
 #include "dxgi_wrappers.h"
+#include "config_manager.h"
 #include "streamline_integration.h"
 #include "logger.h"
 #include "hooks.h"
 #include "input_handler.h"
-#include "overlay.h"
+#include "imgui_overlay.h"
 #include "dlss4_config.h"
 #include <stdio.h>
 #include <sysinfoapi.h>
@@ -210,23 +211,23 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present(UINT SyncInterval, UINT
     static std::atomic<bool> inputsRegistered(false);
     bool expected = false;
     if (inputsRegistered.compare_exchange_strong(expected, true)) {
-        OverlayUI::Get().Initialize(GetModuleHandleA("dxgi.dll"));
-        InputHandler::Get().RegisterHotkey(VK_F5, [](){ MessageBeep(MB_OK); OverlayUI::Get().ToggleVisibility(); }, "Toggle Menu");
-        InputHandler::Get().RegisterHotkey(VK_F6, [](){ MessageBeep(MB_OK); OverlayUI::Get().ToggleFPS(); }, "Toggle FPS");
-        InputHandler::Get().RegisterHotkey(VK_F7, [](){ MessageBeep(MB_OK); OverlayUI::Get().ToggleVignette(); }, "Toggle Vignette");
+        ModConfig& cfg = ConfigManager::Get().Data();
+        InputHandler::Get().RegisterHotkey(cfg.menuHotkey, [](){ MessageBeep(MB_OK); ImGuiOverlay::Get().ToggleVisibility(); }, "Toggle Menu");
+        InputHandler::Get().RegisterHotkey(cfg.fpsHotkey, [](){ MessageBeep(MB_OK); ImGuiOverlay::Get().ToggleFPS(); }, "Toggle FPS");
+        InputHandler::Get().RegisterHotkey(cfg.vignetteHotkey, [](){ MessageBeep(MB_OK); ImGuiOverlay::Get().ToggleVignette(); }, "Toggle Vignette");
         InputHandler::Get().RegisterHotkey(VK_F8, [](){
             float jx = 0.0f, jy = 0.0f;
             StreamlineIntegration::Get().GetLastCameraJitter(jx, jy);
             bool hasCam = StreamlineIntegration::Get().HasCameraData();
             LOG_INFO("F8 Debug: Camera=%s Jitter=(%.4f, %.4f)", hasCam ? "OK" : "MISSING", jx, jy);
-            OverlayUI::Get().SetCameraStatus(hasCam, jx, jy);
+            ImGuiOverlay::Get().SetCameraStatus(hasCam, jx, jy);
             MessageBeep(hasCam ? MB_OK : MB_ICONHAND);
         }, "Debug Camera Status");
         
         InputHandler::Get().RegisterHotkey(VK_F9, [](){
             MessageBeep(MB_OK);
             StreamlineIntegration::Get().PrintMFGStatus();
-        }, "Debug MFG Status");
+        }, "Debug DLSS-G Status");
         
         InputHandler::Get().InstallHook(); // Global Hook
     }
@@ -239,19 +240,22 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present(UINT SyncInterval, UINT
     frameCount++;
     if (currentTime - lastTime >= 1000) {
         float fps = (float)frameCount * 1000.0f / (float)(currentTime - lastTime);
+        StreamlineIntegration::Get().UpdateFrameTiming(fps);
         int mult = StreamlineIntegration::Get().GetFrameGenMultiplier(); if (mult < 1) mult = 1;
         float totalFps = fps * (float)mult;
-        OverlayUI::Get().SetFPS(fps, totalFps);
+        ImGuiOverlay::Get().SetFPS(fps, totalFps);
         lastTime = currentTime; frameCount = 0;
     }
 
     if (!StreamlineIntegration::Get().HasCameraData()) {
         float jx = 0.0f, jy = 0.0f;
         StreamlineIntegration::Get().GetLastCameraJitter(jx, jy);
-        OverlayUI::Get().SetCameraStatus(false, jx, jy);
+        ImGuiOverlay::Get().SetCameraStatus(false, jx, jy);
     }
+    ImGuiOverlay::Get().Initialize(m_pReal);
     StreamlineIntegration::Get().NewFrame(m_pReal);
     StreamlineIntegration::Get().EvaluateFrameGen(m_pReal);
+    ImGuiOverlay::Get().Render();
     return m_pReal->Present(0, Flags | DXGI_PRESENT_ALLOW_TEARING);
 }
 
@@ -259,23 +263,23 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present1(UINT Sync, UINT Flags,
     static std::atomic<bool> inputsRegistered1(false);
     bool expected = false;
     if (inputsRegistered1.compare_exchange_strong(expected, true)) {
-        OverlayUI::Get().Initialize(GetModuleHandleA("dxgi.dll"));
-        InputHandler::Get().RegisterHotkey(VK_F5, [](){ MessageBeep(MB_OK); OverlayUI::Get().ToggleVisibility(); }, "Toggle Menu");
-        InputHandler::Get().RegisterHotkey(VK_F6, [](){ MessageBeep(MB_OK); OverlayUI::Get().ToggleFPS(); }, "Toggle FPS");
-        InputHandler::Get().RegisterHotkey(VK_F7, [](){ MessageBeep(MB_OK); OverlayUI::Get().ToggleVignette(); }, "Toggle Vignette");
+        ModConfig& cfg = ConfigManager::Get().Data();
+        InputHandler::Get().RegisterHotkey(cfg.menuHotkey, [](){ MessageBeep(MB_OK); ImGuiOverlay::Get().ToggleVisibility(); }, "Toggle Menu");
+        InputHandler::Get().RegisterHotkey(cfg.fpsHotkey, [](){ MessageBeep(MB_OK); ImGuiOverlay::Get().ToggleFPS(); }, "Toggle FPS");
+        InputHandler::Get().RegisterHotkey(cfg.vignetteHotkey, [](){ MessageBeep(MB_OK); ImGuiOverlay::Get().ToggleVignette(); }, "Toggle Vignette");
         InputHandler::Get().RegisterHotkey(VK_F8, [](){
             float jx = 0.0f, jy = 0.0f;
             StreamlineIntegration::Get().GetLastCameraJitter(jx, jy);
             bool hasCam = StreamlineIntegration::Get().HasCameraData();
             LOG_INFO("F8 Debug: Camera=%s Jitter=(%.4f, %.4f)", hasCam ? "OK" : "MISSING", jx, jy);
-            OverlayUI::Get().SetCameraStatus(hasCam, jx, jy);
+            ImGuiOverlay::Get().SetCameraStatus(hasCam, jx, jy);
             MessageBeep(hasCam ? MB_OK : MB_ICONHAND);
         }, "Debug Camera Status");
         
         InputHandler::Get().RegisterHotkey(VK_F9, [](){
             MessageBeep(MB_OK);
             StreamlineIntegration::Get().PrintMFGStatus();
-        }, "Debug MFG Status");
+        }, "Debug DLSS-G Status");
         
         InputHandler::Get().InstallHook(); // Global Hook
     }
@@ -284,22 +288,26 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::Present1(UINT Sync, UINT Flags,
     if (!StreamlineIntegration::Get().HasCameraData()) {
         float jx = 0.0f, jy = 0.0f;
         StreamlineIntegration::Get().GetLastCameraJitter(jx, jy);
-        OverlayUI::Get().SetCameraStatus(false, jx, jy);
+        ImGuiOverlay::Get().SetCameraStatus(false, jx, jy);
     }
+    ImGuiOverlay::Get().Initialize(m_pReal);
     StreamlineIntegration::Get().NewFrame(m_pReal);
     StreamlineIntegration::Get().EvaluateFrameGen(m_pReal);
+    ImGuiOverlay::Get().Render();
     ScopedInterface<IDXGISwapChain1> real(m_pReal); return real ? real->Present1(0, Flags | DXGI_PRESENT_ALLOW_TEARING, p) : E_NOINTERFACE;
 }
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::ResizeBuffers(UINT C, UINT W, UINT H, DXGI_FORMAT F, UINT FL) {
     StreamlineIntegration::Get().NotifySwapChainResize(W, H);
     StreamlineIntegration::Get().ReleaseResources();
+    ImGuiOverlay::Get().OnResize(W, H);
     return m_pReal->ResizeBuffers(C, W, H, F, FL);
 }
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain::ResizeBuffers1(UINT C, UINT W, UINT H, DXGI_FORMAT F, UINT FL, const UINT* M, IUnknown* const* Q) {
     StreamlineIntegration::Get().NotifySwapChainResize(W, H);
     StreamlineIntegration::Get().ReleaseResources();
+    ImGuiOverlay::Get().OnResize(W, H);
     ScopedInterface<IDXGISwapChain3> real(m_pReal); return real ? real->ResizeBuffers1(C, W, H, F, FL, M, Q) : E_NOINTERFACE;
 }
 

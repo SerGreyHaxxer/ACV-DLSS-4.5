@@ -92,6 +92,7 @@ cl /LD /EHsc /std:c++17 /O2 ^
     /I. ^
     /I"local_headers" ^
     /I"%STREAMLINE_SDK%\include" ^
+    /I"external\imgui" ^
     /Fe:bin\dxgi.dll ^
     main.cpp ^
     src\proxy.cpp ^
@@ -101,11 +102,18 @@ cl /LD /EHsc /std:c++17 /O2 ^
     src\resource_detector.cpp ^
     src\crash_handler.cpp ^
     src\config_manager.cpp ^
-    src\overlay.cpp ^
+    src\imgui_overlay.cpp ^
     src\hooks.cpp ^
     src\input_handler.cpp ^
     src\pattern_scanner.cpp ^
     src\iat_utils.cpp ^
+    external\imgui\imgui.cpp ^
+    external\imgui\imgui_draw.cpp ^
+    external\imgui\imgui_tables.cpp ^
+    external\imgui\imgui_widgets.cpp ^
+    external\imgui\imgui_demo.cpp ^
+    external\imgui\backends\imgui_impl_dx12.cpp ^
+    external\imgui\backends\imgui_impl_win32.cpp ^
     /link ^
     d3d12.lib dxgi.lib dxguid.lib user32.lib dbghelp.lib gdi32.lib shell32.lib Advapi32.lib ^
     "%STREAMLINE_SDK%\lib\x64\sl.interposer.lib" ^

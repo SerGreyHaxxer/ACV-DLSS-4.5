@@ -79,7 +79,7 @@ void ResourceDetector::RegisterDepthFromView(ID3D12Resource* pResource, DXGI_FOR
     m_bestDepth = pResource;
     bool quietScan = ConfigManager::Get().Data().quietResourceScan;
     if (!quietScan) {
-        LOG_INFO("[MFG] Depth view bound: %dx%d Fmt:%d Ptr:%p", desc.Width, desc.Height, desc.Format, pResource);
+        LOG_INFO("[DLSSG] Depth view bound: %dx%d Fmt:%d Ptr:%p", desc.Width, desc.Height, desc.Format, pResource);
     }
 }
 
@@ -114,7 +114,7 @@ void ResourceDetector::RegisterMotionVectorFromView(ID3D12Resource* pResource, D
     m_bestMotion = pResource;
     bool quietScan = ConfigManager::Get().Data().quietResourceScan;
     if (!quietScan) {
-        LOG_INFO("[MFG] MV view bound: %dx%d Fmt:%d Ptr:%p", desc.Width, desc.Height, desc.Format, pResource);
+        LOG_INFO("[DLSSG] MV view bound: %dx%d Fmt:%d Ptr:%p", desc.Width, desc.Height, desc.Format, pResource);
     }
 }
 
@@ -198,7 +198,7 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDup
             m_bestMotionScore = mvScore;
             m_bestMotion = pResource;
             if (!quietScan) {
-                LOG_INFO("[MFG] New BEST MV: %dx%d Fmt:%d Score:%.2f Ptr:%p", 
+                LOG_INFO("[DLSSG] New BEST MV: %dx%d Fmt:%d Score:%.2f Ptr:%p", 
                     desc.Width, desc.Height, desc.Format, mvScore, pResource);
             }
         }
@@ -221,7 +221,7 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDup
             m_bestDepthScore = depthScore;
             m_bestDepth = pResource;
             if (!quietScan) {
-                LOG_INFO("[MFG] New BEST Depth: %dx%d Fmt:%d Score:%.2f Ptr:%p", 
+                LOG_INFO("[DLSSG] New BEST Depth: %dx%d Fmt:%d Score:%.2f Ptr:%p", 
                     desc.Width, desc.Height, desc.Format, depthScore, pResource);
             }
         }
@@ -240,7 +240,7 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDup
         if (!found) {
             m_colorCandidates.push_back({pResource, colorScore, desc, currentFrame});
             if (!quietScan) {
-                LOG_INFO("[MFG] Found Color Candidate: %dx%d Fmt:%d Score:%.2f", 
+                LOG_INFO("[DLSSG] Found Color Candidate: %dx%d Fmt:%d Score:%.2f", 
                     desc.Width, desc.Height, desc.Format, colorScore);
             }
         }
@@ -248,7 +248,7 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDup
             m_bestColorScore = colorScore;
             m_bestColor = pResource;
             if (!quietScan) {
-                LOG_INFO("[MFG] New BEST Color: %dx%d Fmt:%d Score:%.2f Ptr:%p", 
+                LOG_INFO("[DLSSG] New BEST Color: %dx%d Fmt:%d Score:%.2f Ptr:%p", 
                     desc.Width, desc.Height, desc.Format, colorScore, pResource);
             }
         }

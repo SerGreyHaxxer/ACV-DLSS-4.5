@@ -13,7 +13,7 @@
 #include <atomic>
 #include <stdio.h>
 #include "input_handler.h"
-#include "overlay.h"
+#include "imgui_overlay.h"
 #include "vtable_utils.h"
 #include "pattern_scanner.h"
 
@@ -82,6 +82,20 @@ bool HookVirtualMethod(void* pObject, int index, void* pHook, void** ppOriginal)
     void** entry = nullptr;
     if (!ResolveVTableEntry(pObject, index, &vtable, &entry)) return false;
     *ppOriginal = *entry;
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(entry, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) return false;
+    *entry = pHook;
+    VirtualProtect(entry, sizeof(void*), oldProtect, &oldProtect);
+    return true;
+}
+
+bool HookVirtualMethodOnce(void* pObject, int index, void* pHook, void** ppOriginal) {
+    if (!pObject || !pHook || !ppOriginal || index < 0) return false;
+    void** vtable = nullptr;
+    void** entry = nullptr;
+    if (!ResolveVTableEntry(pObject, index, &vtable, &entry)) return false;
+    if (*entry == pHook) return true;
+    if (*ppOriginal == nullptr) *ppOriginal = *entry;
     DWORD oldProtect = 0;
     if (!VirtualProtect(entry, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) return false;
     *entry = pHook;
@@ -222,6 +236,7 @@ HRESULT STDMETHODCALLTYPE Hooked_CreateCommittedResource(ID3D12Device* pThis, co
     return hr;
 }
 
+
 HRESULT STDMETHODCALLTYPE Hooked_Close(ID3D12GraphicsCommandList* pThis) {
     if (!IsWrappedCommandListUsed()) {
         float jitterX = 0.0f, jitterY = 0.0f;
@@ -292,12 +307,12 @@ void HookFactoryIfNeeded(void* pFactory) {
         // INSTALL GLOBAL VTABLE HOOKS
         if (pQueue) HookVirtualMethod(pQueue, 10, HookedExecuteCommandLists, (void**)&g_OriginalExecuteCommandLists);
         if (pDevice) {
-            HookVirtualMethod(pDevice, 26, Hooked_CreatePlacedResource, (void**)&g_OriginalCreatePlacedResource);
-            HookVirtualMethod(pDevice, 27, Hooked_CreateCommittedResource, (void**)&g_OriginalCreateCommittedResource);
+            HookVirtualMethodOnce(pDevice, 27, Hooked_CreateCommittedResource, (void**)&g_OriginalCreateCommittedResource);
+            HookVirtualMethodOnce(pDevice, 29, Hooked_CreatePlacedResource, (void**)&g_OriginalCreatePlacedResource);
         }
-        if (pList) {
-            HookVirtualMethod(pList, 9, Hooked_Close, (void**)&g_OriginalClose);
-            HookVirtualMethod(pList, 26, HookedResourceBarrier, (void**)&g_OriginalResourceBarrier); // THE SNIFFER
+    if (pList) {
+            HookVirtualMethodOnce(pList, 9, Hooked_Close, (void**)&g_OriginalClose);
+            HookVirtualMethodOnce(pList, 26, HookedResourceBarrier, (void**)&g_OriginalResourceBarrier); // THE SNIFFER
         }
 
         if (pList) pList->Release();
@@ -308,6 +323,14 @@ void HookFactoryIfNeeded(void* pFactory) {
     if (pAdapter) pAdapter->Release();
     pFactory4->Release();
     g_HooksInitialized = true;
+}
+
+static std::atomic<bool> g_descriptorHooksInitialized(false);
+void InitDescriptorHooks() {
+    if (g_descriptorHooksInitialized.load(std::memory_order_acquire)) return;
+    std::lock_guard<std::mutex> lock(g_HookMutex);
+    if (g_descriptorHooksInitialized.load(std::memory_order_relaxed)) return;
+    g_descriptorHooksInitialized.store(true, std::memory_order_release);
 }
 
 // ... Rest of GetProcAddress / LoadLibrary hooks (UNCHANGED) ...

@@ -24,6 +24,11 @@ bool GetLastCameraStats(float& outScore, uint64_t& outFrame);
 void ResetCameraScanCache();
 uint64_t GetLastCameraFoundFrame();
 
+// Descriptor helpers (used by vtable hooks)
+void TrackDescriptorHeap(ID3D12DescriptorHeap* heap);
+void TrackDescriptorResource(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource* resource, DXGI_FORMAT format);
+bool TryResolveDescriptorResource(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource** outResource, DXGI_FORMAT* outFormat);
+
 class WrappedID3D12GraphicsCommandList : public ID3D12GraphicsCommandList {
 public:
     WrappedID3D12GraphicsCommandList(ID3D12GraphicsCommandList* pReal, WrappedID3D12Device* pDeviceWrapper);

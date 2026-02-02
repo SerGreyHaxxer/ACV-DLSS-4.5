@@ -62,7 +62,7 @@ namespace {
         }
     }
 
-    void TrackDescriptorHeap(ID3D12DescriptorHeap* heap) {
+    void TrackDescriptorHeapInternal(ID3D12DescriptorHeap* heap) {
         if (!heap) return;
         D3D12_DESCRIPTOR_HEAP_DESC desc = heap->GetDesc();
         std::lock_guard<std::mutex> lock(g_descriptorMutex);
@@ -72,7 +72,7 @@ namespace {
         g_descriptorRecords.push_back({ desc, heap });
     }
 
-    void TrackDescriptorResource(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource* resource, DXGI_FORMAT format) {
+    void TrackDescriptorResourceInternal(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource* resource, DXGI_FORMAT format) {
         if (!handle.ptr || !resource) return;
         {
             std::lock_guard<std::mutex> lock(g_descriptorMutex);
@@ -88,7 +88,7 @@ namespace {
         }
     }
 
-    bool TryResolveDescriptorResource(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource** outResource, DXGI_FORMAT* outFormat) {
+    bool TryResolveDescriptorResourceInternal(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource** outResource, DXGI_FORMAT* outFormat) {
         if (!handle.ptr) return false;
         std::lock_guard<std::mutex> lock(g_descriptorMutex);
         auto it = g_descriptorResources.find(handle.ptr);
@@ -221,6 +221,10 @@ namespace {
         return true;
     }
 }
+
+void TrackDescriptorHeap(ID3D12DescriptorHeap* heap) { TrackDescriptorHeapInternal(heap); }
+void TrackDescriptorResource(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource* resource, DXGI_FORMAT format) { TrackDescriptorResourceInternal(handle, resource, format); }
+bool TryResolveDescriptorResource(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource** outResource, DXGI_FORMAT* outFormat) { return TryResolveDescriptorResourceInternal(handle, outResource, outFormat); }
 
 bool GetLastCameraStats(float& outScore, uint64_t& outFrame) {
     std::lock_guard<std::mutex> lock(g_cameraMutex);

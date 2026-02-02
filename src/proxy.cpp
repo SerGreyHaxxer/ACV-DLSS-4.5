@@ -67,10 +67,10 @@ bool InitializeProxy() {
     // CRITICAL: Check if d3d12.dll is already loaded (game created device before us)
     HMODULE hD3D12 = GetModuleHandleW(L"d3d12.dll");
     if (hD3D12) {
-        LOG_ERROR("[MFG] CRITICAL: d3d12.dll already loaded! Game created D3D12 device before proxy initialized!");
-        LOG_ERROR("[MFG] Resource detection will NOT work - timing issue!");
+        LOG_ERROR("[DLSSG] CRITICAL: d3d12.dll already loaded! Game created D3D12 device before proxy initialized!");
+        LOG_ERROR("[DLSSG] Resource detection will NOT work - timing issue!");
     } else {
-        LOG_INFO("[MFG] d3d12.dll not yet loaded - proxy loaded first (good!)");
+        LOG_INFO("[DLSSG] d3d12.dll not yet loaded - proxy loaded first (good!)");
     }
     if (!s_LoggerInitAttempted.exchange(true)) {
         if (!Logger::Instance().Initialize(DLSS4_LOG_FILE)) {
