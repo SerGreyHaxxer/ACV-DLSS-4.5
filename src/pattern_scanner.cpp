@@ -119,6 +119,10 @@ std::optional<uintptr_t> PatternScanner::Scan(uintptr_t start, size_t length, co
 
         uint8_t* scanStart = (uint8_t*)regionStart;
         size_t scanLength = regionEnd - regionStart;
+        if (scanLength < patternLength) {
+            current = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+            continue;
+        }
 
         for (size_t i = 0; i <= scanLength - patternLength; ++i) {
             bool found = true;

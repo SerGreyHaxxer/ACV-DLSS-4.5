@@ -166,7 +166,9 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDup
     }
 
     // Mark it as seen for this generation immediately
-    pResource->SetPrivateData(RD_GEN_TAG, sizeof(uint64_t), &currentGen);
+    if (FAILED(pResource->SetPrivateData(RD_GEN_TAG, sizeof(uint64_t), &currentGen))) {
+        return;
+    }
 
     D3D12_RESOURCE_DESC desc = pResource->GetDesc();
     
@@ -253,6 +255,10 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDup
         if (!found) {
             m_depthCandidates.push_back({pResource, depthScore, desc, currentFrame, 1});
             target = &m_depthCandidates.back();
+            if (!quietScan) {
+                LOG_DEBUG("Found Depth Candidate: %dx%d Fmt:%d Score:%.2f",
+                    desc.Width, desc.Height, desc.Format, depthScore);
+            }
         }
         float adjusted = depthScore;
         if (currentFrame - lastSeenFrame <= RESOURCE_RECENCY_FRAMES) adjusted += RESOURCE_RECENCY_BONUS;

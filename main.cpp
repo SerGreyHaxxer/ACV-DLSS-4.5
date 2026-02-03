@@ -40,7 +40,12 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             LogStartup("DLL_PROCESS_ATTACH Entry");
 
             // Initialize Proxy Global State (CS)
-            InitProxyGlobal();
+            try {
+                InitProxyGlobal();
+            } catch (...) {
+                LogStartup("EXCEPTION during InitProxyGlobal");
+                return FALSE;
+            }
 
             // Disable thread notifications for performance
             DisableThreadLibraryCalls(hModule);

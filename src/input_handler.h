@@ -3,6 +3,7 @@
 #include <functional>
 #include <vector>
 #include <string>
+#include <mutex>
 
 struct KeyCallback {
     int vKey;
@@ -32,5 +33,6 @@ public:
 private:
     InputHandler() = default;
     std::vector<KeyCallback> m_callbacks;
+    std::mutex m_callbackMutex;
     HHOOK m_hHook = nullptr;
 };

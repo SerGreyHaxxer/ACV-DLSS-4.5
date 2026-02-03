@@ -81,7 +81,7 @@ private:
     UINT m_rtvDescriptorSize = 0;
     UINT m_backBufferCount = 0;
     ID3D12Resource** m_backBuffers = nullptr;
-    D3D12_CPU_DESCRIPTOR_HANDLE m_rtvHandles[8] = {};
+    std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> m_rtvHandles;
 
     ID3D12Resource* m_vignetteTexture = nullptr;
     D3D12_CPU_DESCRIPTOR_HANDLE m_vignetteSrv = {};
@@ -90,4 +90,5 @@ private:
     UINT m_srvDescriptorSize = 0;
     UINT m_srvDescriptorCount = 0;
     UINT m_srvDescriptorNext = 0;
+    std::vector<UINT> m_srvFreeList;
 };

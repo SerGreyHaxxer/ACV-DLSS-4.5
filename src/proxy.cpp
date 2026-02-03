@@ -41,26 +41,34 @@ DXGIProxyState g_ProxyState;
 // ============================================================================
 
 static CRITICAL_SECTION s_InitCS;
-static std::atomic<bool> s_CSInited(false);
+static std::atomic<int> s_CSState(0); // 0=uninitialized, 1=initializing, 2=ready
 static std::atomic<bool> s_LoggerInitAttempted(false);
 
 void InitProxyGlobal() {
-    bool expected = false;
-    if (s_CSInited.compare_exchange_strong(expected, true)) {
+    int expected = 0;
+    if (s_CSState.compare_exchange_strong(expected, 1)) {
         InitializeCriticalSection(&s_InitCS);
+        s_CSState.store(2);
+    } else {
+        while (s_CSState.load() != 2) {
+            Sleep(0);
+        }
     }
 }
 
 void CleanupProxyGlobal() {
-    bool expected = true;
-    if (s_CSInited.compare_exchange_strong(expected, false)) {
+    while (s_CSState.load() == 1) {
+        Sleep(0);
+    }
+    int expected = 2;
+    if (s_CSState.compare_exchange_strong(expected, 0)) {
         DeleteCriticalSection(&s_InitCS);
     }
 }
 
 bool InitializeProxy() {
     LogStartup("InitializeProxy Entry");
-    if (!s_CSInited.load()) {
+    if (s_CSState.load() != 2) {
         LogStartup("CRITICAL: Proxy Global CS not initialized!");
         return false;
     }
@@ -217,7 +225,9 @@ HRESULT WINAPI CreateDXGIFactory(REFIID riid, void** ppFactory) {
     
     if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
         LOG_INFO("CreateDXGIFactory succeeded, factory at 0x%p", *ppFactory);
-        *ppFactory = new WrappedIDXGIFactory((IDXGIFactory*)*ppFactory);
+        IDXGIFactory* realFactory = (IDXGIFactory*)*ppFactory;
+        *ppFactory = new WrappedIDXGIFactory(realFactory);
+        realFactory->Release();
         LogStartup("Factory Wrapped");
     }
     
@@ -235,7 +245,9 @@ HRESULT WINAPI CreateDXGIFactory1(REFIID riid, void** ppFactory) {
     
     if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
         LOG_INFO("CreateDXGIFactory1 succeeded, factory at 0x%p", *ppFactory);
-        *ppFactory = new WrappedIDXGIFactory((IDXGIFactory*)*ppFactory);
+        IDXGIFactory* realFactory = (IDXGIFactory*)*ppFactory;
+        *ppFactory = new WrappedIDXGIFactory(realFactory);
+        realFactory->Release();
         LogStartup("Factory1 Wrapped");
     }
     
@@ -253,7 +265,9 @@ HRESULT WINAPI CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFactory) {
     
     if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
         LOG_INFO("CreateDXGIFactory2 succeeded, factory at 0x%p", *ppFactory);
-        *ppFactory = new WrappedIDXGIFactory((IDXGIFactory*)*ppFactory);
+        IDXGIFactory* realFactory = (IDXGIFactory*)*ppFactory;
+        *ppFactory = new WrappedIDXGIFactory(realFactory);
+        realFactory->Release();
         LogStartup("Factory2 Wrapped");
     }
     

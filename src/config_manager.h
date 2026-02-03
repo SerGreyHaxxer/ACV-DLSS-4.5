@@ -58,11 +58,16 @@ public:
     void Load();
     void Save();
     void ResetToDefaults();
-    
+    const std::string& GetConfigPath() const { return m_filePath; }
+    void MarkDirty();
+    void SaveIfDirty();
+
     ModConfig& Data() { return m_config; }
 
 private:
     ConfigManager() = default;
+    void EnsureConfigPath();
     ModConfig m_config;
     std::string m_filePath;
+    bool m_dirty = false;
 };

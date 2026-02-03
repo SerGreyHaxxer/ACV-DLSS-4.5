@@ -382,6 +382,10 @@ void RegisterCbv(ID3D12Resource* pResource, UINT64 size, uint8_t* cpuPtr) {
     info.size = size;
     info.cpuPtr = cpuPtr;
     g_cbvInfos.push_back(info);
+    const size_t maxCbvs = CAMERA_SCAN_MAX_CBVS_PER_FRAME * CAMERA_SCAN_EXTENDED_MULTIPLIER * 8;
+    if (g_cbvInfos.size() > maxCbvs) {
+        g_cbvInfos.erase(g_cbvInfos.begin(), g_cbvInfos.begin() + (g_cbvInfos.size() - maxCbvs));
+    }
 }
 
 static D3D12_GPU_VIRTUAL_ADDRESS s_lastCameraCbv = 0;
@@ -624,7 +628,17 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::QueryInterface(REFII
 }
 
 ULONG STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::AddRef() { return InterlockedIncrement(&m_refCount); }
-ULONG STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::Release() { ULONG ref = InterlockedDecrement(&m_refCount); if (ref == 0) delete this; return ref; }
+ULONG STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::Release() {
+    ULONG ref = InterlockedDecrement(&m_refCount);
+    if ((LONG)ref <= 0) {
+        if ((LONG)ref < 0) {
+            LOG_WARN("WrappedID3D12GraphicsCommandList refcount underflow");
+        }
+        delete this;
+        return 0;
+    }
+    return ref;
+}
 HRESULT STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::GetPrivateData(REFGUID guid, UINT* pDataSize, void* pData) { return m_pReal->GetPrivateData(guid, pDataSize, pData); }
 HRESULT STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::SetPrivateData(REFGUID guid, UINT DataSize, const void* pData) { return m_pReal->SetPrivateData(guid, DataSize, pData); }
 HRESULT STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::SetPrivateDataInterface(REFGUID guid, const IUnknown* pData) { return m_pReal->SetPrivateDataInterface(guid, pData); }
@@ -808,7 +822,17 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::QueryInterface(REFIID riid,
 }
 
 ULONG STDMETHODCALLTYPE WrappedID3D12CommandQueue::AddRef() { return InterlockedIncrement(&m_refCount); }
-ULONG STDMETHODCALLTYPE WrappedID3D12CommandQueue::Release() { ULONG ref = InterlockedDecrement(&m_refCount); if (ref == 0) delete this; return ref; }
+ULONG STDMETHODCALLTYPE WrappedID3D12CommandQueue::Release() {
+    ULONG ref = InterlockedDecrement(&m_refCount);
+    if ((LONG)ref <= 0) {
+        if ((LONG)ref < 0) {
+            LOG_WARN("WrappedID3D12CommandQueue refcount underflow");
+        }
+        delete this;
+        return 0;
+    }
+    return ref;
+}
 HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::GetPrivateData(REFGUID guid, UINT* pDataSize, void* pData) { return m_pReal->GetPrivateData(guid, pDataSize, pData); }
 HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::SetPrivateData(REFGUID guid, UINT DataSize, const void* pData) { return m_pReal->SetPrivateData(guid, DataSize, pData); }
 HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::SetPrivateDataInterface(REFGUID guid, const IUnknown* pData) { return m_pReal->SetPrivateDataInterface(guid, pData); }
@@ -869,7 +893,17 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12Device::QueryInterface(REFIID riid, void*
     return m_pReal->QueryInterface(riid, ppvObject);
 }
 ULONG STDMETHODCALLTYPE WrappedID3D12Device::AddRef() { return InterlockedIncrement(&m_refCount); }
-ULONG STDMETHODCALLTYPE WrappedID3D12Device::Release() { ULONG ref = InterlockedDecrement(&m_refCount); if (ref == 0) delete this; return ref; }
+ULONG STDMETHODCALLTYPE WrappedID3D12Device::Release() {
+    ULONG ref = InterlockedDecrement(&m_refCount);
+    if ((LONG)ref <= 0) {
+        if ((LONG)ref < 0) {
+            LOG_WARN("WrappedID3D12Device refcount underflow");
+        }
+        delete this;
+        return 0;
+    }
+    return ref;
+}
 HRESULT STDMETHODCALLTYPE WrappedID3D12Device::GetPrivateData(REFGUID guid, UINT* pDataSize, void* pData) { return m_pReal->GetPrivateData(guid, pDataSize, pData); }
 HRESULT STDMETHODCALLTYPE WrappedID3D12Device::SetPrivateData(REFGUID guid, UINT DataSize, const void* pData) { return m_pReal->SetPrivateData(guid, DataSize, pData); }
 HRESULT STDMETHODCALLTYPE WrappedID3D12Device::SetPrivateDataInterface(REFGUID guid, const IUnknown* pData) { return m_pReal->SetPrivateDataInterface(guid, pData); }
@@ -893,7 +927,8 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12Device::CreateCommandList(UINT nodeMask, 
     if (type == D3D12_COMMAND_LIST_TYPE_DIRECT || type == D3D12_COMMAND_LIST_TYPE_COMPUTE) {
         WrappedID3D12GraphicsCommandList* pWrapper = new WrappedID3D12GraphicsCommandList(pRealList, this);
         hr = pWrapper->QueryInterface(riid, ppCommandList);
-        pWrapper->Release(); pRealList->Release();
+        pWrapper->Release();
+        pRealList->Release();
     } else {
         hr = pRealList->QueryInterface(riid, ppCommandList);
         pRealList->Release();

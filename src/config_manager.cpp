@@ -11,17 +11,7 @@ ConfigManager& ConfigManager::Get() {
 }
 
 void ConfigManager::Load() {
-    if (m_filePath.empty()) {
-        char path[MAX_PATH]{};
-        if (GetModuleFileNameA(nullptr, path, MAX_PATH) > 0) {
-            std::string base(path);
-            size_t pos = base.find_last_of("\\/");
-            if (pos != std::string::npos) base.resize(pos + 1);
-            m_filePath = base + "dlss_settings.ini";
-        } else {
-            m_filePath = "dlss_settings.ini";
-        }
-    }
+    EnsureConfigPath();
     char buf[32];
     
     m_config.dlssMode = GetPrivateProfileIntA("Settings", "DLSSMode", 5, m_filePath.c_str());
@@ -224,17 +214,7 @@ void ConfigManager::Load() {
 }
 
 void ConfigManager::Save() {
-    if (m_filePath.empty()) {
-        char path[MAX_PATH]{};
-        if (GetModuleFileNameA(nullptr, path, MAX_PATH) > 0) {
-            std::string base(path);
-            size_t pos = base.find_last_of("\\/");
-            if (pos != std::string::npos) base.resize(pos + 1);
-            m_filePath = base + "dlss_settings.ini";
-        } else {
-            m_filePath = "dlss_settings.ini";
-        }
-    }
+    EnsureConfigPath();
     char buf[32];
     
     WritePrivateProfileStringA("Settings", "DLSSMode", std::to_string(m_config.dlssMode).c_str(), m_filePath.c_str());
@@ -315,9 +295,34 @@ void ConfigManager::Save() {
     WritePrivateProfileStringA("Settings", "DeepDVCAdaptiveMax", buf, m_filePath.c_str());
     sprintf_s(buf, "%.2f", m_config.deepDvcAdaptiveSmoothing);
     WritePrivateProfileStringA("Settings", "DeepDVCAdaptiveSmoothing", buf, m_filePath.c_str());
+    m_dirty = false;
 }
 
 void ConfigManager::ResetToDefaults() {
     m_config = ModConfig{};
+    m_dirty = true;
     Save();
+}
+
+void ConfigManager::MarkDirty() {
+    m_dirty = true;
+}
+
+void ConfigManager::SaveIfDirty() {
+    if (m_dirty) {
+        Save();
+    }
+}
+
+void ConfigManager::EnsureConfigPath() {
+    if (!m_filePath.empty()) return;
+    char path[MAX_PATH]{};
+    if (GetModuleFileNameA(nullptr, path, MAX_PATH) > 0) {
+        std::string base(path);
+        size_t pos = base.find_last_of("\\/");
+        if (pos != std::string::npos) base.resize(pos + 1);
+        m_filePath = base + "dlss_settings.ini";
+    } else {
+        m_filePath = "dlss_settings.ini";
+    }
 }

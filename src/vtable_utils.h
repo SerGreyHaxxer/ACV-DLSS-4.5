@@ -20,7 +20,7 @@ inline bool IsReadablePtrRange(const void* ptr, size_t size = sizeof(void*)) {
 inline bool ResolveVTableEntry(void* object, int index, void*** outVtable, void*** outEntry) {
     if (!object || !outVtable || !outEntry || index < 0) return false;
     void** vtable = *reinterpret_cast<void***>(object);
-    if (!IsReadablePtrRange(vtable)) return false;
+    if (!IsReadablePtrRange(vtable, sizeof(void*) * (index + 1))) return false;
     void** entry = &vtable[index];
     if (!IsReadablePtrRange(entry)) return false;
     *outVtable = vtable;

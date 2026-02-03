@@ -39,7 +39,10 @@ bool HookIAT(HMODULE hModule, const char* targetModule, const char* targetFuncti
                             DWORD oldProtect;
                             if (VirtualProtect(&pThunk->u1.Function, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
                                 pThunk->u1.Function = (ULONG_PTR)newFunction;
-                                VirtualProtect(&pThunk->u1.Function, sizeof(void*), oldProtect, &oldProtect);
+                                DWORD restoreProtect = 0;
+                                if (!VirtualProtect(&pThunk->u1.Function, sizeof(void*), oldProtect, &restoreProtect)) {
+                                    return found;
+                                }
                                 found = true;
                             }
                         }
@@ -55,11 +58,11 @@ bool HookIAT(HMODULE hModule, const char* targetModule, const char* targetFuncti
 }
 
 void HookAllModulesIAT(const char* targetModule, const char* targetFunction, void* newFunction, void** originalFunction) {
-    HMODULE hMods[1024];
     HANDLE hProcess = GetCurrentProcess();
-    DWORD cbNeeded;
-
-    if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
+    DWORD cbNeeded = 0;
+    if (!EnumProcessModules(hProcess, nullptr, 0, &cbNeeded) || cbNeeded == 0) return;
+    std::vector<HMODULE> hMods(cbNeeded / sizeof(HMODULE));
+    if (EnumProcessModules(hProcess, hMods.data(), cbNeeded, &cbNeeded)) {
         for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
             HookIAT(hMods[i], targetModule, targetFunction, newFunction, originalFunction);
         }

@@ -39,7 +39,7 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS pExceptionInfo) {
         fprintf(fp, "=== DLSS 4 PROXY CRASH REPORT ===\n");
         
         time_t t = time(NULL);
-        fprintf(fp, "Time: %lld\n", t);
+        fprintf(fp, "Time: %ld\n", static_cast<long>(t));
         fprintf(fp, "Exception Code: 0x%08X\n", code);
         fprintf(fp, "Address: 0x%p\n", pExceptionInfo->ExceptionRecord->ExceptionAddress);
         
@@ -65,6 +65,12 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS pExceptionInfo) {
         fprintf(fp, "RSI: %p  RDI: %p\n", (void*)pExceptionInfo->ContextRecord->Rsi, (void*)pExceptionInfo->ContextRecord->Rdi);
         fprintf(fp, "RBP: %p  RSP: %p\n", (void*)pExceptionInfo->ContextRecord->Rbp, (void*)pExceptionInfo->ContextRecord->Rsp);
         fprintf(fp, "RIP: %p\n", (void*)pExceptionInfo->ContextRecord->Rip);
+        #else
+        fprintf(fp, "EAX: %p  EBX: %p\n", (void*)pExceptionInfo->ContextRecord->Eax, (void*)pExceptionInfo->ContextRecord->Ebx);
+        fprintf(fp, "ECX: %p  EDX: %p\n", (void*)pExceptionInfo->ContextRecord->Ecx, (void*)pExceptionInfo->ContextRecord->Edx);
+        fprintf(fp, "ESI: %p  EDI: %p\n", (void*)pExceptionInfo->ContextRecord->Esi, (void*)pExceptionInfo->ContextRecord->Edi);
+        fprintf(fp, "EBP: %p  ESP: %p\n", (void*)pExceptionInfo->ContextRecord->Ebp, (void*)pExceptionInfo->ContextRecord->Esp);
+        fprintf(fp, "EIP: %p\n", (void*)pExceptionInfo->ContextRecord->Eip);
         #endif
 
         // Write Minidump

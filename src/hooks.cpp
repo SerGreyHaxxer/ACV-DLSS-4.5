@@ -64,8 +64,14 @@ bool TryGetPatternJitter(float& jitterX, float& jitterY) {
     if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return false;
 
     const float* vals = reinterpret_cast<const float*>(addr);
-    float jx = vals[0];
-    float jy = vals[1];
+    float jx = 0.0f;
+    float jy = 0.0f;
+    __try {
+        jx = vals[0];
+        jy = vals[1];
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 
     // Validation: Must be finite number
     // _finite is MSVC specific, or std::isfinite
@@ -147,6 +153,7 @@ void EnsureD3D12VTableHooks(ID3D12Device* pDevice) {
     if (!g_VtableHooksDisabledLogged.exchange(true)) {
         LogStartup("[HOOK] Vtable hooks disabled (wrapper mode)");
     }
+    (void)pDevice;
 }
 
 HRESULT WINAPI Hooked_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REFIID riid, void** ppDevice) {

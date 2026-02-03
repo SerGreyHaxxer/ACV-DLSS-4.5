@@ -171,7 +171,7 @@ void ImGuiOverlay::Shutdown() {
     if (!m_initialized) return;
     if (m_cursorUnlocked) {
         ClipCursor(&m_prevClip);
-        while (ShowCursor(FALSE) >= 0) {}
+        ShowCursor(FALSE);
         m_cursorUnlocked = false;
     }
     if (m_fence) {
@@ -185,6 +185,7 @@ void ImGuiOverlay::Shutdown() {
         m_prevWndProc = nullptr;
     }
     ReleaseDeviceResources();
+    if (m_device) { m_device->Release(); m_device = nullptr; }
     if (m_swapChain) { m_swapChain->Release(); m_swapChain = nullptr; }
     m_initialized = false;
 }
@@ -235,9 +236,11 @@ bool ImGuiOverlay::EnsureDeviceResources() {
 
     if (FAILED(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)))) return false;
     m_fenceEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if (!m_fenceEvent) return false;
 
     m_srvDescriptorCount = srvDesc.NumDescriptors;
     m_srvDescriptorNext = 0;
+    m_srvFreeList.clear();
     RecreateRenderTargets();
     return true;
 }
@@ -246,6 +249,8 @@ void ImGuiOverlay::ReleaseDeviceResources() {
     ReleaseRenderTargets();
     if (m_vignetteTexture) { m_vignetteTexture->Release(); m_vignetteTexture = nullptr; }
     m_vignetteState = D3D12_RESOURCE_STATE_COPY_DEST;
+    m_vignetteSrv = {};
+    m_vignetteSrvGpu = {};
     for (auto* list : m_commandLists) { if (list) list->Release(); }
     m_commandLists.clear();
     for (auto* alloc : m_commandAllocators) { if (alloc) alloc->Release(); }
@@ -255,28 +260,49 @@ void ImGuiOverlay::ReleaseDeviceResources() {
     if (m_fenceEvent) { CloseHandle(m_fenceEvent); m_fenceEvent = nullptr; }
     if (m_rtvHeap) { m_rtvHeap->Release(); m_rtvHeap = nullptr; }
     if (m_srvHeap) { m_srvHeap->Release(); m_srvHeap = nullptr; }
+    m_srvFreeList.clear();
+    m_srvDescriptorNext = 0;
 }
 
 void ImGuiOverlay::AllocateSrv(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* out_cpu, D3D12_GPU_DESCRIPTOR_HANDLE* out_gpu) {
     (void)info;
-    if (!m_srvHeap || m_srvDescriptorNext >= m_srvDescriptorCount) {
+    if (!m_srvHeap) {
         out_cpu->ptr = 0;
         out_gpu->ptr = 0;
         return;
     }
+    UINT index = 0;
+    if (!m_srvFreeList.empty()) {
+        index = m_srvFreeList.back();
+        m_srvFreeList.pop_back();
+    } else {
+        if (m_srvDescriptorNext >= m_srvDescriptorCount) {
+            out_cpu->ptr = 0;
+            out_gpu->ptr = 0;
+            return;
+        }
+        index = m_srvDescriptorNext++;
+    }
     D3D12_CPU_DESCRIPTOR_HANDLE cpu = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
     D3D12_GPU_DESCRIPTOR_HANDLE gpu = m_srvHeap->GetGPUDescriptorHandleForHeapStart();
-    cpu.ptr += m_srvDescriptorNext * m_srvDescriptorSize;
-    gpu.ptr += m_srvDescriptorNext * m_srvDescriptorSize;
+    cpu.ptr += index * m_srvDescriptorSize;
+    gpu.ptr += index * m_srvDescriptorSize;
     *out_cpu = cpu;
     *out_gpu = gpu;
-    m_srvDescriptorNext++;
+    (void)cpu;
+    (void)gpu;
 }
 
 void ImGuiOverlay::FreeSrv(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE cpu, D3D12_GPU_DESCRIPTOR_HANDLE gpu) {
     (void)info;
-    (void)cpu;
     (void)gpu;
+    if (!m_srvHeap || cpu.ptr == 0) return;
+    auto base = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
+    if (cpu.ptr < base.ptr) return;
+    UINT index = static_cast<UINT>((cpu.ptr - base.ptr) / m_srvDescriptorSize);
+    if (index < m_srvDescriptorCount) {
+        m_srvFreeList.push_back(index);
+    }
 }
 void ImGuiOverlay::RecreateRenderTargets() {
     ReleaseRenderTargets();
@@ -288,6 +314,7 @@ void ImGuiOverlay::RecreateRenderTargets() {
             }
         }
     }
+    m_rtvHandles.assign(m_backBufferCount, {});
     m_backBuffers = new ID3D12Resource*[m_backBufferCount]();
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
     for (UINT i = 0; i < m_backBufferCount; ++i) {
@@ -334,20 +361,20 @@ void ImGuiOverlay::SetCameraStatus(bool hasCamera, float jitterX, float jitterY)
 void ImGuiOverlay::ToggleVisibility() {
     m_visible = !m_visible;
     ConfigManager::Get().Data().uiVisible = m_visible;
-    ConfigManager::Get().Save();
+    ConfigManager::Get().MarkDirty();
     UpdateInputState();
 }
 
 void ImGuiOverlay::ToggleFPS() {
     m_showFPS = !m_showFPS;
     ConfigManager::Get().Data().showFPS = m_showFPS;
-    ConfigManager::Get().Save();
+    ConfigManager::Get().MarkDirty();
 }
 
 void ImGuiOverlay::ToggleVignette() {
     m_showVignette = !m_showVignette;
     ConfigManager::Get().Data().showVignette = m_showVignette;
-    ConfigManager::Get().Save();
+    ConfigManager::Get().MarkDirty();
     m_needRebuildTextures = true;
 }
 
@@ -359,7 +386,7 @@ void ImGuiOverlay::UpdateInputState() {
         if (!m_cursorUnlocked) {
             GetClipCursor(&m_prevClip);
             ClipCursor(nullptr);
-            while (ShowCursor(TRUE) < 0) {}
+            ShowCursor(TRUE);
             m_cursorUnlocked = true;
         }
         POINT pt{};
@@ -372,7 +399,7 @@ void ImGuiOverlay::UpdateInputState() {
         io.MouseDrawCursor = false;
         if (m_cursorUnlocked) {
             ClipCursor(&m_prevClip);
-            while (ShowCursor(FALSE) >= 0) {}
+            ShowCursor(FALSE);
             m_cursorUnlocked = false;
         }
     }
@@ -424,25 +451,33 @@ void ImGuiOverlay::BuildMainMenu() {
     if (ImGui::Button("Run Setup Wizard")) {
         m_showSetupWizard = true;
         cfg.setupWizardForceShow = true;
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     ImGui::Separator();
 
     if (m_pendingHotkeyTarget) {
-        for (int key = 0x08; key <= 0xFE; ++key) {
-            if (GetAsyncKeyState(key) & 0x1) {
-                if (key == VK_ESCAPE) {
-                    m_pendingHotkeyTarget = nullptr;
+        int key = -1;
+        if (GetAsyncKeyState(VK_ESCAPE) & 0x1) {
+            key = VK_ESCAPE;
+        } else {
+            for (int scanKey = 0x08; scanKey <= 0xFE; ++scanKey) {
+                if (GetAsyncKeyState(scanKey) & 0x1) {
+                    key = scanKey;
                     break;
                 }
+            }
+        }
+        if (key != -1) {
+            if (key == VK_ESCAPE) {
+                m_pendingHotkeyTarget = nullptr;
+            } else {
                 *m_pendingHotkeyTarget = key;
                 m_pendingHotkeyTarget = nullptr;
                 ModConfig& data = ConfigManager::Get().Data();
                 InputHandler::Get().UpdateHotkey("Toggle Menu", data.menuHotkey);
                 InputHandler::Get().UpdateHotkey("Toggle FPS", data.fpsHotkey);
                 InputHandler::Get().UpdateHotkey("Toggle Vignette", data.vignetteHotkey);
-                ConfigManager::Get().Save();
-                break;
+                ConfigManager::Get().MarkDirty();
             }
         }
     }
@@ -476,7 +511,7 @@ void ImGuiOverlay::BuildMainMenu() {
     if (ImGui::Combo("DLSS Quality Mode", &dlssMode, dlssModes, IM_ARRAYSIZE(dlssModes))) {
         sli.SetDLSSModeIndex(dlssMode);
         cfg.dlssMode = dlssMode;
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     ImGui::EndDisabled();
 
@@ -485,7 +520,7 @@ void ImGuiOverlay::BuildMainMenu() {
     if (ImGui::Combo("DLSS Preset", &preset, presets, IM_ARRAYSIZE(presets))) {
         sli.SetDLSSPreset(preset);
         cfg.dlssPreset = preset;
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
 
     if (ImGui::Button("Quality Preset")) {
@@ -506,7 +541,7 @@ void ImGuiOverlay::BuildMainMenu() {
         sli.SetReflexEnabled(cfg.reflexEnabled);
         sli.SetRayReconstructionEnabled(cfg.rayReconstructionEnabled);
         sli.SetDeepDVCEnabled(cfg.deepDvcEnabled);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     ImGui::SameLine();
     if (ImGui::Button("Balanced Preset")) {
@@ -529,7 +564,7 @@ void ImGuiOverlay::BuildMainMenu() {
         sli.SetRayReconstructionEnabled(cfg.rayReconstructionEnabled);
         sli.SetDeepDVCEnabled(cfg.deepDvcEnabled);
         sli.SetDeepDVCAdaptiveEnabled(cfg.deepDvcAdaptiveEnabled);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     ImGui::SameLine();
     if (ImGui::Button("Performance Preset")) {
@@ -552,7 +587,7 @@ void ImGuiOverlay::BuildMainMenu() {
         sli.SetRayReconstructionEnabled(cfg.rayReconstructionEnabled);
         sli.SetDeepDVCEnabled(cfg.deepDvcEnabled);
         sli.SetDeepDVCAdaptiveEnabled(cfg.deepDvcAdaptiveEnabled);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
 
     ImGui::Separator();
@@ -562,7 +597,7 @@ void ImGuiOverlay::BuildMainMenu() {
     if (ImGui::Checkbox("Enable DLSS Ray Reconstruction", &rrEnabled)) {
         cfg.rayReconstructionEnabled = rrEnabled;
         sli.SetRayReconstructionEnabled(rrEnabled);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     ImGui::EndDisabled();
     ImGui::BeginDisabled(!sli.IsRayReconstructionSupported() || !cfg.rayReconstructionEnabled);
@@ -574,13 +609,13 @@ void ImGuiOverlay::BuildMainMenu() {
     if (ImGui::Combo("RR Preset", &rrPreset, rrPresets, IM_ARRAYSIZE(rrPresets))) {
         cfg.rrPreset = rrPreset;
         sli.SetRRPreset(rrPreset);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     float rrStrength = cfg.rrDenoiserStrength;
     if (ImGui::SliderFloat("RR Denoiser Strength", &rrStrength, 0.0f, 1.0f, "%.2f")) {
         cfg.rrDenoiserStrength = rrStrength;
         sli.SetRRDenoiserStrength(rrStrength);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     ImGui::EndDisabled();
 
@@ -591,7 +626,7 @@ void ImGuiOverlay::BuildMainMenu() {
     if (ImGui::Checkbox("Enable DeepDVC", &deepDvcEnabled)) {
         cfg.deepDvcEnabled = deepDvcEnabled;
         sli.SetDeepDVCEnabled(deepDvcEnabled);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     ImGui::EndDisabled();
     ImGui::BeginDisabled(!sli.IsDeepDVCSupported() || !cfg.deepDvcEnabled);
@@ -599,46 +634,46 @@ void ImGuiOverlay::BuildMainMenu() {
     if (ImGui::SliderFloat("DeepDVC Intensity", &deepDvcIntensity, 0.0f, 1.0f, "%.2f")) {
         cfg.deepDvcIntensity = deepDvcIntensity;
         sli.SetDeepDVCIntensity(deepDvcIntensity);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     float deepDvcSaturation = cfg.deepDvcSaturation;
     if (ImGui::SliderFloat("DeepDVC Saturation Boost", &deepDvcSaturation, 0.0f, 1.0f, "%.2f")) {
         cfg.deepDvcSaturation = deepDvcSaturation;
         sli.SetDeepDVCSaturation(deepDvcSaturation);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     bool deepDvcAdaptive = cfg.deepDvcAdaptiveEnabled;
     if (ImGui::Checkbox("Adaptive Vibrance", &deepDvcAdaptive)) {
         cfg.deepDvcAdaptiveEnabled = deepDvcAdaptive;
         sli.SetDeepDVCAdaptiveEnabled(deepDvcAdaptive);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     ImGui::BeginDisabled(!cfg.deepDvcAdaptiveEnabled);
     float deepDvcAdaptiveStrength = cfg.deepDvcAdaptiveStrength;
     if (ImGui::SliderFloat("Adaptive Strength", &deepDvcAdaptiveStrength, 0.0f, 1.0f, "%.2f")) {
         cfg.deepDvcAdaptiveStrength = deepDvcAdaptiveStrength;
         sli.SetDeepDVCAdaptiveStrength(deepDvcAdaptiveStrength);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     float deepDvcAdaptiveMin = cfg.deepDvcAdaptiveMin;
     if (ImGui::SliderFloat("Adaptive Min", &deepDvcAdaptiveMin, 0.0f, 1.0f, "%.2f")) {
         cfg.deepDvcAdaptiveMin = deepDvcAdaptiveMin;
         if (cfg.deepDvcAdaptiveMin > cfg.deepDvcAdaptiveMax) cfg.deepDvcAdaptiveMax = cfg.deepDvcAdaptiveMin;
         sli.SetDeepDVCAdaptiveMin(deepDvcAdaptiveMin);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     float deepDvcAdaptiveMax = cfg.deepDvcAdaptiveMax;
     if (ImGui::SliderFloat("Adaptive Max", &deepDvcAdaptiveMax, 0.0f, 1.0f, "%.2f")) {
         cfg.deepDvcAdaptiveMax = deepDvcAdaptiveMax;
         if (cfg.deepDvcAdaptiveMin > cfg.deepDvcAdaptiveMax) cfg.deepDvcAdaptiveMin = cfg.deepDvcAdaptiveMax;
         sli.SetDeepDVCAdaptiveMax(deepDvcAdaptiveMax);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     float deepDvcAdaptiveSmoothing = cfg.deepDvcAdaptiveSmoothing;
     if (ImGui::SliderFloat("Adaptive Smoothing", &deepDvcAdaptiveSmoothing, 0.01f, 1.0f, "%.2f")) {
         cfg.deepDvcAdaptiveSmoothing = deepDvcAdaptiveSmoothing;
         sli.SetDeepDVCAdaptiveSmoothing(deepDvcAdaptiveSmoothing);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     ImGui::EndDisabled();
     ImGui::EndDisabled();
@@ -651,7 +686,7 @@ void ImGuiOverlay::BuildMainMenu() {
         int mult = fgIndex == 1 ? 2 : (fgIndex == 2 ? 3 : (fgIndex == 3 ? 4 : 0));
         sli.SetFrameGenMultiplier(mult);
         cfg.frameGenMultiplier = mult;
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     ImGui::EndDisabled();
 
@@ -661,38 +696,38 @@ void ImGuiOverlay::BuildMainMenu() {
     if (ImGui::Checkbox("Enable Smart FG", &smartFgEnabled)) {
         cfg.smartFgEnabled = smartFgEnabled;
         sli.SetSmartFGEnabled(smartFgEnabled);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     ImGui::BeginDisabled(!cfg.smartFgEnabled);
     bool smartAuto = cfg.smartFgAutoDisable;
     if (ImGui::Checkbox("Auto-disable when FPS is high", &smartAuto)) {
         cfg.smartFgAutoDisable = smartAuto;
         sli.SetSmartFGAutoDisable(smartAuto);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     float smartThreshold = cfg.smartFgAutoDisableFps;
     if (ImGui::SliderFloat("Auto-disable FPS Threshold", &smartThreshold, 30.0f, 300.0f, "%.0f")) {
         cfg.smartFgAutoDisableFps = smartThreshold;
         sli.SetSmartFGAutoDisableThreshold(smartThreshold);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     bool smartScene = cfg.smartFgSceneChangeEnabled;
     if (ImGui::Checkbox("Scene-change detection", &smartScene)) {
         cfg.smartFgSceneChangeEnabled = smartScene;
         sli.SetSmartFGSceneChangeEnabled(smartScene);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     float smartSceneThresh = cfg.smartFgSceneChangeThreshold;
     if (ImGui::SliderFloat("Scene-change sensitivity", &smartSceneThresh, 0.05f, 1.0f, "%.2f")) {
         cfg.smartFgSceneChangeThreshold = smartSceneThresh;
         sli.SetSmartFGSceneChangeThreshold(smartSceneThresh);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     float smartQuality = cfg.smartFgInterpolationQuality;
     if (ImGui::SliderFloat("FG Interpolation Quality", &smartQuality, 0.0f, 1.0f, "%.2f")) {
         cfg.smartFgInterpolationQuality = smartQuality;
         sli.SetSmartFGInterpolationQuality(smartQuality);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     ImGui::EndDisabled();
 
@@ -702,32 +737,32 @@ void ImGuiOverlay::BuildMainMenu() {
     if (ImGui::SliderFloat("Sharpness", &sharpness, 0.0f, 1.0f, "%.2f")) {
         cfg.sharpness = sharpness;
         sli.SetSharpness(sharpness);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     float lodBias = cfg.lodBias;
     if (ImGui::SliderFloat("Texture Detail (LOD Bias)", &lodBias, -2.0f, 0.0f, "%.2f")) {
         cfg.lodBias = lodBias;
         sli.SetLODBias(lodBias);
         ApplySamplerLodBias(lodBias);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     bool mvecAuto = cfg.mvecScaleAuto;
     if (ImGui::Checkbox("Auto Motion Vector Scale", &mvecAuto)) {
         cfg.mvecScaleAuto = mvecAuto;
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     ImGui::BeginDisabled(cfg.mvecScaleAuto);
     float mvecScaleX = cfg.mvecScaleX;
     if (ImGui::SliderFloat("MV Scale X", &mvecScaleX, 0.5f, 3.0f, "%.2f")) {
         cfg.mvecScaleX = mvecScaleX;
         sli.SetMVecScale(mvecScaleX, cfg.mvecScaleY);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     float mvecScaleY = cfg.mvecScaleY;
     if (ImGui::SliderFloat("MV Scale Y", &mvecScaleY, 0.5f, 3.0f, "%.2f")) {
         cfg.mvecScaleY = mvecScaleY;
         sli.SetMVecScale(cfg.mvecScaleX, mvecScaleY);
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     ImGui::EndDisabled();
 
@@ -737,30 +772,30 @@ void ImGuiOverlay::BuildMainMenu() {
     snprintf(fpsToggleLabel, sizeof(fpsToggleLabel), "Show FPS Overlay (%s)", InputHandler::Get().GetKeyName(cfg.fpsHotkey));
     if (ImGui::Checkbox(fpsToggleLabel, &m_showFPS)) {
         cfg.showFPS = m_showFPS;
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
     }
     char vignetteToggleLabel[64];
     snprintf(vignetteToggleLabel, sizeof(vignetteToggleLabel), "Show Vignette (%s)", InputHandler::Get().GetKeyName(cfg.vignetteHotkey));
     if (ImGui::Checkbox(vignetteToggleLabel, &m_showVignette)) {
         cfg.showVignette = m_showVignette;
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
         m_needRebuildTextures = true;
     }
     if (ImGui::SliderFloat("Vignette Intensity", &cfg.vignetteIntensity, 0.0f, 1.0f, "%.2f")) {
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
         m_needRebuildTextures = true;
     }
     if (ImGui::SliderFloat("Vignette Radius", &cfg.vignetteRadius, 0.2f, 1.0f, "%.2f")) {
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
         m_needRebuildTextures = true;
     }
     if (ImGui::SliderFloat("Vignette Softness", &cfg.vignetteSoftness, 0.05f, 1.0f, "%.2f")) {
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
         m_needRebuildTextures = true;
     }
     ImGui::ColorEdit3("Vignette Color", &cfg.vignetteColorR, ImGuiColorEditFlags_NoInputs);
     if (ImGui::IsItemEdited()) {
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
         m_needRebuildTextures = true;
     }
 
@@ -909,7 +944,7 @@ void ImGuiOverlay::BuildSetupWizard() {
             cfg.deepDvcEnabled = false;
             cfg.deepDvcAdaptiveEnabled = false;
         }
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
         sli.SetDLSSModeIndex(cfg.dlssMode);
         sli.SetDLSSPreset(cfg.dlssPreset);
         sli.SetFrameGenMultiplier(cfg.frameGenMultiplier);
@@ -923,14 +958,14 @@ void ImGuiOverlay::BuildSetupWizard() {
         LOG_INFO("[Wizard] Applied: DLSS=%d Preset=%d FG=%dx RR=%d", cfg.dlssMode, cfg.dlssPreset, cfg.frameGenMultiplier, cfg.rayReconstructionEnabled ? 1 : 0);
         cfg.setupWizardCompleted = true;
         cfg.setupWizardForceShow = false;
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
         m_showSetupWizard = false;
     }
     ImGui::SameLine();
     if (ImGui::Button("Skip for Now")) {
         cfg.setupWizardCompleted = true;
         cfg.setupWizardForceShow = false;
-        ConfigManager::Get().Save();
+        ConfigManager::Get().MarkDirty();
         m_showSetupWizard = false;
     }
     ImGui::End();
@@ -1005,8 +1040,13 @@ void ImGuiOverlay::BuildTexturesIfNeeded() {
     ModConfig& cfg = ConfigManager::Get().Data();
     const float radius = std::clamp(cfg.vignetteRadius, 0.2f, 1.0f);
     const float softness = std::clamp(cfg.vignetteSoftness, 0.05f, 1.0f);
-    const float displayW = std::max(1.0f, ImGui::GetIO().DisplaySize.x);
-    const float displayH = std::max(1.0f, ImGui::GetIO().DisplaySize.y);
+    const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+    if (displaySize.x <= 0.0f || displaySize.y <= 0.0f) {
+        m_needRebuildTextures = true;
+        return;
+    }
+    const float displayW = std::max(1.0f, displaySize.x);
+    const float displayH = std::max(1.0f, displaySize.y);
     const float aspect = displayW / displayH;
     const int texSize = 256;
     const float inner = radius;
@@ -1127,14 +1167,23 @@ void ImGuiOverlay::BuildTexturesIfNeeded() {
 }
 
 void ImGuiOverlay::Render() {
-    if (!m_initialized || !m_swapChain || m_commandLists.empty() || m_commandAllocators.empty()) return;
-    if (!m_visible && !m_showFPS && !m_showVignette && !m_showDebug && !m_showSetupWizard) return;
+    if (!m_initialized || !m_swapChain || m_commandLists.empty() || m_commandAllocators.empty()) {
+        ConfigManager::Get().SaveIfDirty();
+        return;
+    }
+    if (!m_visible && !m_showFPS && !m_showVignette && !m_showDebug && !m_showSetupWizard) {
+        ConfigManager::Get().SaveIfDirty();
+        return;
+    }
 
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
 
-    UpdateMetrics(m_device);
-    EnsureDxgiName(m_device);
+    const uint64_t metricNow = GetTickCount64();
+    if (metricNow - g_metricsCache.lastUpdateMs >= 500) {
+        UpdateMetrics(m_device);
+        EnsureDxgiName(m_device);
+    }
     UpdateInputState();
 
     ImGui::NewFrame();
@@ -1148,6 +1197,7 @@ void ImGuiOverlay::Render() {
     BuildDebugWindow();
 
     ImGui::Render();
+    ConfigManager::Get().SaveIfDirty();
 
     UINT backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
     if (!m_backBuffers || backBufferIndex >= m_backBufferCount) return;

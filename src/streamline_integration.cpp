@@ -843,7 +843,10 @@ float StreamlineIntegration::EstimateSceneLuma(ID3D12Resource* resource) {
     m_fenceValue++;
     if (!m_pFence) {
         m_pDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_pFence));
-        m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        if (!m_fenceEvent) {
+            m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+            if (!m_fenceEvent) return 0.5f;
+        }
     }
     m_pCommandQueue->Signal(m_pFence.Get(), m_fenceValue);
     if (m_pFence->GetCompletedValue() < m_fenceValue) {
@@ -913,7 +916,8 @@ void StreamlineIntegration::EnsureCommandList() {
     if (!m_pDevice || !m_pCommandQueue) return;
     if (!m_pCommandAllocator) m_pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_pCommandAllocator));
     if (!m_pCommandList) { m_pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_pCommandAllocator.Get(), nullptr, IID_PPV_ARGS(&m_pCommandList)); m_pCommandList->Close(); }
-    if (!m_pFence) { m_pDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_pFence)); m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr); }
+    if (!m_pFence) { m_pDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_pFence)); }
+    if (!m_fenceEvent) { m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr); }
 }
 
 bool StreamlineIntegration::EnsureFrameToken() {
