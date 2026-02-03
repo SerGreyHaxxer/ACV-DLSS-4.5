@@ -4,6 +4,7 @@
 #include "resource_detector.h"
 #include "logger.h"
 #include "input_handler.h"
+#include "d3d12_wrappers.h"
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <algorithm>
@@ -141,6 +142,7 @@ void ImGuiOverlay::Initialize(IDXGISwapChain* swapChain) {
     if (FAILED(m_swapChain->GetDevice(__uuidof(ID3D12Device), (void**)&m_device))) return;
     m_queue = StreamlineIntegration::Get().GetCommandQueue();
     m_fenceValue = 0;
+    m_vignetteState = D3D12_RESOURCE_STATE_COPY_DEST;
 
     if (!EnsureDeviceResources()) return;
 
@@ -243,6 +245,7 @@ bool ImGuiOverlay::EnsureDeviceResources() {
 void ImGuiOverlay::ReleaseDeviceResources() {
     ReleaseRenderTargets();
     if (m_vignetteTexture) { m_vignetteTexture->Release(); m_vignetteTexture = nullptr; }
+    m_vignetteState = D3D12_RESOURCE_STATE_COPY_DEST;
     for (auto* list : m_commandLists) { if (list) list->Release(); }
     m_commandLists.clear();
     for (auto* alloc : m_commandAllocators) { if (alloc) alloc->Release(); }
@@ -499,6 +502,7 @@ void ImGuiOverlay::BuildMainMenu() {
         sli.SetFrameGenMultiplier(cfg.frameGenMultiplier);
         sli.SetSharpness(cfg.sharpness);
         sli.SetLODBias(cfg.lodBias);
+        ApplySamplerLodBias(cfg.lodBias);
         sli.SetReflexEnabled(cfg.reflexEnabled);
         sli.SetRayReconstructionEnabled(cfg.rayReconstructionEnabled);
         sli.SetDeepDVCEnabled(cfg.deepDvcEnabled);
@@ -520,6 +524,7 @@ void ImGuiOverlay::BuildMainMenu() {
         sli.SetFrameGenMultiplier(cfg.frameGenMultiplier);
         sli.SetSharpness(cfg.sharpness);
         sli.SetLODBias(cfg.lodBias);
+        ApplySamplerLodBias(cfg.lodBias);
         sli.SetReflexEnabled(cfg.reflexEnabled);
         sli.SetRayReconstructionEnabled(cfg.rayReconstructionEnabled);
         sli.SetDeepDVCEnabled(cfg.deepDvcEnabled);
@@ -542,6 +547,7 @@ void ImGuiOverlay::BuildMainMenu() {
         sli.SetFrameGenMultiplier(cfg.frameGenMultiplier);
         sli.SetSharpness(cfg.sharpness);
         sli.SetLODBias(cfg.lodBias);
+        ApplySamplerLodBias(cfg.lodBias);
         sli.SetReflexEnabled(cfg.reflexEnabled);
         sli.SetRayReconstructionEnabled(cfg.rayReconstructionEnabled);
         sli.SetDeepDVCEnabled(cfg.deepDvcEnabled);
@@ -702,6 +708,7 @@ void ImGuiOverlay::BuildMainMenu() {
     if (ImGui::SliderFloat("Texture Detail (LOD Bias)", &lodBias, -2.0f, 0.0f, "%.2f")) {
         cfg.lodBias = lodBias;
         sli.SetLODBias(lodBias);
+        ApplySamplerLodBias(lodBias);
         ConfigManager::Get().Save();
     }
     bool mvecAuto = cfg.mvecScaleAuto;
@@ -822,6 +829,7 @@ void ImGuiOverlay::BuildMainMenu() {
         sli.SetFrameGenMultiplier(reset.frameGenMultiplier);
         sli.SetSharpness(reset.sharpness);
         sli.SetLODBias(reset.lodBias);
+        ApplySamplerLodBias(reset.lodBias);
         sli.SetReflexEnabled(reset.reflexEnabled);
         sli.SetHUDFixEnabled(reset.hudFixEnabled);
         sli.SetRayReconstructionEnabled(reset.rayReconstructionEnabled);
@@ -907,6 +915,7 @@ void ImGuiOverlay::BuildSetupWizard() {
         sli.SetFrameGenMultiplier(cfg.frameGenMultiplier);
         sli.SetSharpness(cfg.sharpness);
         sli.SetLODBias(cfg.lodBias);
+        ApplySamplerLodBias(cfg.lodBias);
         sli.SetReflexEnabled(cfg.reflexEnabled);
         sli.SetRayReconstructionEnabled(cfg.rayReconstructionEnabled);
         sli.SetDeepDVCEnabled(cfg.deepDvcEnabled);
@@ -940,15 +949,35 @@ void ImGuiOverlay::BuildFPSOverlay() {
 
 void ImGuiOverlay::BuildVignette() {
     if (!m_showVignette) return;
+    BuildTexturesIfNeeded();
+    if (!m_vignetteTexture || m_vignetteSrvGpu.ptr == 0) return;
     ImDrawList* drawList = ImGui::GetForegroundDrawList();
     const ImVec2 size = ImGui::GetIO().DisplaySize;
     ModConfig& cfg = ConfigManager::Get().Data();
-    float intensity = cfg.vignetteIntensity;
-    ImU32 col = IM_COL32((int)(cfg.vignetteColorR * 255.0f),
-                         (int)(cfg.vignetteColorG * 255.0f),
-                         (int)(cfg.vignetteColorB * 255.0f),
-                         (int)(intensity * 180.0f));
-    drawList->AddRectFilled(ImVec2(0, 0), size, col, 0.0f);
+    const float intensity = std::clamp(cfg.vignetteIntensity, 0.0f, 1.0f);
+    const float radius = std::clamp(cfg.vignetteRadius, 0.2f, 1.0f);
+    const float softness = std::clamp(cfg.vignetteSoftness, 0.05f, 1.0f);
+    const ImU32 color = IM_COL32((int)(cfg.vignetteColorR * 255.0f),
+                                 (int)(cfg.vignetteColorG * 255.0f),
+                                 (int)(cfg.vignetteColorB * 255.0f),
+                                 (int)(intensity * 200.0f));
+    const float padX = size.x * 0.5f * std::max(0.0f, 1.0f - radius);
+    const float padY = size.y * 0.5f * std::max(0.0f, 1.0f - radius);
+    const float softX = padX + (size.x * 0.5f - padX) * softness;
+    const float softY = padY + (size.y * 0.5f - padY) * softness;
+    const ImVec2 uv0(padX / size.x, padY / size.y);
+    const ImVec2 uv1((size.x - padX) / size.x, (size.y - padY) / size.y);
+    const ImVec2 uvSoft0(softX / size.x, softY / size.y);
+    const ImVec2 uvSoft1((size.x - softX) / size.x, (size.y - softY) / size.y);
+    ImTextureID texId = (ImTextureID)m_vignetteSrvGpu.ptr;
+    drawList->AddImage(texId, ImVec2(0, 0), ImVec2(size.x, size.y), uv0, uv1, color);
+    if (softness > 0.0f) {
+        ImU32 softCol = IM_COL32((int)(cfg.vignetteColorR * 255.0f),
+                                 (int)(cfg.vignetteColorG * 255.0f),
+                                 (int)(cfg.vignetteColorB * 255.0f),
+                                 (int)(intensity * 140.0f));
+        drawList->AddImage(texId, ImVec2(0, 0), ImVec2(size.x, size.y), uvSoft0, uvSoft1, softCol);
+    }
 }
 
 void ImGuiOverlay::BuildDebugWindow() {
@@ -963,6 +992,138 @@ void ImGuiOverlay::BuildDebugWindow() {
 void ImGuiOverlay::BuildTexturesIfNeeded() {
     if (!m_needRebuildTextures) return;
     m_needRebuildTextures = false;
+    if (!m_device || !m_queue || !m_srvHeap) return;
+    if (m_fence && m_fenceValue > 0) {
+        WaitForFence(m_fence, m_fenceEvent, m_fenceValue);
+    }
+
+    if (m_vignetteSrv.ptr == 0 || m_vignetteSrvGpu.ptr == 0) {
+        AllocateSrv(nullptr, &m_vignetteSrv, &m_vignetteSrvGpu);
+        if (m_vignetteSrv.ptr == 0 || m_vignetteSrvGpu.ptr == 0) return;
+    }
+
+    ModConfig& cfg = ConfigManager::Get().Data();
+    const float radius = std::clamp(cfg.vignetteRadius, 0.2f, 1.0f);
+    const float softness = std::clamp(cfg.vignetteSoftness, 0.05f, 1.0f);
+    const float displayW = std::max(1.0f, ImGui::GetIO().DisplaySize.x);
+    const float displayH = std::max(1.0f, ImGui::GetIO().DisplaySize.y);
+    const float aspect = displayW / displayH;
+    const int texSize = 256;
+    const float inner = radius;
+    const float outer = std::clamp(radius + (1.0f - radius) * softness, radius + 0.001f, 1.0f);
+    std::vector<uint8_t> pixels(static_cast<size_t>(texSize * texSize * 4));
+    for (int y = 0; y < texSize; ++y) {
+        for (int x = 0; x < texSize; ++x) {
+            const float nx = ((x + 0.5f) / texSize) * 2.0f - 1.0f;
+            const float ny = ((y + 0.5f) / texSize) * 2.0f - 1.0f;
+            const float dx = nx * aspect;
+            const float dy = ny;
+            float dist = sqrtf(dx * dx + dy * dy);
+            dist = std::min(dist, 1.0f);
+            float t = (dist - inner) / (outer - inner);
+            t = std::clamp(t, 0.0f, 1.0f);
+            const float smooth = t * t * (3.0f - 2.0f * t);
+            const uint8_t alpha = static_cast<uint8_t>(smooth * 255.0f);
+            const size_t idx = static_cast<size_t>((y * texSize + x) * 4);
+            pixels[idx + 0] = 255;
+            pixels[idx + 1] = 255;
+            pixels[idx + 2] = 255;
+            pixels[idx + 3] = alpha;
+        }
+    }
+
+    if (!m_vignetteTexture) {
+        D3D12_RESOURCE_DESC texDesc{};
+        texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        texDesc.Width = texSize;
+        texDesc.Height = texSize;
+        texDesc.DepthOrArraySize = 1;
+        texDesc.MipLevels = 1;
+        texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        texDesc.SampleDesc.Count = 1;
+        texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        texDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+        D3D12_HEAP_PROPERTIES texProps{};
+        texProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+        if (FAILED(m_device->CreateCommittedResource(&texProps, D3D12_HEAP_FLAG_NONE, &texDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_vignetteTexture)))) {
+            return;
+        }
+    }
+
+    const UINT rowPitch = (texSize * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
+    const UINT64 uploadSize = static_cast<UINT64>(rowPitch) * texSize;
+    D3D12_HEAP_PROPERTIES uploadProps{};
+    uploadProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC uploadDesc{};
+    uploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    uploadDesc.Width = uploadSize;
+    uploadDesc.Height = 1;
+    uploadDesc.DepthOrArraySize = 1;
+    uploadDesc.MipLevels = 1;
+    uploadDesc.SampleDesc.Count = 1;
+    uploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    Microsoft::WRL::ComPtr<ID3D12Resource> uploadBuffer;
+    if (FAILED(m_device->CreateCommittedResource(&uploadProps, D3D12_HEAP_FLAG_NONE, &uploadDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuffer)))) {
+        return;
+    }
+    uint8_t* mapped = nullptr;
+    D3D12_RANGE range{ 0, 0 };
+    if (FAILED(uploadBuffer->Map(0, &range, reinterpret_cast<void**>(&mapped))) || !mapped) {
+        return;
+    }
+    for (int y = 0; y < texSize; ++y) {
+        memcpy(mapped + y * rowPitch, pixels.data() + (y * texSize * 4), texSize * 4);
+    }
+    uploadBuffer->Unmap(0, nullptr);
+
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> cmd;
+    if (FAILED(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))) ||
+        FAILED(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&cmd)))) {
+        return;
+    }
+
+    D3D12_TEXTURE_COPY_LOCATION src{};
+    src.pResource = uploadBuffer.Get();
+    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    src.PlacedFootprint.Footprint.Width = texSize;
+    src.PlacedFootprint.Footprint.Height = texSize;
+    src.PlacedFootprint.Footprint.Depth = 1;
+    src.PlacedFootprint.Footprint.RowPitch = rowPitch;
+
+    D3D12_TEXTURE_COPY_LOCATION dst{};
+    dst.pResource = m_vignetteTexture;
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dst.SubresourceIndex = 0;
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = m_vignetteTexture;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Transition.StateBefore = m_vignetteState;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    if (m_vignetteState != D3D12_RESOURCE_STATE_COPY_DEST) {
+        cmd->ResourceBarrier(1, &barrier);
+    }
+    cmd->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    cmd->ResourceBarrier(1, &barrier);
+    cmd->Close();
+    ID3D12CommandList* lists[] = { cmd.Get() };
+    m_queue->ExecuteCommandLists(1, lists);
+    m_fenceValue++;
+    m_queue->Signal(m_fence, m_fenceValue);
+    WaitForFence(m_fence, m_fenceEvent, m_fenceValue);
+    m_vignetteState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    m_device->CreateShaderResourceView(m_vignetteTexture, &srvDesc, m_vignetteSrv);
 }
 
 void ImGuiOverlay::Render() {

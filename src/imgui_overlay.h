@@ -85,6 +85,8 @@ private:
 
     ID3D12Resource* m_vignetteTexture = nullptr;
     D3D12_CPU_DESCRIPTOR_HANDLE m_vignetteSrv = {};
+    D3D12_GPU_DESCRIPTOR_HANDLE m_vignetteSrvGpu = {};
+    D3D12_RESOURCE_STATES m_vignetteState = D3D12_RESOURCE_STATE_COPY_DEST;
     UINT m_srvDescriptorSize = 0;
     UINT m_srvDescriptorCount = 0;
     UINT m_srvDescriptorNext = 0;

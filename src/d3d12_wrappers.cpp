@@ -40,11 +40,20 @@ namespace {
     struct DescriptorRecord {
         D3D12_DESCRIPTOR_HEAP_DESC desc;
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
+        UINT descriptorSize = 0;
     };
     std::mutex g_descriptorMutex;
     std::vector<DescriptorRecord> g_descriptorRecords;
     std::unordered_map<uintptr_t, Microsoft::WRL::ComPtr<ID3D12Resource>> g_descriptorResources;
     std::unordered_map<uintptr_t, DXGI_FORMAT> g_descriptorFormats;
+    struct SamplerRecord {
+        D3D12_SAMPLER_DESC desc = {};
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = {};
+        Microsoft::WRL::ComPtr<ID3D12Device> device;
+        bool valid = false;
+    };
+    std::mutex g_samplerMutex;
+    std::vector<SamplerRecord> g_samplerRecords;
     struct CbvGpuAddrEntry {
         D3D12_GPU_VIRTUAL_ADDRESS addr = 0;
         uint64_t lastFrame = 0;
@@ -71,14 +80,14 @@ namespace {
         }
     }
 
-    void TrackDescriptorHeapInternal(ID3D12DescriptorHeap* heap) {
+    void TrackDescriptorHeapInternal(ID3D12DescriptorHeap* heap, UINT descriptorSize) {
         if (!heap) return;
         D3D12_DESCRIPTOR_HEAP_DESC desc = heap->GetDesc();
         std::lock_guard<std::mutex> lock(g_descriptorMutex);
         for (const auto& record : g_descriptorRecords) {
             if (record.heap.Get() == heap) return;
         }
-        g_descriptorRecords.push_back({ desc, heap });
+        g_descriptorRecords.push_back({ desc, heap, descriptorSize });
     }
 
     void TrackDescriptorResourceInternal(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource* resource, DXGI_FORMAT format) {
@@ -319,9 +328,26 @@ namespace {
     }
 }
 
-void TrackDescriptorHeap(ID3D12DescriptorHeap* heap) { TrackDescriptorHeapInternal(heap); }
+void UpdateCameraCache(const float* view, const float* proj, float jitterX, float jitterY) {
+    if (!view || !proj) return;
+    UpdateBestCamera(view, proj, jitterX, jitterY);
+}
+
+void TrackDescriptorHeap(ID3D12DescriptorHeap* heap, UINT descriptorSize) { TrackDescriptorHeapInternal(heap, descriptorSize); }
 void TrackDescriptorResource(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource* resource, DXGI_FORMAT format) { TrackDescriptorResourceInternal(handle, resource, format); }
 bool TryResolveDescriptorResource(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource** outResource, DXGI_FORMAT* outFormat) { return TryResolveDescriptorResourceInternal(handle, outResource, outFormat); }
+
+void ApplySamplerLodBias(float bias) {
+    std::lock_guard<std::mutex> lock(g_samplerMutex);
+    if (g_samplerRecords.empty()) return;
+    for (const auto& record : g_samplerRecords) {
+        if (!record.valid || !record.device || record.cpuHandle.ptr == 0) continue;
+        D3D12_SAMPLER_DESC nD = record.desc;
+        nD.MipLODBias += bias;
+        nD.MipLODBias = std::clamp(nD.MipLODBias, -3.0f, 3.0f);
+        record.device->CreateSampler(&nD, record.cpuHandle);
+    }
+}
 
 bool GetLastCameraStats(float& outScore, uint64_t& outFrame) {
     std::lock_guard<std::mutex> lock(g_cameraMutex);
@@ -727,7 +753,8 @@ void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::SetPipelineState(ID3D12
 void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::SetDescriptorHeaps(UINT N, ID3D12DescriptorHeap* const* H) { 
     if (H) {
         for (UINT i = 0; i < N; ++i) {
-            TrackDescriptorHeap(H[i]);
+            UINT descriptorSize = m_pDeviceWrapper ? m_pDeviceWrapper->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) : 0;
+            TrackDescriptorHeap(H[i], descriptorSize);
         }
     }
     m_pReal->SetDescriptorHeaps(N, H);
@@ -758,11 +785,82 @@ void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::EndEvent() { m_pReal->E
 void STDMETHODCALLTYPE WrappedID3D12GraphicsCommandList::ExecuteIndirect(ID3D12CommandSignature* S, UINT M, ID3D12Resource* A, UINT64 AO, ID3D12Resource* C, UINT64 CO) { m_pReal->ExecuteIndirect(S, M, A, AO, C, CO); }
 
 // ============================================================================
+// WRAPPED COMMAND QUEUE IMPLEMENTATION
+// ============================================================================
+
+WrappedID3D12CommandQueue::WrappedID3D12CommandQueue(ID3D12CommandQueue* pReal, WrappedID3D12Device* pDeviceWrapper)
+    : m_pReal(pReal), m_pDeviceWrapper(pDeviceWrapper), m_refCount(1) {
+    if (m_pReal) m_pReal->AddRef();
+    if (m_pDeviceWrapper) m_pDeviceWrapper->AddRef();
+}
+
+WrappedID3D12CommandQueue::~WrappedID3D12CommandQueue() {
+    if (m_pReal) m_pReal->Release();
+    if (m_pDeviceWrapper) m_pDeviceWrapper->Release();
+}
+
+HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::QueryInterface(REFIID riid, void** ppvObject) {
+    if (ppvObject == nullptr) return E_POINTER;
+    if (riid == __uuidof(IUnknown) || riid == __uuidof(ID3D12Object) || riid == __uuidof(ID3D12DeviceChild) || riid == __uuidof(ID3D12CommandQueue)) {
+        *ppvObject = this; AddRef(); return S_OK;
+    }
+    return m_pReal->QueryInterface(riid, ppvObject);
+}
+
+ULONG STDMETHODCALLTYPE WrappedID3D12CommandQueue::AddRef() { return InterlockedIncrement(&m_refCount); }
+ULONG STDMETHODCALLTYPE WrappedID3D12CommandQueue::Release() { ULONG ref = InterlockedDecrement(&m_refCount); if (ref == 0) delete this; return ref; }
+HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::GetPrivateData(REFGUID guid, UINT* pDataSize, void* pData) { return m_pReal->GetPrivateData(guid, pDataSize, pData); }
+HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::SetPrivateData(REFGUID guid, UINT DataSize, const void* pData) { return m_pReal->SetPrivateData(guid, DataSize, pData); }
+HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::SetPrivateDataInterface(REFGUID guid, const IUnknown* pData) { return m_pReal->SetPrivateDataInterface(guid, pData); }
+HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::SetName(LPCWSTR Name) { return m_pReal->SetName(Name); }
+HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::GetDevice(REFIID riid, void** ppvDevice) { return m_pDeviceWrapper->QueryInterface(riid, ppvDevice); }
+void STDMETHODCALLTYPE WrappedID3D12CommandQueue::UpdateTileMappings(ID3D12Resource* pResource, UINT NumResourceRegions, const D3D12_TILED_RESOURCE_COORDINATE* pResourceRegionStartCoordinates, const D3D12_TILE_REGION_SIZE* pResourceRegionSizes, ID3D12Heap* pHeap, UINT NumRanges, const D3D12_TILE_RANGE_FLAGS* pRangeFlags, const UINT* pHeapRangeStartOffsets, const UINT* pRangeTileCounts, D3D12_TILE_MAPPING_FLAGS Flags) { m_pReal->UpdateTileMappings(pResource, NumResourceRegions, pResourceRegionStartCoordinates, pResourceRegionSizes, pHeap, NumRanges, pRangeFlags, pHeapRangeStartOffsets, pRangeTileCounts, Flags); }
+void STDMETHODCALLTYPE WrappedID3D12CommandQueue::CopyTileMappings(ID3D12Resource* pDstResource, const D3D12_TILED_RESOURCE_COORDINATE* pDstRegionStartCoordinate, ID3D12Resource* pSrcResource, const D3D12_TILED_RESOURCE_COORDINATE* pSrcRegionStartCoordinate, const D3D12_TILE_REGION_SIZE* pRegionSize, D3D12_TILE_MAPPING_FLAGS Flags) { m_pReal->CopyTileMappings(pDstResource, pDstRegionStartCoordinate, pSrcResource, pSrcRegionStartCoordinate, pRegionSize, Flags); }
+void STDMETHODCALLTYPE WrappedID3D12CommandQueue::ExecuteCommandLists(UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists) {
+    if (!StreamlineIntegration::Get().IsInitialized()) {
+        ID3D12Device* pDevice = nullptr;
+        if (SUCCEEDED(m_pReal->GetDevice(__uuidof(ID3D12Device), (void**)&pDevice))) {
+            LOG_INFO("Lazy initializing Streamline via ExecuteCommandLists...");
+            StreamlineIntegration::Get().Initialize(pDevice);
+            pDevice->Release();
+        }
+    }
+    ResourceDetector::Get().NewFrame();
+    StreamlineIntegration::Get().SetCommandQueue(m_pReal);
+    static bool s_camHookBannerLogged = false;
+    if (!s_camHookBannerLogged) {
+        LOG_INFO("[CAM] Camera scan active (Close hook)");
+        s_camHookBannerLogged = true;
+    }
+    ID3D12Resource* pColor = ResourceDetector::Get().GetBestColorCandidate();
+    ID3D12Resource* pDepth = ResourceDetector::Get().GetBestDepthCandidate();
+    ID3D12Resource* pMVs = ResourceDetector::Get().GetBestMotionVectorCandidate();
+    if (pColor) StreamlineIntegration::Get().TagColorBuffer(pColor);
+    if (pDepth) StreamlineIntegration::Get().TagDepthBuffer(pDepth);
+    if (pMVs) StreamlineIntegration::Get().TagMotionVectors(pMVs);
+    m_pReal->ExecuteCommandLists(NumCommandLists, ppCommandLists);
+}
+void STDMETHODCALLTYPE WrappedID3D12CommandQueue::SetMarker(UINT Metadata, const void* pData, UINT Size) { m_pReal->SetMarker(Metadata, pData, Size); }
+void STDMETHODCALLTYPE WrappedID3D12CommandQueue::BeginEvent(UINT Metadata, const void* pData, UINT Size) { m_pReal->BeginEvent(Metadata, pData, Size); }
+void STDMETHODCALLTYPE WrappedID3D12CommandQueue::EndEvent() { m_pReal->EndEvent(); }
+HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::Signal(ID3D12Fence* pFence, UINT64 Value) { return m_pReal->Signal(pFence, Value); }
+HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::Wait(ID3D12Fence* pFence, UINT64 Value) { return m_pReal->Wait(pFence, Value); }
+HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::GetTimestampFrequency(UINT64* pFrequency) { return m_pReal->GetTimestampFrequency(pFrequency); }
+HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::GetClockCalibration(UINT64* pGpuTimestamp, UINT64* pCpuTimestamp) { return m_pReal->GetClockCalibration(pGpuTimestamp, pCpuTimestamp); }
+D3D12_COMMAND_QUEUE_DESC STDMETHODCALLTYPE WrappedID3D12CommandQueue::GetDesc() { return m_pReal->GetDesc(); }
+
+// ============================================================================
 // WRAPPED DEVICE IMPLEMENTATION
 // ============================================================================
 
 WrappedID3D12Device::WrappedID3D12Device(ID3D12Device* pReal) : m_pReal(pReal), m_refCount(1) { if(m_pReal) m_pReal->AddRef(); }
-WrappedID3D12Device::~WrappedID3D12Device() { if(m_pReal) m_pReal->Release(); }
+WrappedID3D12Device::~WrappedID3D12Device() {
+    {
+        std::lock_guard<std::mutex> lock(g_samplerMutex);
+        g_samplerRecords.clear();
+    }
+    if (m_pReal) m_pReal->Release();
+}
 HRESULT STDMETHODCALLTYPE WrappedID3D12Device::QueryInterface(REFIID riid, void** ppvObject) {
     if (ppvObject == nullptr) return E_POINTER;
     if (riid == __uuidof(IUnknown) || riid == __uuidof(ID3D12Object) || riid == __uuidof(ID3D12DeviceChild) || riid == __uuidof(ID3D12Device)) {
@@ -776,6 +874,17 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12Device::GetPrivateData(REFGUID guid, UINT
 HRESULT STDMETHODCALLTYPE WrappedID3D12Device::SetPrivateData(REFGUID guid, UINT DataSize, const void* pData) { return m_pReal->SetPrivateData(guid, DataSize, pData); }
 HRESULT STDMETHODCALLTYPE WrappedID3D12Device::SetPrivateDataInterface(REFGUID guid, const IUnknown* pData) { return m_pReal->SetPrivateDataInterface(guid, pData); }
 HRESULT STDMETHODCALLTYPE WrappedID3D12Device::SetName(LPCWSTR Name) { return m_pReal->SetName(Name); }
+
+HRESULT STDMETHODCALLTYPE WrappedID3D12Device::CreateCommandQueue(const D3D12_COMMAND_QUEUE_DESC* pDesc, REFIID riid, void** ppCommandQueue) {
+    ID3D12CommandQueue* pRealQueue = nullptr;
+    HRESULT hr = m_pReal->CreateCommandQueue(pDesc, __uuidof(ID3D12CommandQueue), (void**)&pRealQueue);
+    if (FAILED(hr)) return hr;
+    WrappedID3D12CommandQueue* pWrapper = new WrappedID3D12CommandQueue(pRealQueue, this);
+    hr = pWrapper->QueryInterface(riid, ppCommandQueue);
+    pWrapper->Release();
+    pRealQueue->Release();
+    return hr;
+}
 
 HRESULT STDMETHODCALLTYPE WrappedID3D12Device::CreateCommandList(UINT nodeMask, D3D12_COMMAND_LIST_TYPE type, ID3D12CommandAllocator* pCommandAllocator, ID3D12PipelineState* pInitialState, REFIID riid, void** ppCommandList) {
     ID3D12GraphicsCommandList* pRealList = nullptr;
@@ -845,7 +954,8 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12Device::CreateReservedResource(const D3D1
 HRESULT STDMETHODCALLTYPE WrappedID3D12Device::CreateDescriptorHeap(const D3D12_DESCRIPTOR_HEAP_DESC* pDesc, REFIID riid, void** ppvHeap) {
     HRESULT hr = m_pReal->CreateDescriptorHeap(pDesc, riid, ppvHeap);
     if (SUCCEEDED(hr) && ppvHeap && *ppvHeap && pDesc && pDesc->Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) {
-        TrackDescriptorHeap((ID3D12DescriptorHeap*)*ppvHeap);
+        UINT descriptorSize = m_pReal->GetDescriptorHandleIncrementSize(pDesc->Type);
+        TrackDescriptorHeap((ID3D12DescriptorHeap*)*ppvHeap, descriptorSize);
     }
     return hr;
 }
@@ -884,8 +994,23 @@ void STDMETHODCALLTYPE WrappedID3D12Device::CreateSampler(const D3D12_SAMPLER_DE
     if (pD) {
         D3D12_SAMPLER_DESC nD = *pD;
         float bias = StreamlineIntegration::Get().GetLODBias();
-        if (bias != 0.0f) { nD.MipLODBias += bias; if (nD.MipLODBias < -3.0f) nD.MipLODBias = -3.0f; }
+        if (bias != 0.0f) { nD.MipLODBias += bias; nD.MipLODBias = std::clamp(nD.MipLODBias, -3.0f, 3.0f); }
         m_pReal->CreateSampler(&nD, Dest);
+        SamplerRecord record{};
+        record.desc = *pD;
+        record.cpuHandle = Dest;
+        record.device = m_pReal;
+        record.valid = true;
+        {
+            std::lock_guard<std::mutex> lock(g_samplerMutex);
+            for (auto& existing : g_samplerRecords) {
+                if (existing.cpuHandle.ptr == Dest.ptr) {
+                    existing = record;
+                    return;
+                }
+            }
+            g_samplerRecords.push_back(record);
+        }
     } else m_pReal->CreateSampler(pD, Dest);
 }
 

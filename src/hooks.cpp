@@ -15,6 +15,7 @@
 #include "input_handler.h"
 #include "imgui_overlay.h"
 #include "vtable_utils.h"
+#include "d3d12_wrappers.h"
 #include "pattern_scanner.h"
 
 #pragma comment(lib, "psapi.lib")
@@ -143,40 +144,9 @@ PFN_D3D12CreateDevice g_OriginalD3D12CreateDevice = nullptr;
 static thread_local bool s_inD3D12CreateDevice = false;
 
 void EnsureD3D12VTableHooks(ID3D12Device* pDevice) {
-    if (kDisableVtableHooks) {
-        if (!g_VtableHooksDisabledLogged.exchange(true)) {
-            LogStartup("[HOOK] Vtable hooks disabled (diagnostic build)");
-        }
-        return;
+    if (!g_VtableHooksDisabledLogged.exchange(true)) {
+        LogStartup("[HOOK] Vtable hooks disabled (wrapper mode)");
     }
-    if (g_HooksInitialized.load(std::memory_order_acquire) || !pDevice) return;
-    std::lock_guard<std::mutex> lock(g_HookMutex);
-    if (g_HooksInitialized.load(std::memory_order_relaxed)) return;
-    LogStartup("[HOOK] Installing vtable hooks (deferred)");
-    D3D12_COMMAND_QUEUE_DESC qd = { D3D12_COMMAND_LIST_TYPE_DIRECT };
-    ID3D12CommandQueue* pQueue = nullptr;
-    pDevice->CreateCommandQueue(&qd, __uuidof(ID3D12CommandQueue), (void**)&pQueue);
-    ID3D12CommandAllocator* pAlloc = nullptr;
-    pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, __uuidof(ID3D12CommandAllocator), (void**)&pAlloc);
-    ID3D12GraphicsCommandList* pList = nullptr;
-    pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, pAlloc, nullptr, __uuidof(ID3D12GraphicsCommandList), (void**)&pList);
-
-    if (pQueue) HookVirtualMethod(pQueue, 10, HookedExecuteCommandLists, (void**)&g_OriginalExecuteCommandLists);
-    HookVirtualMethodOnce(pDevice, 17, Hooked_CreateConstantBufferView, (void**)&g_OriginalCreateConstantBufferView);
-    HookVirtualMethodOnce(pDevice, 27, Hooked_CreateCommittedResource, (void**)&g_OriginalCreateCommittedResource);
-    HookVirtualMethodOnce(pDevice, 29, Hooked_CreatePlacedResource, (void**)&g_OriginalCreatePlacedResource);
-    if (pList) {
-        HookVirtualMethodOnce(pList, 9, Hooked_Close, (void**)&g_OriginalClose);
-        HookVirtualMethodOnce(pList, 26, HookedResourceBarrier, (void**)&g_OriginalResourceBarrier);
-        HookVirtualMethodOnce(pList, 38, Hooked_SetGraphicsRootConstantBufferView, (void**)&g_OriginalSetGraphicsRootCbv);
-        HookVirtualMethodOnce(pList, 37, Hooked_SetComputeRootConstantBufferView, (void**)&g_OriginalSetComputeRootCbv);
-    }
-
-    if (pList) pList->Release();
-    if (pAlloc) pAlloc->Release();
-    if (pQueue) pQueue->Release();
-    g_HooksInitialized = true;
-    LogStartup("[HOOK] Vtable hooks installed (deferred)");
 }
 
 HRESULT WINAPI Hooked_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REFIID riid, void** ppDevice) {
@@ -197,6 +167,22 @@ HRESULT WINAPI Hooked_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Mi
         if (SUCCEEDED(((IUnknown*)*ppDevice)->QueryInterface(__uuidof(ID3D12Device), (void**)&pRealDevice))) {
             StreamlineIntegration::Get().Initialize(pRealDevice);
             EnsureD3D12VTableHooks(pRealDevice);
+            WrappedID3D12Device* wrapped = new WrappedID3D12Device(pRealDevice);
+            if (riid == __uuidof(ID3D12Device) || riid == __uuidof(IUnknown)) {
+                if (*ppDevice) {
+                    ((IUnknown*)*ppDevice)->Release();
+                }
+                *ppDevice = wrapped;
+            } else {
+                void* outObj = nullptr;
+                if (SUCCEEDED(wrapped->QueryInterface(riid, &outObj))) {
+                    if (*ppDevice) {
+                        ((IUnknown*)*ppDevice)->Release();
+                    }
+                    *ppDevice = outObj;
+                }
+                wrapped->Release();
+            }
             pRealDevice->Release();
         } else {
             LogStartup("[HOOK] QueryInterface(ID3D12Device) failed");
@@ -363,6 +349,7 @@ HRESULT STDMETHODCALLTYPE Hooked_Close(ID3D12GraphicsCommandList* pThis) {
                 found = TryScanRootCbvsForCamera(view, proj, &score, doLog);
             }
         if (found) {
+            UpdateCameraCache(view, proj, jitterX, jitterY);
             StreamlineIntegration::Get().SetCameraData(view, proj, jitterX, jitterY);
             if (doLog) {
                 LOG_INFO("[CAM] Camera scan found candidate (score %.2f)", score);
@@ -524,4 +511,10 @@ void InstallD3D12Hooks() {
     InstallGetProcAddressHook();
 }
 bool InitializeHooks() { return g_HooksInitialized; }
-void CleanupHooks() { g_HooksInitialized = false; StreamlineIntegration::Get().Shutdown(); }
+void CleanupHooks() {
+    g_HooksInitialized = false;
+    InputHandler::Get().UninstallHook();
+    InputHandler::Get().ClearHotkeys();
+    ImGuiOverlay::Get().Shutdown();
+    StreamlineIntegration::Get().Shutdown();
+}

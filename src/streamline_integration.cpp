@@ -473,9 +473,9 @@ void StreamlineIntegration::SetDeepDVCAdaptiveSmoothing(float smoothing) { m_dee
 void StreamlineIntegration::SetSmartFGEnabled(bool enabled) { m_smartFgEnabled = enabled; m_optionsDirty = true; }
 void StreamlineIntegration::SetSmartFGAutoDisable(bool enabled) { m_smartFgAutoDisable = enabled; m_optionsDirty = true; }
 void StreamlineIntegration::SetSmartFGAutoDisableThreshold(float fps) { m_smartFgAutoDisableFps = fps; m_optionsDirty = true; }
-void StreamlineIntegration::SetSmartFGSceneChangeEnabled(bool enabled) { m_smartFgSceneChangeEnabled = enabled; }
-void StreamlineIntegration::SetSmartFGSceneChangeThreshold(float threshold) { m_smartFgSceneChangeThreshold = threshold; }
-void StreamlineIntegration::SetSmartFGInterpolationQuality(float quality) { m_smartFgInterpolationQuality = quality; }
+void StreamlineIntegration::SetSmartFGSceneChangeEnabled(bool enabled) { m_smartFgSceneChangeEnabled = enabled; m_optionsDirty = true; }
+void StreamlineIntegration::SetSmartFGSceneChangeThreshold(float threshold) { m_smartFgSceneChangeThreshold = threshold; m_optionsDirty = true; }
+void StreamlineIntegration::SetSmartFGInterpolationQuality(float quality) { m_smartFgInterpolationQuality = quality; m_optionsDirty = true; }
 
 void StreamlineIntegration::UpdateSmartFGState() {
     if (!m_smartFgEnabled) {

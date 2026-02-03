@@ -11,6 +11,7 @@
 
 // Forward declarations
 class WrappedID3D12Device;
+class WrappedID3D12CommandQueue;
 
 // ============================================================================
 // WRAPPED COMMAND LIST
@@ -25,15 +26,18 @@ void TrackRootCbvAddress(D3D12_GPU_VIRTUAL_ADDRESS address);
 bool TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates, bool allowFullScan);
 bool TryScanDescriptorCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates);
 bool TryScanRootCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates);
+void UpdateCameraCache(const float* view, const float* proj, float jitterX, float jitterY);
 void GetCameraScanCounts(uint64_t& cbvCount, uint64_t& descCount, uint64_t& rootCount);
 bool GetLastCameraStats(float& outScore, uint64_t& outFrame);
 void ResetCameraScanCache();
 uint64_t GetLastCameraFoundFrame();
 
 // Descriptor helpers (used by vtable hooks)
-void TrackDescriptorHeap(ID3D12DescriptorHeap* heap);
+void TrackDescriptorHeap(ID3D12DescriptorHeap* heap, UINT descriptorSize);
 void TrackDescriptorResource(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource* resource, DXGI_FORMAT format);
 bool TryResolveDescriptorResource(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource** outResource, DXGI_FORMAT* outFormat);
+
+void ApplySamplerLodBias(float bias);
 
 class WrappedID3D12GraphicsCommandList : public ID3D12GraphicsCommandList {
 public:
@@ -144,6 +148,47 @@ private:
 };
 
 // ============================================================================
+// WRAPPED COMMAND QUEUE
+// ============================================================================
+class WrappedID3D12CommandQueue : public ID3D12CommandQueue {
+public:
+    WrappedID3D12CommandQueue(ID3D12CommandQueue* pReal, WrappedID3D12Device* pDeviceWrapper);
+    virtual ~WrappedID3D12CommandQueue();
+
+    // IUnknown
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override;
+    ULONG STDMETHODCALLTYPE AddRef() override;
+    ULONG STDMETHODCALLTYPE Release() override;
+
+    // ID3D12Object
+    HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT* pDataSize, void* pData) override;
+    HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, UINT DataSize, const void* pData) override;
+    HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID guid, const IUnknown* pData) override;
+    HRESULT STDMETHODCALLTYPE SetName(LPCWSTR Name) override;
+
+    // ID3D12DeviceChild
+    HRESULT STDMETHODCALLTYPE GetDevice(REFIID riid, void** ppvDevice) override;
+
+    // ID3D12CommandQueue
+    void STDMETHODCALLTYPE UpdateTileMappings(ID3D12Resource* pResource, UINT NumResourceRegions, const D3D12_TILED_RESOURCE_COORDINATE* pResourceRegionStartCoordinates, const D3D12_TILE_REGION_SIZE* pResourceRegionSizes, ID3D12Heap* pHeap, UINT NumRanges, const D3D12_TILE_RANGE_FLAGS* pRangeFlags, const UINT* pHeapRangeStartOffsets, const UINT* pRangeTileCounts, D3D12_TILE_MAPPING_FLAGS Flags) override;
+    void STDMETHODCALLTYPE CopyTileMappings(ID3D12Resource* pDstResource, const D3D12_TILED_RESOURCE_COORDINATE* pDstRegionStartCoordinate, ID3D12Resource* pSrcResource, const D3D12_TILED_RESOURCE_COORDINATE* pSrcRegionStartCoordinate, const D3D12_TILE_REGION_SIZE* pRegionSize, D3D12_TILE_MAPPING_FLAGS Flags) override;
+    void STDMETHODCALLTYPE ExecuteCommandLists(UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists) override;
+    void STDMETHODCALLTYPE SetMarker(UINT Metadata, const void* pData, UINT Size) override;
+    void STDMETHODCALLTYPE BeginEvent(UINT Metadata, const void* pData, UINT Size) override;
+    void STDMETHODCALLTYPE EndEvent() override;
+    HRESULT STDMETHODCALLTYPE Signal(ID3D12Fence* pFence, UINT64 Value) override;
+    HRESULT STDMETHODCALLTYPE Wait(ID3D12Fence* pFence, UINT64 Value) override;
+    HRESULT STDMETHODCALLTYPE GetTimestampFrequency(UINT64* pFrequency) override;
+    HRESULT STDMETHODCALLTYPE GetClockCalibration(UINT64* pGpuTimestamp, UINT64* pCpuTimestamp) override;
+    D3D12_COMMAND_QUEUE_DESC STDMETHODCALLTYPE GetDesc() override;
+
+private:
+    ID3D12CommandQueue* m_pReal;
+    WrappedID3D12Device* m_pDeviceWrapper;
+    ULONG m_refCount;
+};
+
+// ============================================================================
 // WRAPPED DEVICE
 // ============================================================================
 // We wrap this to intercept CreateCommandList and CreateCommittedResource
@@ -173,7 +218,7 @@ public:
 
     // ... Pass-throughs ...
     UINT STDMETHODCALLTYPE GetNodeCount() override { return m_pReal->GetNodeCount(); }
-    HRESULT STDMETHODCALLTYPE CreateCommandQueue(const D3D12_COMMAND_QUEUE_DESC* pDesc, REFIID riid, void** ppCommandQueue) override { return m_pReal->CreateCommandQueue(pDesc, riid, ppCommandQueue); }
+    HRESULT STDMETHODCALLTYPE CreateCommandQueue(const D3D12_COMMAND_QUEUE_DESC* pDesc, REFIID riid, void** ppCommandQueue) override;
     HRESULT STDMETHODCALLTYPE CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE type, REFIID riid, void** ppCommandAllocator) override { return m_pReal->CreateCommandAllocator(type, riid, ppCommandAllocator); }
     HRESULT STDMETHODCALLTYPE CreateGraphicsPipelineState(const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc, REFIID riid, void** ppPipelineState) override { return m_pReal->CreateGraphicsPipelineState(pDesc, riid, ppPipelineState); }
     HRESULT STDMETHODCALLTYPE CreateComputePipelineState(const D3D12_COMPUTE_PIPELINE_STATE_DESC* pDesc, REFIID riid, void** ppPipelineState) override { return m_pReal->CreateComputePipelineState(pDesc, riid, ppPipelineState); }
