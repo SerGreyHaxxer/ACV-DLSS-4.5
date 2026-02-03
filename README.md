@@ -20,6 +20,22 @@ This mod replaces the game's standard TAA with **NVIDIA DLSS 4.5** (AI Upscaling
 
 ---
 
+## Building from Source
+
+**Prerequisites:**
+*   Visual Studio 2019 or 2022 (C++ Desktop Development workload)
+*   [NVIDIA Streamline SDK](https://developer.nvidia.com/rtx/streamline)
+*   [NVIDIA NVAPI](https://github.com/NVIDIA/nvapi)
+
+**Steps:**
+1.  Clone the repository.
+2.  Place the Streamline SDK in `external/streamline` (or `Downloads`).
+3.  Place NVAPI in `external/nvapi` (or `Downloads`).
+4.  Run `build.bat` from a Developer Command Prompt (or just double-click it, it will try to find VS).
+5.  The output DLL will be in `bin/dxgi.dll`.
+
+---
+
 ## [?] Requirements
 
 | Component | Requirement |

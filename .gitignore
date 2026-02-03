@@ -1,6 +1,6 @@
-# Final Release Ignore Rules
+# Build artifacts
 build/
-.vs/
+bin/
 *.obj
 *.lib
 *.exp
@@ -8,9 +8,33 @@ build/
 *.ilk
 *.log
 *.csv
-MockGameFolder/
-test_proxy.bat
+*.tlog
+*.idb
+*.iobj
+*.ipdb
 
-# Allow the compiled DLL
-!bin/
-!bin/dxgi.dll
+# Visual Studio
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.user
+*.vcxproj.filters
+
+# User-specific configuration
+dlss_settings.ini
+mod_config.ini
+startup_trace.log
+dlss4_proxy.log
+dlss4_crash.log
+dlss4_crash.dmp
+
+# External SDKs (if not vendored)
+# external/streamline/
+# external/nvapi/
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Mock/Test folders
+MockGameFolder/
