@@ -485,6 +485,14 @@ void InstallD3D12Hooks() {
     if (s_hooksInstalled.exchange(true)) return;
     
     LOG_INFO("Installing D3D12 IAT Hooks...");
+    
+    // CRITICAL FIX: Check if we're being loaded too early
+    HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+    if (!hKernel32) {
+        LOG_ERROR("kernel32.dll not available - aborting hook install");
+        return;
+    }
+    
     InstallLoadLibraryHook();
     
     HMODULE hD3D12Already = GetModuleHandleW(L"d3d12.dll");
@@ -496,25 +504,50 @@ void InstallD3D12Hooks() {
     HMODULE hMods[1024];
     HANDLE hProcess = GetCurrentProcess();
     DWORD cbNeeded;
-    if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
-        int count = cbNeeded / sizeof(HMODULE);
-        LOG_INFO("Scanning %d modules for IAT hooks...", count);
-        for (int i = 0; i < count; i++) {
-            char modName[MAX_PATH];
-            if (GetModuleBaseNameA(hProcess, hMods[i], modName, sizeof(modName))) {
-                if (_stricmp(modName, "dxgi.dll") == 0) continue; // Don't hook ourselves (or real dxgi if we are proxying it?)
-                // Actually we are dxgi.dll proxy, so we might appear as dxgi.dll.
-                // We should avoid hooking ourself to avoid recursion if we call D3D12CreateDevice.
-                
-                // HookIAT returns true if it patched something
-                if (HookIAT(hMods[i], "d3d12.dll", "D3D12CreateDevice", (void*)Hooked_D3D12CreateDevice, (void**)&g_OriginalD3D12CreateDevice)) {
+    
+    if (!EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
+        LOG_ERROR("EnumProcessModules failed (error: %d) - retrying later", GetLastError());
+        // Don't abort - LoadLibrary hooks will catch it later
+        s_hooksInstalled.store(false); // Allow retry
+        return;
+    }
+    
+    int count = cbNeeded / sizeof(HMODULE);
+    LOG_INFO("Scanning %d modules for IAT hooks...", count);
+    
+    int hooksInstalled = 0;
+    int hooksFailed = 0;
+    
+    for (int i = 0; i < count; i++) {
+        char modName[MAX_PATH];
+        if (GetModuleBaseNameA(hProcess, hMods[i], modName, sizeof(modName))) {
+            // Skip ourselves
+            if (_stricmp(modName, "dxgi.dll") == 0) continue;
+            
+            // CRITICAL FIX: Skip system modules that are likely to be protected
+            if (_stricmp(modName, "kernel32.dll") == 0 ||
+                _stricmp(modName, "ntdll.dll") == 0 ||
+                _stricmp(modName, "kernelbase.dll") == 0) {
+                continue;
+            }
+            
+            // CRITICAL FIX: Wrap in exception handler
+            __try {
+                if (HookIAT(hMods[i], "d3d12.dll", "D3D12CreateDevice", 
+                           (void*)Hooked_D3D12CreateDevice, 
+                           (void**)&g_OriginalD3D12CreateDevice)) {
                     LOG_INFO("Hooked D3D12CreateDevice in module: %s", modName);
+                    hooksInstalled++;
                 }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                LOG_ERROR("Exception while hooking module: %s (code: 0x%X)", 
+                         modName, GetExceptionCode());
+                hooksFailed++;
             }
         }
-    } else {
-        LOG_ERROR("EnumProcessModules failed!");
     }
+    
+    LOG_INFO("IAT Hook results: %d installed, %d failed", hooksInstalled, hooksFailed);
     InstallGetProcAddressHook();
 }
 bool InitializeHooks() { return g_HooksInitialized; }

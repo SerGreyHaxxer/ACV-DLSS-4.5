@@ -187,8 +187,16 @@ bool InitializeProxy() {
     LOG_INFO("  CreateDXGIFactory1: 0x%p", g_ProxyState.pfnCreateDXGIFactory1);
     LOG_INFO("  CreateDXGIFactory2: 0x%p", g_ProxyState.pfnCreateDXGIFactory2);
     
-    // Install IAT Hooks for D3D12
-    InstallD3D12Hooks();
+    // CRITICAL FIX: Wrap hook installation in exception handler
+    __try {
+        InstallD3D12Hooks();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DWORD exCode = GetExceptionCode();
+        LOG_ERROR("EXCEPTION during InstallD3D12Hooks: 0x%X", exCode);
+        
+        // Don't fail initialization - we can still work with LoadLibrary hooks
+        LOG_WARN("Continuing without full IAT hooks - relying on LoadLibrary interception");
+    }
     
     g_ProxyState.initialized = true;
     LogStartup("InitializeProxy Success");
