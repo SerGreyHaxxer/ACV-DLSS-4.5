@@ -4,6 +4,27 @@ project(tensor-curie LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ============================================================================
+# Static Analysis & Sanitizers (CRITICAL/HIGH priority enhancements)
+# ============================================================================
+
+# Address Sanitizer for debug builds
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    message(STATUS "Debug build: Enabling Address Sanitizer")
+    add_compile_options(/fsanitize=address)
+    add_link_options(/fsanitize=address)
+endif()
+
+# Clang-tidy integration (if available)
+find_program(CLANG_TIDY_EXE NAMES clang-tidy clang-tidy.exe)
+if(CLANG_TIDY_EXE)
+    message(STATUS "Found clang-tidy: ${CLANG_TIDY_EXE}")
+    set(CMAKE_CXX_CLANG_TIDY 
+        "${CLANG_TIDY_EXE};-checks=modernize-*,performance-*,readability-*,bugprone-*,cppcoreguidelines-*,-modernize-use-trailing-return-type")
+else()
+    message(STATUS "clang-tidy not found, skipping static analysis")
+endif()
+
 # Configure Vcpkg integration
 if(DEFINED ENV{VCPKG_ROOT} AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")

@@ -16,6 +16,56 @@
 
 namespace fs = std::filesystem;
 
+// ============================================================================
+// RAII Wrapper for HMODULE - Ensures proper cleanup on initialization failure
+// ============================================================================
+class ModuleHandle {
+public:
+  ModuleHandle() = default;
+  explicit ModuleHandle(HMODULE handle) : m_handle(handle) {}
+  ~ModuleHandle() { Release(); }
+
+  // Non-copyable
+  ModuleHandle(const ModuleHandle&) = delete;
+  ModuleHandle& operator=(const ModuleHandle&) = delete;
+
+  // Movable
+  ModuleHandle(ModuleHandle&& other) noexcept : m_handle(other.m_handle) {
+    other.m_handle = nullptr;
+  }
+  ModuleHandle& operator=(ModuleHandle&& other) noexcept {
+    if (this != &other) {
+      Release();
+      m_handle = other.m_handle;
+      other.m_handle = nullptr;
+    }
+    return *this;
+  }
+
+  [[nodiscard]] HMODULE Get() const { return m_handle; }
+  [[nodiscard]] bool IsValid() const { return m_handle != nullptr; }
+
+  void Reset(HMODULE handle = nullptr) {
+    Release();
+    m_handle = handle;
+  }
+
+  HMODULE Detach() {
+    HMODULE tmp = m_handle;
+    m_handle = nullptr;
+    return tmp;
+  }
+
+private:
+  void Release() {
+    if (m_handle) {
+      FreeLibrary(m_handle);
+      m_handle = nullptr;
+    }
+  }
+  HMODULE m_handle = nullptr;
+};
+
 static std::atomic<bool> s_startupTraceEnabled(true);
 static std::mutex s_startupTraceMutex;
 static std::ofstream s_startupTraceFile;
@@ -81,8 +131,9 @@ bool InitializeProxy() {
 
     LOG_INFO("Loading original DXGI from: {}", dxgiPath.string());
 
-    g_ProxyState.hOriginalDXGI = LoadLibraryW(dxgiPath.c_str());
-    if (!g_ProxyState.hOriginalDXGI) {
+    // Use RAII wrapper to ensure cleanup on failure
+    ModuleHandle dxgiModule(LoadLibraryW(dxgiPath.c_str()));
+    if (!dxgiModule.IsValid()) {
       LOG_ERROR("Failed to load original dxgi.dll! Error: {}", GetLastError());
       LogStartup("Failed to load original dxgi.dll");
       return;
@@ -92,65 +143,75 @@ bool InitializeProxy() {
     LogStartup("Loading function pointers...");
 
     LogStartup(std::format("hOriginalDXGI = {:p}",
-               static_cast<void*>(g_ProxyState.hOriginalDXGI)).c_str());
+               static_cast<void*>(dxgiModule.Get())).c_str());
 
     // Test GetProcAddress directly
     FARPROC testProc =
-        GetProcAddress(g_ProxyState.hOriginalDXGI, "CreateDXGIFactory");
+        GetProcAddress(dxgiModule.Get(), "CreateDXGIFactory");
     LogStartup(std::format("CreateDXGIFactory = {:p}",
                reinterpret_cast<void*>(testProc)).c_str());
 
-// Use a simple macro instead of template lambda to avoid potential compiler
-// issues
-#define LOAD_PROC(ptr, name)                                                   \
-  ptr = reinterpret_cast<decltype(ptr)>(                                       \
-      GetProcAddress(g_ProxyState.hOriginalDXGI, name))
+    // Store function pointers in local variables first
+    auto pfnCreateDXGIFactory = reinterpret_cast<PFN_CreateDXGIFactory>(
+        GetProcAddress(dxgiModule.Get(), "CreateDXGIFactory"));
+    auto pfnCreateDXGIFactory1 = reinterpret_cast<PFN_CreateDXGIFactory1>(
+        GetProcAddress(dxgiModule.Get(), "CreateDXGIFactory1"));
+    auto pfnCreateDXGIFactory2 = reinterpret_cast<PFN_CreateDXGIFactory2>(
+        GetProcAddress(dxgiModule.Get(), "CreateDXGIFactory2"));
 
-    LOAD_PROC(g_ProxyState.pfnCreateDXGIFactory, "CreateDXGIFactory");
     LogStartup("Got CreateDXGIFactory");
-    LOAD_PROC(g_ProxyState.pfnCreateDXGIFactory1, "CreateDXGIFactory1");
-    LOAD_PROC(g_ProxyState.pfnCreateDXGIFactory2, "CreateDXGIFactory2");
-    LOAD_PROC(g_ProxyState.pfnDXGIDeclareAdapterRemovalSupport,
-              "DXGIDeclareAdapterRemovalSupport");
-    LOAD_PROC(g_ProxyState.pfnDXGIGetDebugInterface1, "DXGIGetDebugInterface1");
-    LOAD_PROC(g_ProxyState.pfnApplyCompatResolutionQuirking,
-              "ApplyCompatResolutionQuirking");
-    LOAD_PROC(g_ProxyState.pfnCompatString, "CompatString");
-    LOAD_PROC(g_ProxyState.pfnCompatValue, "CompatValue");
-    LOAD_PROC(g_ProxyState.pfnDXGIDumpJournal, "DXGIDumpJournal");
-    LOAD_PROC(g_ProxyState.pfnDXGIReportAdapterConfiguration,
-              "DXGIReportAdapterConfiguration");
-    LOAD_PROC(g_ProxyState.pfnDXGIDisableVBlankVirtualization,
-              "DXGIDisableVBlankVirtualization");
-    LOAD_PROC(g_ProxyState.pfnD3DKMTCloseAdapter, "D3DKMTCloseAdapter");
-    LOAD_PROC(g_ProxyState.pfnD3DKMTDestroyAllocation,
-              "D3DKMTDestroyAllocation");
-    LOAD_PROC(g_ProxyState.pfnD3DKMTDestroyContext, "D3DKMTDestroyContext");
-    LOAD_PROC(g_ProxyState.pfnD3DKMTDestroyDevice, "D3DKMTDestroyDevice");
-    LOAD_PROC(g_ProxyState.pfnD3DKMTDestroySynchronizationObject,
-              "D3DKMTDestroySynchronizationObject");
-    LOAD_PROC(g_ProxyState.pfnD3DKMTQueryAdapterInfo, "D3DKMTQueryAdapterInfo");
-    LOAD_PROC(g_ProxyState.pfnD3DKMTSetDisplayPrivateDriverFormat,
-              "D3DKMTSetDisplayPrivateDriverFormat");
-    LOAD_PROC(g_ProxyState.pfnD3DKMTSignalSynchronizationObject,
-              "D3DKMTSignalSynchronizationObject");
-    LOAD_PROC(g_ProxyState.pfnD3DKMTUnlock, "D3DKMTUnlock");
-    LOAD_PROC(g_ProxyState.pfnD3DKMTWaitForSynchronizationObject,
-              "D3DKMTWaitForSynchronizationObject");
-    LOAD_PROC(g_ProxyState.pfnOpenAdapter10, "OpenAdapter10");
-    LOAD_PROC(g_ProxyState.pfnOpenAdapter10_2, "OpenAdapter10_2");
-    LOAD_PROC(g_ProxyState.pfnSetAppCompatStringPointer,
-              "SetAppCompatStringPointer");
 
-#undef LOAD_PROC
-
-    if (!g_ProxyState.pfnCreateDXGIFactory ||
-        !g_ProxyState.pfnCreateDXGIFactory1 ||
-        !g_ProxyState.pfnCreateDXGIFactory2) {
+    if (!pfnCreateDXGIFactory || !pfnCreateDXGIFactory1 || !pfnCreateDXGIFactory2) {
       LOG_ERROR("Failed to get critical DXGI function pointers!");
       LogStartup("CRITICAL: Missing DXGI function pointers");
       return;
     }
+
+    // Now commit the module and function pointers to global state
+    g_ProxyState.hOriginalDXGI = dxgiModule.Detach();
+    g_ProxyState.pfnCreateDXGIFactory = pfnCreateDXGIFactory;
+    g_ProxyState.pfnCreateDXGIFactory1 = pfnCreateDXGIFactory1;
+    g_ProxyState.pfnCreateDXGIFactory2 = pfnCreateDXGIFactory2;
+
+    // Load remaining function pointers
+#define LOAD_PROC(ptr, name)                                                   \
+  g_ProxyState.ptr = reinterpret_cast<decltype(g_ProxyState.ptr)>(             \
+      GetProcAddress(g_ProxyState.hOriginalDXGI, name))
+
+    LOAD_PROC(pfnDXGIDeclareAdapterRemovalSupport,
+              "DXGIDeclareAdapterRemovalSupport");
+    LOAD_PROC(pfnDXGIGetDebugInterface1, "DXGIGetDebugInterface1");
+    LOAD_PROC(pfnApplyCompatResolutionQuirking,
+              "ApplyCompatResolutionQuirking");
+    LOAD_PROC(pfnCompatString, "CompatString");
+    LOAD_PROC(pfnCompatValue, "CompatValue");
+    LOAD_PROC(pfnDXGIDumpJournal, "DXGIDumpJournal");
+    LOAD_PROC(pfnDXGIReportAdapterConfiguration,
+              "DXGIReportAdapterConfiguration");
+    LOAD_PROC(pfnDXGIDisableVBlankVirtualization,
+              "DXGIDisableVBlankVirtualization");
+    LOAD_PROC(pfnD3DKMTCloseAdapter, "D3DKMTCloseAdapter");
+    LOAD_PROC(pfnD3DKMTDestroyAllocation,
+              "D3DKMTDestroyAllocation");
+    LOAD_PROC(pfnD3DKMTDestroyContext, "D3DKMTDestroyContext");
+    LOAD_PROC(pfnD3DKMTDestroyDevice, "D3DKMTDestroyDevice");
+    LOAD_PROC(pfnD3DKMTDestroySynchronizationObject,
+              "D3DKMTDestroySynchronizationObject");
+    LOAD_PROC(pfnD3DKMTQueryAdapterInfo, "D3DKMTQueryAdapterInfo");
+    LOAD_PROC(pfnD3DKMTSetDisplayPrivateDriverFormat,
+              "D3DKMTSetDisplayPrivateDriverFormat");
+    LOAD_PROC(pfnD3DKMTSignalSynchronizationObject,
+              "D3DKMTSignalSynchronizationObject");
+    LOAD_PROC(pfnD3DKMTUnlock, "D3DKMTUnlock");
+    LOAD_PROC(pfnD3DKMTWaitForSynchronizationObject,
+              "D3DKMTWaitForSynchronizationObject");
+    LOAD_PROC(pfnOpenAdapter10, "OpenAdapter10");
+    LOAD_PROC(pfnOpenAdapter10_2, "OpenAdapter10_2");
+    LOAD_PROC(pfnSetAppCompatStringPointer,
+              "SetAppCompatStringPointer");
+
+#undef LOAD_PROC
+
     LogStartup("Function pointers loaded");
 
     LogStartup("Installing D3D12 Hooks...");
