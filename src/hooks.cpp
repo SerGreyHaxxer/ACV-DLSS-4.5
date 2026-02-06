@@ -89,6 +89,11 @@ static std::atomic<uintptr_t> g_JitterAddress(0);
 static std::atomic<bool> g_JitterValid(false);
 static std::atomic<bool> g_WrappedCommandListUsed(false);
 
+// Resettable hook state flags (allow re-hooking after device recreation)
+static std::atomic<bool> s_cmdListHooked{false};
+static std::atomic<bool> s_cmdQueueHooked{false};
+static std::atomic<bool> s_deviceHooked{false};
+
 extern "C" void LogStartup(const char *msg);
 
 void NotifyWrappedCommandListUsed() { g_WrappedCommandListUsed.store(true); }
@@ -202,7 +207,8 @@ HookedExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
     LOG_ERROR("[HOOK] Exception in HookedExecuteCommandLists");
   }
 
-  g_OriginalExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
+  if (g_OriginalExecuteCommandLists)
+    g_OriginalExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
 }
 
 void STDMETHODCALLTYPE
@@ -233,7 +239,8 @@ HookedResourceBarrier(ID3D12GraphicsCommandList *pThis, UINT NumBarriers,
   } catch (...) {
     LOG_ERROR("[HOOK] Exception in HookedResourceBarrier");
   }
-  g_OriginalResourceBarrier(pThis, NumBarriers, pBarriers);
+  if (g_OriginalResourceBarrier)
+    g_OriginalResourceBarrier(pThis, NumBarriers, pBarriers);
 }
 
 HRESULT STDMETHODCALLTYPE HookedClose(ID3D12GraphicsCommandList *pThis) noexcept {
@@ -242,9 +249,12 @@ HRESULT STDMETHODCALLTYPE HookedClose(ID3D12GraphicsCommandList *pThis) noexcept
     TryGetPatternJitter(jitterX, jitterY);
 
     uint64_t currentFrame = ResourceDetector::Get().GetFrameCount();
-    static uint64_t s_lastScanFrame = 0;
+    static std::atomic<uint64_t> s_lastScanFrame{0};
 
-    if (currentFrame > s_lastScanFrame) {
+    uint64_t lastScan = s_lastScanFrame.load(std::memory_order_relaxed);
+    if (currentFrame > lastScan &&
+        s_lastScanFrame.compare_exchange_strong(lastScan, currentFrame,
+                                                std::memory_order_relaxed)) {
       float view[16], proj[16], score = 0.0f;
       bool found = TryScanAllCbvsForCamera(view, proj, &score, false, true);
       if (!found)
@@ -259,7 +269,6 @@ HRESULT STDMETHODCALLTYPE HookedClose(ID3D12GraphicsCommandList *pThis) noexcept
         StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX,
                                                    jitterY);
       }
-      s_lastScanFrame = currentFrame;
     } else {
       StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX,
                                                  jitterY);
@@ -269,6 +278,8 @@ HRESULT STDMETHODCALLTYPE HookedClose(ID3D12GraphicsCommandList *pThis) noexcept
   } catch (...) {
     LOG_ERROR("[HOOK] Exception in HookedClose");
   }
+  if (!g_OriginalClose)
+    return E_FAIL;
   return g_OriginalClose(pThis);
 }
 
@@ -280,7 +291,8 @@ void STDMETHODCALLTYPE HookedSetGraphicsRootCbv(
   } catch (...) {
     LOG_ERROR("[HOOK] Exception in HookedSetGraphicsRootCbv");
   }
-  g_OriginalSetGraphicsRootCbv(pThis, RootParameterIndex, BufferLocation);
+  if (g_OriginalSetGraphicsRootCbv)
+    g_OriginalSetGraphicsRootCbv(pThis, RootParameterIndex, BufferLocation);
 }
 
 void STDMETHODCALLTYPE HookedSetComputeRootCbv(
@@ -291,7 +303,8 @@ void STDMETHODCALLTYPE HookedSetComputeRootCbv(
   } catch (...) {
     LOG_ERROR("[HOOK] Exception in HookedSetComputeRootCbv");
   }
-  g_OriginalSetComputeRootCbv(pThis, RootParameterIndex, BufferLocation);
+  if (g_OriginalSetComputeRootCbv)
+    g_OriginalSetComputeRootCbv(pThis, RootParameterIndex, BufferLocation);
 }
 
 // ============================================================================
@@ -316,8 +329,9 @@ HookedClearDepthStencilView(ID3D12GraphicsCommandList *pThis,
   } catch (...) {
     LOG_ERROR("[HOOK] Exception in HookedClearDepthStencilView");
   }
-  g_OriginalClearDSV(pThis, DepthStencilView, ClearFlags, Depth, Stencil,
-                     NumRects, pRects);
+  if (g_OriginalClearDSV)
+    g_OriginalClearDSV(pThis, DepthStencilView, ClearFlags, Depth, Stencil,
+                       NumRects, pRects);
 }
 
 void STDMETHODCALLTYPE
@@ -336,7 +350,8 @@ HookedClearRenderTargetView(ID3D12GraphicsCommandList *pThis,
   } catch (...) {
     LOG_ERROR("[HOOK] Exception in HookedClearRenderTargetView");
   }
-  g_OriginalClearRTV(pThis, RenderTargetView, ColorRGBA, NumRects, pRects);
+  if (g_OriginalClearRTV)
+    g_OriginalClearRTV(pThis, RenderTargetView, ColorRGBA, NumRects, pRects);
 }
 
 // ============================================================================
@@ -347,7 +362,8 @@ void STDMETHODCALLTYPE
 HookedCreateShaderResourceView(ID3D12Device *pThis, ID3D12Resource *pResource,
                                const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc,
                                D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) noexcept {
-  g_OriginalCreateSRV(pThis, pResource, pDesc, DestDescriptor);
+  if (g_OriginalCreateSRV)
+    g_OriginalCreateSRV(pThis, pResource, pDesc, DestDescriptor);
   try {
     if (pResource) {
       DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
@@ -363,7 +379,8 @@ HookedCreateUnorderedAccessView(ID3D12Device *pThis, ID3D12Resource *pResource,
                                 ID3D12Resource *pCounterResource,
                                 const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc,
                                 D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) noexcept {
-  g_OriginalCreateUAV(pThis, pResource, pCounterResource, pDesc, DestDescriptor);
+  if (g_OriginalCreateUAV)
+    g_OriginalCreateUAV(pThis, pResource, pCounterResource, pDesc, DestDescriptor);
   try {
     if (pResource) {
       DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
@@ -378,7 +395,8 @@ void STDMETHODCALLTYPE
 HookedCreateRenderTargetView(ID3D12Device *pThis, ID3D12Resource *pResource,
                              const D3D12_RENDER_TARGET_VIEW_DESC *pDesc,
                              D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) noexcept {
-  g_OriginalCreateRTV(pThis, pResource, pDesc, DestDescriptor);
+  if (g_OriginalCreateRTV)
+    g_OriginalCreateRTV(pThis, pResource, pDesc, DestDescriptor);
   try {
     if (pResource) {
       DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
@@ -395,7 +413,8 @@ void STDMETHODCALLTYPE
 HookedCreateDepthStencilView(ID3D12Device *pThis, ID3D12Resource *pResource,
                              const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc,
                              D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) noexcept {
-  g_OriginalCreateDSV(pThis, pResource, pDesc, DestDescriptor);
+  if (g_OriginalCreateDSV)
+    g_OriginalCreateDSV(pThis, pResource, pDesc, DestDescriptor);
   try {
     if (pResource) {
       DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
@@ -428,9 +447,9 @@ HRESULT STDMETHODCALLTYPE Hooked_CreatePlacedResource(
 }
 
 void EnsureCommandListHooks(ID3D12GraphicsCommandList *pList) {
-  static std::once_flag listHookOnce;
-  std::call_once(listHookOnce, [pList]() {
-    void **vt = GetVTable(pList);
+  if (s_cmdListHooked.exchange(true))
+    return;
+  void **vt = GetVTable(pList);
     (void)HookManager::Get().CreateHook(
         GetVTableEntry<void*, vtable::CommandList>(vt, vtable::CommandList::Close),
         reinterpret_cast<void*>(HookedClose), &g_OriginalClose);
@@ -452,7 +471,6 @@ void EnsureCommandListHooks(ID3D12GraphicsCommandList *pList) {
         GetVTableEntry<void*, vtable::CommandList>(vt, vtable::CommandList::ClearRenderTargetView),
         reinterpret_cast<void*>(HookedClearRenderTargetView), &g_OriginalClearRTV);
     LOG_INFO("[HOOK] Global D3D12 CommandList hooks installed (Close, Barrier, CBV, ClearDSV, ClearRTV)");
-  });
 }
 
 HRESULT STDMETHODCALLTYPE Hooked_CreateCommandQueue(
@@ -461,14 +479,13 @@ HRESULT STDMETHODCALLTYPE Hooked_CreateCommandQueue(
   HRESULT hr = g_OriginalCreateCommandQueue(pThis, pDesc, riid, ppCommandQueue);
   if (SUCCEEDED(hr) && ppCommandQueue && *ppCommandQueue && pDesc &&
       pDesc->Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
-    static std::once_flag hookOnce;
-    std::call_once(hookOnce, [ppCommandQueue]() {
+    if (!s_cmdQueueHooked.exchange(true)) {
       void **vt = GetVTable(static_cast<IUnknown*>(*ppCommandQueue));
       (void)HookManager::Get().CreateHook(
           GetVTableEntry<void*, vtable::CommandQueue>(vt, vtable::CommandQueue::ExecuteCommandLists),
           reinterpret_cast<void*>(HookedExecuteCommandLists),
           &g_OriginalExecuteCommandLists);
-    });
+    }
   }
   return hr;
 }
@@ -512,8 +529,8 @@ HRESULT STDMETHODCALLTYPE HookedCreateCommandList(
 void EnsureD3D12VTableHooks(ID3D12Device *pDevice) {
   if (!pDevice)
     return;
-  static std::once_flag deviceHookOnce;
-  std::call_once(deviceHookOnce, [pDevice]() {
+  if (s_deviceHooked.exchange(true))
+    return;
     void **vt = GetVTable(pDevice);
     (void)HookManager::Get().CreateHook(
         GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateCommandQueue),
@@ -551,7 +568,6 @@ void EnsureD3D12VTableHooks(ID3D12Device *pDevice) {
         &g_OriginalCreateDSV);
     LOG_INFO("[HOOK] Global D3D12 Device hooks installed (Queue, CmdList, "
              "CommittedRes, PlacedRes, SRV, UAV, RTV, DSV)");
-  });
 }
 
 void WrapCreatedD3D12Device(REFIID /*riid*/, void **ppDevice, bool /*takeOwnership*/) {

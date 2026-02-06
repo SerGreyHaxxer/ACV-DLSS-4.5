@@ -138,7 +138,13 @@ void ResourceDetector::UpdateHeuristics(ID3D12CommandQueue *pQueue) {
     return;
   }
 
-  // Run Analysis
+  // Run Analysis — wait for GPU to finish previous submission first
+  if (m_fence && m_fenceVal > 1) {
+    if (m_fence->GetCompletedValue() < m_fenceVal - 1) {
+      m_fence->SetEventOnCompletion(m_fenceVal - 1, m_fenceEvent);
+      WaitForSingleObject(m_fenceEvent, 1000);
+    }
+  }
   m_cmdAlloc->Reset();
   m_cmdList->Reset(m_cmdAlloc.Get(), nullptr);
 
@@ -420,7 +426,7 @@ void ResourceDetector::RegisterResource(ID3D12Resource *pResource,
 
   // OPTIMIZATION: Check if we've already processed this resource in the current
   // "generation"
-  uint64_t currentFrame = m_frameCount.load(std::memory_order_relaxed);
+  uint64_t currentFrame = m_frameCount.load(std::memory_order_acquire);
   uint64_t currentGen = currentFrame / resource_config::kCleanupInterval;
 
   uint64_t lastSeenGen = 0;
@@ -490,13 +496,19 @@ void ResourceDetector::RegisterResource(ID3D12Resource *pResource,
         static_cast<int>(desc.Format), mvScore, depthScore, colorScore);
   }
 
-  // Safety cap to prevent unbounded growth if GetPrivateData fails
-  if (m_colorCandidates.size() > 500)
-    m_colorCandidates.clear();
-  if (m_motionCandidates.size() > 500)
-    m_motionCandidates.clear();
-  if (m_depthCandidates.size() > 500)
-    m_depthCandidates.clear();
+  // Eviction cap: sort by score, keep top 200 to prevent unbounded growth
+  auto evict = [](std::vector<ResourceCandidate> &list) {
+    if (list.size() > 500) {
+      std::sort(list.begin(), list.end(),
+                [](const ResourceCandidate &a, const ResourceCandidate &b) {
+                  return a.score > b.score;
+                });
+      list.resize(200);
+    }
+  };
+  evict(m_colorCandidates);
+  evict(m_motionCandidates);
+  evict(m_depthCandidates);
 
   bool quietScan = ConfigManager::Get().Data().system.quietResourceScan;
   if (mvScore >= 0.5f) {

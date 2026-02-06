@@ -72,6 +72,12 @@ void TrackDescriptorResource(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource*
     if (!handle.ptr || !resource) return;
     {
         std::lock_guard<std::mutex> lock(g_descriptorMutex);
+        // Evict old entries to prevent unbounded growth and VRAM leaks
+        constexpr size_t kMaxDescriptorEntries = 16384;
+        if (g_descriptorResources.size() > kMaxDescriptorEntries) {
+            g_descriptorResources.clear();
+            g_descriptorFormats.clear();
+        }
         g_descriptorResources[handle.ptr] = resource;
         g_descriptorFormats[handle.ptr] = format;
     }

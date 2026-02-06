@@ -221,8 +221,10 @@ bool HeuristicScanner::AnalyzeTexture(ID3D12GraphicsCommandList* pCmdList, ID3D1
     D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = frame.srvUavHeap->GetGPUDescriptorHandleForHeapStart();
     
     ID3D12Device* pDevice = nullptr;
-    frame.uavBuffer->GetDevice(IID_PPV_ARGS(&pDevice)); // Get device from resource
+    frame.uavBuffer->GetDevice(IID_PPV_ARGS(&pDevice));
     if (!pDevice) return false;
+    // RAII release — prevents leak on any early return
+    struct DeviceGuard { ID3D12Device* d; ~DeviceGuard() { if (d) d->Release(); } } deviceGuard{pDevice};
     
     // SRV
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
@@ -285,8 +287,6 @@ bool HeuristicScanner::AnalyzeTexture(ID3D12GraphicsCommandList* pCmdList, ID3D1
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     pCmdList->ResourceBarrier(1, &barrier);
-    
-    pDevice->Release();
 
     return true;
 }

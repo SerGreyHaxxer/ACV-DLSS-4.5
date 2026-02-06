@@ -22,6 +22,7 @@ StreamlineIntegration &StreamlineIntegration::Get() {
 StreamlineIntegration::~StreamlineIntegration() { Shutdown(); }
 
 bool StreamlineIntegration::Initialize(ID3D12Device *pDevice) {
+  std::lock_guard<std::mutex> lock(m_initMutex);
   if (m_initialized)
     return true;
   if (!pDevice)

@@ -23,6 +23,8 @@ void ApplySamplerLodBias(float bias) {
     if (g_samplerRecords.empty()) return;
     for (const auto& record : g_samplerRecords) {
         if (!record.valid || !record.device || record.cpuHandle.ptr == 0) continue;
+        // Validate device health before writing descriptors
+        if (record.device->GetDeviceRemovedReason() != S_OK) continue;
         D3D12_SAMPLER_DESC nD = record.desc;
         nD.MipLODBias += bias;
         nD.MipLODBias = std::clamp(nD.MipLODBias, -3.0f, 3.0f);

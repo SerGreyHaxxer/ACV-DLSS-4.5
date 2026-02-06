@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#include <mutex>
 #include <vector>
 #include <windows.h>
 #include <wrl/client.h>
@@ -211,6 +212,7 @@ private:
   StreamlineIntegration() = default;
   ~StreamlineIntegration();
 
+  std::mutex m_initMutex;
   bool m_initialized = false;
   Microsoft::WRL::ComPtr<ID3D12Device> m_pDevice;
   Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_pCommandQueue;

@@ -143,11 +143,10 @@ void OnPresentThread(IDXGISwapChain *pSwapChain) {
   if (!pSwapChain)
     return;
 
-  static bool imguiInit = false;
-  if (!imguiInit) {
+  static std::once_flag s_imguiInitOnce;
+  std::call_once(s_imguiInitOnce, [pSwapChain]() {
     ImGuiOverlay::Get().Initialize(pSwapChain);
-    imguiInit = true;
-  }
+  });
 
   g_unifiedFrameCount.fetch_add(1, std::memory_order_relaxed);
 
@@ -171,8 +170,12 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *pThis, UINT SyncI
   try {
     OnPresentThread(pThis);
   } catch (...) {
-    // Never let an exception escape a COM callback
+    static std::atomic<uint32_t> s_presentErrors{0};
+    if (s_presentErrors.fetch_add(1) % 300 == 0)
+      LOG_ERROR("[HOOK] Exception in HookedPresent (count: {})", s_presentErrors.load());
   }
+  if (!g_OrigPresent)
+    return E_FAIL;
   return g_OrigPresent(pThis, SyncInterval, Flags);
 }
 
@@ -252,11 +255,12 @@ ULONG STDMETHODCALLTYPE WrappedIDXGIFactory::AddRef() {
   return m_refCount.fetch_add(1) + 1;
 }
 ULONG STDMETHODCALLTYPE WrappedIDXGIFactory::Release() {
-  if (m_refCount.fetch_sub(1) == 1) {
+  ULONG newRef = m_refCount.fetch_sub(1) - 1;
+  if (newRef == 0) {
     delete this;
     return 0;
   }
-  return m_refCount.load();
+  return newRef;
 }
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::EnumAdapters(UINT A,
@@ -354,6 +358,20 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChainForHwnd(
   ComPtr<IDXGIFactory2> f;
   if (FAILED(m_pReal->QueryInterface(IID_PPV_ARGS(&f))))
     return E_NOINTERFACE;
+
+  InstallD3D12Hooks();
+
+  // Extract command queue for DLSS-G (same as CreateSwapChain)
+  ComPtr<ID3D12CommandQueue> pQueue;
+  if (pD && SUCCEEDED(pD->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
+    StreamlineIntegration::Get().SetCommandQueue(pQueue.Get());
+    g_pRealCommandQueue = pQueue;
+    ComPtr<ID3D12Device> pD3DDevice;
+    if (SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&pD3DDevice)))) {
+      StreamlineIntegration::Get().Initialize(pD3DDevice.Get());
+    }
+  }
+
   HRESULT hr = f->CreateSwapChainForHwnd(pD, h, d, fs, o, s);
   if (SUCCEEDED(hr) && s && *s) {
     {
@@ -371,7 +389,16 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChainForCoreWindow(
   ComPtr<IDXGIFactory2> f;
   if (FAILED(m_pReal->QueryInterface(IID_PPV_ARGS(&f))))
     return E_NOINTERFACE;
-  return f->CreateSwapChainForCoreWindow(pD, w, d, o, s);
+  HRESULT hr = f->CreateSwapChainForCoreWindow(pD, w, d, o, s);
+  if (SUCCEEDED(hr) && s && *s) {
+    {
+      std::lock_guard<std::mutex> lock(g_swapChainMutex);
+      g_pRealSwapChain = *s;
+    }
+    InstallPresentHook(*s);
+    StartFrameTimer();
+  }
+  return hr;
 }
 HRESULT STDMETHODCALLTYPE
 WrappedIDXGIFactory::GetSharedResourceAdapterLuid(HANDLE h, LUID *l) {
@@ -424,7 +451,16 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChainForComposition(
   ComPtr<IDXGIFactory2> f;
   if (FAILED(m_pReal->QueryInterface(IID_PPV_ARGS(&f))))
     return E_NOINTERFACE;
-  return f->CreateSwapChainForComposition(pD, d, o, s);
+  HRESULT hr = f->CreateSwapChainForComposition(pD, d, o, s);
+  if (SUCCEEDED(hr) && s && *s) {
+    {
+      std::lock_guard<std::mutex> lock(g_swapChainMutex);
+      g_pRealSwapChain = *s;
+    }
+    InstallPresentHook(*s);
+    StartFrameTimer();
+  }
+  return hr;
 }
 UINT STDMETHODCALLTYPE WrappedIDXGIFactory::GetCreationFlags() {
   ComPtr<IDXGIFactory3> f;
