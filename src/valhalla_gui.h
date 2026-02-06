@@ -225,7 +225,8 @@ public:
   void PushClip(float x, float y, float w, float h);
   void PopClip();
 
-  // Vignette (radial gradient)
+  // Valhalla-themed custom cursor
+  void DrawValhallaCursor(float x, float y, float scale, const D2D1_COLOR_F& color, const D2D1_COLOR_F& outline);
   void DrawVignette(float screenW, float screenH, float r, float g, float b, float intensity, float radius, float softness);
 
   // State

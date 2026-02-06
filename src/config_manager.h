@@ -58,7 +58,7 @@ struct ModConfig {
   } hdr;
 
   struct UI {
-    bool visible = true;      // Show control panel on startup by default
+    bool visible = false;     // Control panel hidden on startup; use hotkey to open
     bool showFPS = false;
     bool showVignette = false;
     int menuHotkey = 0x74;     // F5

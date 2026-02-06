@@ -246,9 +246,59 @@ void ValhallaRenderer::DrawCircle(float cx, float cy, float radius, const D2D1_C
   m_d2dContext->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), radius, radius), GetBrush(color));
 }
 
-// ============================================================================
-// Text rendering
-// ============================================================================
+void ValhallaRenderer::DrawValhallaCursor(float x, float y, float scale,
+                                          const D2D1_COLOR_F& color,
+                                          const D2D1_COLOR_F& outline) {
+  if (!m_d2dContext || !m_d2dFactory) return;
+
+  // Norse-style arrowhead cursor: a pointed blade shape with a notched tail
+  // Coordinates relative to tip at (0,0), pointing down-right
+  const float s = scale;
+  D2D1_POINT_2F pts[] = {
+    {x,              y},                // tip
+    {x + 5.0f * s,   y + 14.0f * s},   // right edge of blade
+    {x + 4.0f * s,   y + 11.0f * s},   // notch right
+    {x + 10.0f * s,  y + 22.0f * s},   // lower-right tail
+    {x + 7.5f * s,   y + 23.0f * s},   // tail bottom
+    {x + 2.5f * s,   y + 14.5f * s},   // notch bottom
+    {x + 1.0f * s,   y + 18.0f * s},   // lower-left tail
+    {x - 1.0f * s,   y + 16.5f * s},   // tail left
+    {x + 0.5f * s,   y + 11.0f * s},   // notch left
+    {x - 1.0f * s,   y + 7.0f * s},    // left edge of blade
+  };
+  constexpr UINT ptCount = _countof(pts);
+
+  ComPtr<ID2D1PathGeometry> path;
+  if (FAILED(m_d2dFactory->CreatePathGeometry(&path))) return;
+  ComPtr<ID2D1GeometrySink> sink;
+  if (FAILED(path->Open(&sink))) return;
+
+  sink->BeginFigure(pts[0], D2D1_FIGURE_BEGIN_FILLED);
+  for (UINT i = 1; i < ptCount; ++i)
+    sink->AddLine(pts[i]);
+  sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+  sink->Close();
+
+  // Draw shadow offset
+  auto oldTransform = D2D1::Matrix3x2F::Identity();
+  m_d2dContext->GetTransform(&oldTransform);
+  m_d2dContext->SetTransform(
+    D2D1::Matrix3x2F::Translation(1.5f * s, 1.5f * s) * oldTransform);
+  D2D1_COLOR_F shadow = {0, 0, 0, 0.5f};
+  m_d2dContext->FillGeometry(path.Get(), GetBrush(shadow));
+  m_d2dContext->SetTransform(oldTransform);
+
+  // Outline
+  m_d2dContext->DrawGeometry(path.Get(), GetBrush(outline), 1.8f * s);
+  // Fill
+  m_d2dContext->FillGeometry(path.Get(), GetBrush(color));
+
+  // Norse accent: small diamond near the blade base
+  float dCx = x + 2.0f * s;
+  float dCy = y + 8.0f * s;
+  float dSize = 1.8f * s;
+  DrawDiamond(dCx, dCy, dSize, outline);
+}
 
 IDWriteTextFormat* ValhallaRenderer::GetTextFormat(float fontSize, bool bold) {
   int key = static_cast<int>(fontSize * 100.0f) + (bold ? 1 : 0);

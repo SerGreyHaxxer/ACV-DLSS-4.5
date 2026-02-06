@@ -206,7 +206,7 @@ void ImGuiOverlay::Shutdown() {
 
   if (m_cursorUnlocked) {
     ClipCursor(&m_prevClip);
-    ShowCursor(FALSE);
+    while (ShowCursor(TRUE) < 0) {}
     m_cursorUnlocked = false;
   }
 
@@ -512,13 +512,17 @@ void ImGuiOverlay::BeginWidgetFrame() {
     if (!m_cursorUnlocked) {
       GetClipCursor(&m_prevClip);
       ClipCursor(nullptr);
-      ShowCursor(TRUE);
+      // Force system cursor hidden — we draw our own Valhalla cursor.
+      // ShowCursor uses an internal counter; drain it to ensure hidden.
+      while (ShowCursor(FALSE) >= 0) {}
+      SetCursor(nullptr);
       m_cursorUnlocked = true;
     }
   } else {
     if (m_cursorUnlocked) {
       ClipCursor(&m_prevClip);
-      ShowCursor(FALSE);
+      // Restore system cursor
+      while (ShowCursor(TRUE) < 0) {}
       m_cursorUnlocked = false;
     }
   }
@@ -2299,6 +2303,17 @@ void ImGuiOverlay::Render() {
 
   // Mini mode bar when panel is hidden
   BuildMiniMode();
+
+  // Draw Valhalla-themed cursor on top of everything when overlay is active
+  if (m_cursorUnlocked) {
+    // Keep system cursor suppressed every frame (game may re-show it)
+    SetCursor(nullptr);
+    m_renderer.DrawValhallaCursor(
+        m_input.mouseX, m_input.mouseY, 1.2f,
+        m_accent,                               // fill: user's accent color
+        D2D1::ColorF(0.1f, 0.08f, 0.06f, 0.9f) // outline: dark Norse brown
+    );
+  }
 
   // End D2D frame
   m_renderer.EndFrame();
