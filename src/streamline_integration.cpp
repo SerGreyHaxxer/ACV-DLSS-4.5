@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -175,7 +175,7 @@ void StreamlineIntegration::SetCameraData(const float *view, const float *proj,
   slSetConstants(consts, *m_frameToken, m_viewport);
 }
 
-void StreamlineIntegration::EvaluateDLSS(ID3D12GraphicsCommandList *pCmdList) {
+void StreamlineIntegration::Evaluate(ID3D12GraphicsCommandList *pCmdList) {
   if (!m_initialized || !pCmdList || !m_frameToken)
     return;
   if (m_optionsDirty)

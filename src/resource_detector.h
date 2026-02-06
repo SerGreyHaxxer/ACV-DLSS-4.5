@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -16,109 +16,116 @@
  */
 #pragma once
 #include <d3d12.h>
-#include <vector>
+#include <wrl/client.h>
+
 #include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
-#include <wrl/client.h>
+
+// Phase 1: C++26 Polyfills
+#include "cpp26/hive.h"
+#include "cpp26/inplace_vector.h"
 
 struct ResourceCandidate {
-    Microsoft::WRL::ComPtr<ID3D12Resource> pResource;
-    float score;
-    D3D12_RESOURCE_DESC desc;
-    uint64_t lastFrameSeen;
-    uint32_t seenCount;
+  Microsoft::WRL::ComPtr<ID3D12Resource> pResource;
+  float score;
+  D3D12_RESOURCE_DESC desc;
+  uint64_t lastFrameSeen;
+  uint32_t seenCount;
 };
 
 #include <atomic> // Added
 
 class ResourceDetector {
 public:
-    static ResourceDetector& Get();
+  static ResourceDetector& Get();
 
-    // Non-copyable, non-movable singleton
-    ResourceDetector(const ResourceDetector&) = delete;
-    ResourceDetector& operator=(const ResourceDetector&) = delete;
-    ResourceDetector(ResourceDetector&&) = delete;
-    ResourceDetector& operator=(ResourceDetector&&) = delete;
+  // Non-copyable, non-movable singleton
+  ResourceDetector(const ResourceDetector&) = delete;
+  ResourceDetector& operator=(const ResourceDetector&) = delete;
+  ResourceDetector(ResourceDetector&&) = delete;
+  ResourceDetector& operator=(ResourceDetector&&) = delete;
 
-    void RegisterResource(ID3D12Resource* pResource);
-    void RegisterResource(ID3D12Resource* pResource, bool allowDuplicate);
-    void RegisterDepthFromView(ID3D12Resource* pResource, DXGI_FORMAT viewFormat);
-    void RegisterMotionVectorFromView(ID3D12Resource* pResource, DXGI_FORMAT viewFormat);
-    
-    // High-confidence signals from Clear calls
-    void RegisterDepthFromClear(ID3D12Resource* pResource, float clearDepth);
-    void RegisterColorFromClear(ID3D12Resource* pResource);
-    void RegisterExposure(ID3D12Resource* pResource);
+  void RegisterResource(ID3D12Resource* pResource);
+  void RegisterResource(ID3D12Resource* pResource, bool allowDuplicate);
+  void RegisterDepthFromView(ID3D12Resource* pResource, DXGI_FORMAT viewFormat);
+  void RegisterMotionVectorFromView(ID3D12Resource* pResource, DXGI_FORMAT viewFormat);
 
-    bool IsDepthInverted() const { return m_depthInverted; }
-    DXGI_FORMAT GetDepthFormatOverride(ID3D12Resource* pResource);
-    ID3D12Resource* GetExposureResource() { return m_exposureResource.Get(); }
-    DXGI_FORMAT GetMotionFormatOverride(ID3D12Resource* pResource);
-    
-    ID3D12Resource* GetBestMotionVectorCandidate();
-    ID3D12Resource* GetBestDepthCandidate();
-    ID3D12Resource* GetBestColorCandidate();
-    uint64_t GetFrameCount();
+  // High-confidence signals from Clear calls
+  void RegisterDepthFromClear(ID3D12Resource* pResource, float clearDepth);
+  void RegisterColorFromClear(ID3D12Resource* pResource);
+  void RegisterExposure(ID3D12Resource* pResource);
 
-    std::string GetDebugInfo();
-    void LogDebugInfo(); // Dump to log file
+  bool IsDepthInverted() const { return m_depthInverted; }
+  DXGI_FORMAT GetDepthFormatOverride(ID3D12Resource* pResource);
+  ID3D12Resource* GetExposureResource() { return m_exposureResource.Get(); }
+  DXGI_FORMAT GetMotionFormatOverride(ID3D12Resource* pResource);
 
-    void NewFrame();
-    void Clear(); // Clear all candidates
-    void SetExpectedDimensions(uint32_t width, uint32_t height);
+  ID3D12Resource* GetBestMotionVectorCandidate();
+  ID3D12Resource* GetBestDepthCandidate();
+  ID3D12Resource* GetBestColorCandidate();
+  uint64_t GetFrameCount();
 
-    // New: Trigger dynamic analysis using a compute shader
-    void UpdateHeuristics(ID3D12CommandQueue* pQueue);
+  std::string GetDebugInfo();
+  void LogDebugInfo(); // Dump to log file
+
+  void NewFrame();
+  void Clear(); // Clear all candidates
+  void SetExpectedDimensions(uint32_t width, uint32_t height);
+
+  // New: Trigger dynamic analysis using a compute shader
+  void UpdateHeuristics(ID3D12CommandQueue* pQueue);
 
 private:
-    ResourceDetector() = default;
-    ~ResourceDetector();
-    
-    float ScoreMotionVector(const D3D12_RESOURCE_DESC& desc);
-    float ScoreDepth(const D3D12_RESOURCE_DESC& desc);
-    float ScoreColor(const D3D12_RESOURCE_DESC& desc);
+  ResourceDetector() = default;
+  ~ResourceDetector();
 
-    // Lock hierarchy level 3 (SwapChain=1 > Hooks=2 > Resources=3 > Config=4 > Logging=5).
-    // Use shared_lock for read-only access (Get*, GetDebugInfo, Score*),
-    // unique_lock for mutations (Register*, NewFrame, Clear, SetExpected*).
-    mutable std::shared_mutex m_mutex;
-    std::vector<ResourceCandidate> m_motionCandidates;
-    std::vector<ResourceCandidate> m_depthCandidates;
-    std::vector<ResourceCandidate> m_colorCandidates;
-    
-    std::atomic<uint64_t> m_frameCount{0};
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_bestMotion;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_bestDepth;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_bestColor;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_exposureResource;
-    float m_bestMotionScore = 0.0f;
-    float m_bestDepthScore = 0.0f;
-    float m_bestColorScore = 0.0f;
-    uint32_t m_expectedWidth = 0;
-    uint32_t m_expectedHeight = 0;
-    bool m_depthInverted = true; // Default to true for Valhalla
-    std::unordered_map<ID3D12Resource*, DXGI_FORMAT> m_depthFormatOverrides;
-    std::unordered_map<ID3D12Resource*, DXGI_FORMAT> m_motionFormatOverrides;
+  float ScoreMotionVector(const D3D12_RESOURCE_DESC& desc);
+  float ScoreDepth(const D3D12_RESOURCE_DESC& desc);
+  float ScoreColor(const D3D12_RESOURCE_DESC& desc);
 
-    // Heuristic State
-    struct HeuristicData {
-        bool analyzed = false;
-        float variance = 0.0f;
-        bool validRange = false;
-        uint64_t lastCheckFrame = 0;
-    };
-    std::unordered_map<ID3D12Resource*, HeuristicData> m_heuristics;
-    
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_lastAnalyzedCandidate;
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_cmdAlloc;
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_cmdList;
-    Microsoft::WRL::ComPtr<ID3D12Fence> m_fence;
-    UINT64 m_fenceVal = 0;
-    HANDLE m_fenceEvent = nullptr;
+  // Lock hierarchy level 3 (SwapChain=1 > Hooks=2 > Resources=3 > Config=4 > Logging=5).
+  // Use shared_lock for read-only access (Get*, GetDebugInfo, Score*),
+  // unique_lock for mutations (Register*, NewFrame, Clear, SetExpected*).
+  mutable std::shared_mutex m_mutex;
 
-    bool InitCommandList(ID3D12Device* pDevice);
+  // Phase 1: Use inplace_vector to eliminate heap allocation jitter
+  // Maximum 64 candidates per type - more than enough for resource detection
+  static constexpr std::size_t kMaxCandidates = 64;
+  cpp26::inplace_vector<ResourceCandidate, kMaxCandidates> m_motionCandidates;
+  cpp26::inplace_vector<ResourceCandidate, kMaxCandidates> m_depthCandidates;
+  cpp26::inplace_vector<ResourceCandidate, kMaxCandidates> m_colorCandidates;
+
+  std::atomic<uint64_t> m_frameCount{0};
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_bestMotion;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_bestDepth;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_bestColor;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_exposureResource;
+  float m_bestMotionScore = 0.0f;
+  float m_bestDepthScore = 0.0f;
+  float m_bestColorScore = 0.0f;
+  uint32_t m_expectedWidth = 0;
+  uint32_t m_expectedHeight = 0;
+  bool m_depthInverted = true; // Default to true for Valhalla
+  std::unordered_map<ID3D12Resource*, DXGI_FORMAT> m_depthFormatOverrides;
+  std::unordered_map<ID3D12Resource*, DXGI_FORMAT> m_motionFormatOverrides;
+
+  // Heuristic State - NOT in hot path, keep as unordered_map for stable access
+  struct HeuristicData {
+    bool analyzed = false;
+    float variance = 0.0f;
+    bool validRange = false;
+    uint64_t lastCheckFrame = 0;
+  };
+  std::unordered_map<ID3D12Resource*, HeuristicData> m_heuristics;
+
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_lastAnalyzedCandidate;
+  Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_cmdAlloc;
+  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_cmdList;
+  Microsoft::WRL::ComPtr<ID3D12Fence> m_fence;
+  UINT64 m_fenceVal = 0;
+  HANDLE m_fenceEvent = nullptr;
+
+  bool InitCommandList(ID3D12Device* pDevice);
 };
-

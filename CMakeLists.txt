@@ -9,6 +9,12 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ============================================================================
+# Phase 0: Dependency Isolation - Static CRT Linking
+# ============================================================================
+# This eliminates vcruntime140.dll dependencies for maximum compatibility
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ============================================================================
 # Options
 # ============================================================================
 option(TENSOR_CURIE_WERROR "Treat warnings as errors (used by CI)" OFF)
@@ -50,6 +56,12 @@ find_package(tomlplusplus CONFIG REQUIRED)
 # Source files — explicit list (GLOB doesn't trigger reconfigure on add/remove)
 set(SRC_FILES
     main.cpp
+    # Phase 0: Stability & Safety
+    src/sentinel_crash_handler.cpp
+    src/ghost_hook.cpp
+    # Phase 2: Render Pipeline
+    src/render_passes/ray_tracing_pass.cpp
+    # Original sources
     src/camera_scanner.cpp
     src/config_manager.cpp
     src/crash_handler.cpp
@@ -137,3 +149,8 @@ install(TARGETS ${PROJECT_NAME}
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib
 )
+
+# ============================================================================
+# Phase 0: Safe Mode Bootstrapper (TensorBoot.exe)
+# ============================================================================
+add_subdirectory(tools/TensorBoot)

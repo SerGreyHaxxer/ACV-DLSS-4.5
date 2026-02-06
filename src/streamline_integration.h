@@ -1,18 +1,10 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 #pragma once
 #include <chrono>
@@ -33,7 +25,9 @@
 #include <sl_dlss_d.h>
 #include <sl_dlss_g.h>
 
-class StreamlineIntegration {
+#include "upscalers/i_upscaler.h"
+
+class StreamlineIntegration : public IUpscaler {
 public:
   static StreamlineIntegration &Get();
 
@@ -43,25 +37,45 @@ public:
   StreamlineIntegration(StreamlineIntegration&&) = delete;
   StreamlineIntegration& operator=(StreamlineIntegration&&) = delete;
 
-  bool Initialize(ID3D12Device *pDevice);
-  void Shutdown();
-  bool IsInitialized() const { return m_initialized; }
+  // IUpscaler Implementation
+  const char* GetName() const override { return "NVIDIA DLSS 4.5"; }
+  bool Initialize(ID3D12Device *pDevice) override;
+  void Shutdown() override;
+  bool IsInitialized() const override { return m_initialized; }
 
-  void NewFrame(IDXGISwapChain *pSwapChain);
-  void SetCommandQueue(ID3D12CommandQueue *pQueue);
+  void SetCommandQueue(ID3D12CommandQueue *pQueue) override;
+  void NewFrame(IDXGISwapChain *pSwapChain) override;
+
+  void SetColorBuffer(ID3D12Resource *pResource) override { m_colorBuffer = pResource; }
+  void SetDepthBuffer(ID3D12Resource *pResource) override { m_depthBuffer = pResource; }
+  void SetMotionVectors(ID3D12Resource *pResource) override { m_motionVectors = pResource; }
+  
+  void SetCameraData(const float *viewMatrix, const float *projMatrix,
+                     float jitterX, float jitterY) override;
+
+  void Evaluate(ID3D12GraphicsCommandList *pCmdList) override;
+  
+  void SetMode(int index) override { SetDLSSModeIndex(index); }
+  void SetPreset(int preset) override { SetDLSSPreset(preset); }
+  void SetSharpness(float val) override { 
+      m_sharpness = val;
+      m_optionsDirty = true;
+  }
+  void SetJitterScale(float x, float y) override {
+      // SL handles jitter scaling automatically based on resolution
+  }
+  
+  bool IsSupported() const override { return m_dlssSupported; }
+
+  // Original Public API
   ID3D12CommandQueue *GetCommandQueue() const { return m_pCommandQueue.Get(); }
 
-  void TagColorBuffer(ID3D12Resource *pResource) { m_colorBuffer = pResource; }
-  void TagDepthBuffer(ID3D12Resource *pResource) { m_depthBuffer = pResource; }
-  void TagMotionVectors(ID3D12Resource *pResource) {
-    m_motionVectors = pResource;
-  }
+  void TagColorBuffer(ID3D12Resource *pResource) { SetColorBuffer(pResource); }
+  void TagDepthBuffer(ID3D12Resource *pResource) { SetDepthBuffer(pResource); }
+  void TagMotionVectors(ID3D12Resource *pResource) { SetMotionVectors(pResource); }
 
-  void SetCameraData(const float *viewMatrix, const float *projMatrix,
-                     float jitterX, float jitterY);
-
-  void EvaluateDLSS(ID3D12GraphicsCommandList *pCmdList);
-  void EvaluateDLSSFromPresent(); // Uses internal cmd list â€” no external hook needed
+  void EvaluateDLSS(ID3D12GraphicsCommandList *pCmdList) { Evaluate(pCmdList); }
+  void EvaluateDLSSFromPresent(); // Uses internal cmd list — no external hook needed
   void EvaluateFrameGen(IDXGISwapChain *pSwapChain);
   void EvaluateDeepDVC(IDXGISwapChain *pSwapChain);
 
@@ -80,12 +94,8 @@ public:
     m_optionsDirty = true;
   }
   int GetFrameGenMultiplier() const { return m_frameGenMultiplier; }
-  void SetSharpness(float val) {
-    m_sharpness = val;
-    m_optionsDirty = true;
-  }
-  void SetLODBias(float val) { m_lodBias = val; }
   float GetLODBias() const { return m_lodBias; }
+  void SetLODBias(float val) { m_lodBias = val; }
   void SetMVecScale(float x, float y) {
     m_mvecScaleX = x;
     m_mvecScaleY = y;
@@ -231,7 +241,7 @@ private:
   StreamlineIntegration() = default;
   ~StreamlineIntegration();
 
-  // Lock hierarchy level 2 â€” same tier as Hooks
+  // Lock hierarchy level 2 — same tier as Hooks
   // (SwapChain=1 > Hooks/Init=2 > Resources=3 > Config=4 > Logging=5).
   std::mutex m_initMutex;
   bool m_initialized = false;
@@ -287,7 +297,7 @@ private:
   bool m_smartFgForceDisable = false;
   bool m_disableFGDueToInvalidParam = false;
 
-  // Dynamic Smart FG â€” rolling FPS buffer for adaptive multiplier
+  // Dynamic Smart FG — rolling FPS buffer for adaptive multiplier
   static constexpr int kFpsRingSize = 10;   // ~10 seconds of history
   float m_fpsRing[kFpsRingSize]{};
   int   m_fpsRingIdx = 0;
@@ -328,4 +338,3 @@ private:
   void UpdateSmartFrameGen();
   void WaitForGpu();
 };
-

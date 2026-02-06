@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -36,6 +36,7 @@
 #include "resource_detector.h"
 #include "sampler_interceptor.h"
 #include "streamline_integration.h"
+#include "render_passes/ray_tracing_pass.h"
 #include "vtable_utils.h"
 
 // ============================================================================
@@ -217,6 +218,10 @@ HookedExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
         StreamlineIntegration::Get().TagDepthBuffer(pDepth);
       if (pMVs)
         StreamlineIntegration::Get().TagMotionVectors(pMVs);
+
+      // Phase 2.1: Initialize Ray Tracing Pass (Lazy Init)
+      // This ensures the Root Signature and PSO are ready for injection
+      RayTracingPass::Get().Initialize(pDevice.Get());
 
       // Camera data: use jitter from pattern scan only (no invasive matrix scanning)
       float jitterX = 0.0f, jitterY = 0.0f;
