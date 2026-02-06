@@ -1,0 +1,361 @@
+#include "heuristic_scanner.h"
+#include "logger.h"
+#include <d3dcompiler.h>
+#include <cmath>
+
+#pragma comment(lib, "d3dcompiler.lib")
+
+HeuristicScanner& HeuristicScanner::Get() {
+    static HeuristicScanner instance;
+    return instance;
+}
+
+bool HeuristicScanner::Initialize(ID3D12Device* pDevice) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_initialized) return true;
+
+    if (!CompileShader()) {
+        LOG_ERROR("[Scanner] Failed to compile shader");
+        return false;
+    }
+
+    if (!CreateRootSignature(pDevice)) {
+        LOG_ERROR("[Scanner] Failed to create root signature");
+        return false;
+    }
+
+    if (!CreatePSO(pDevice)) {
+        LOG_ERROR("[Scanner] Failed to create PSO");
+        return false;
+    }
+
+    if (!CreateBuffers(pDevice)) {
+        LOG_ERROR("[Scanner] Failed to create buffers");
+        return false;
+    }
+
+    m_initialized = true;
+    m_ringIndex = 0;
+    LOG_INFO("[Scanner] Initialized successfully");
+    return true;
+}
+
+void HeuristicScanner::Shutdown() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_pso.Reset();
+    m_rootSignature.Reset();
+    for (int i = 0; i < SCAN_RING_SIZE; ++i) {
+        m_frames[i].readbackBuffer.Reset();
+        m_frames[i].uavBuffer.Reset();
+        m_frames[i].srvUavHeap.Reset();
+    }
+    m_initialized = false;
+}
+
+bool HeuristicScanner::CompileShader() {
+    // In a real build, we should embed the header-array of the compiled shader.
+    // For this dynamic setup, we'll compile from file at runtime or fail if missing.
+    // However, to make this robust without external files, we should hardcode the string.
+    
+    const char* shaderSource = R"(
+cbuffer Constants : register(b0)
+{
+    uint Width;
+    uint Height;
+    uint SampleCountX;
+    uint SampleCountY;
+}
+
+Texture2D<float4> InputTexture : register(t0);
+RWStructuredBuffer<float4> OutputSamples : register(u0);
+
+[numthreads(1, 1, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= SampleCountX || id.y >= SampleCountY) return;
+    float u = (float)id.x / (float)SampleCountX;
+    float v = (float)id.y / (float)SampleCountY;
+    uint px = (uint)(u * Width);
+    uint py = (uint)(v * Height);
+    float4 pixel = InputTexture[uint2(px, py)];
+    uint outIndex = id.y * SampleCountX + id.x;
+    OutputSamples[outIndex] = pixel;
+}
+)";
+
+    ID3DBlob* pBlob = nullptr;
+    ID3DBlob* pError = nullptr;
+    HRESULT hr = D3DCompile(shaderSource, strlen(shaderSource), "ScannerCS", nullptr, nullptr, "CSMain", "cs_5_0", 0, 0, &pBlob, &pError);
+    
+    if (FAILED(hr)) {
+        if (pError) {
+            LOG_ERROR("[Scanner] Shader Compile Error: {}", static_cast<char*>(pError->GetBufferPointer()));
+            pError->Release();
+        }
+        return false;
+    }
+
+    m_shaderBytecode.resize(pBlob->GetBufferSize());
+    memcpy(m_shaderBytecode.data(), pBlob->GetBufferPointer(), pBlob->GetBufferSize());
+    pBlob->Release();
+    return true;
+}
+
+bool HeuristicScanner::CreateRootSignature(ID3D12Device* pDevice) {
+    // Root Params:
+    // 0: CBV (Constants)
+    // 1: Descriptor Table (SRV Texture t0, UAV Buffer u0)
+    
+    // Note: Creating a simple root signature with a descriptor table
+    D3D12_DESCRIPTOR_RANGE ranges[2];
+    ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ranges[0].NumDescriptors = 1;
+    ranges[0].BaseShaderRegister = 0; // t0
+    ranges[0].RegisterSpace = 0;
+    ranges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    ranges[1].NumDescriptors = 1;
+    ranges[1].BaseShaderRegister = 0; // u0
+    ranges[1].RegisterSpace = 0;
+    ranges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER params[2];
+    // Param 0: Constants (Root Constants for speed, or CBV)
+    // We used cbuffer in shader, so let's use 32-bit Root Constants for simplicity
+    // struct { W, H, SX, SY } = 4 ints
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0; // b0
+    params[0].Constants.RegisterSpace = 0;
+    params[0].Constants.Num32BitValues = 4;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // Param 1: Table with SRV and UAV
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].DescriptorTable.NumDescriptorRanges = 2;
+    params[1].DescriptorTable.pDescriptorRanges = ranges;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_ROOT_SIGNATURE_DESC desc = {};
+    desc.NumParameters = 2;
+    desc.pParameters = params;
+    desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT; // CS doesn't need input layout but fine
+
+    ID3DBlob* sigBlob;
+    ID3DBlob* errorBlob;
+    HRESULT hr = D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &sigBlob, &errorBlob);
+    if (FAILED(hr)) return false;
+
+    hr = pDevice->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&m_rootSignature));
+    sigBlob->Release();
+    return SUCCEEDED(hr);
+}
+
+bool HeuristicScanner::CreatePSO(ID3D12Device* pDevice) {
+    D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.pRootSignature = m_rootSignature.Get();
+    psoDesc.CS = { m_shaderBytecode.data(), m_shaderBytecode.size() };
+    
+    HRESULT hr = pDevice->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&m_pso));
+    return SUCCEEDED(hr);
+}
+
+bool HeuristicScanner::CreateBuffers(ID3D12Device* pDevice) {
+    for (int i = 0; i < SCAN_RING_SIZE; ++i) {
+        // Create descriptor heap
+        D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+        heapDesc.NumDescriptors = 2; // 1 SRV + 1 UAV
+        heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        HRESULT hr = pDevice->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_frames[i].srvUavHeap));
+        if (FAILED(hr)) return false;
+
+        // Create UAV Buffer (Default Heap)
+        uint64_t bufferSize = SCAN_SAMPLE_COUNT * sizeof(float) * 4;
+        
+        D3D12_HEAP_PROPERTIES heapProps = {};
+        heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+        
+        D3D12_RESOURCE_DESC bufDesc = {};
+        bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bufDesc.Width = bufferSize;
+        bufDesc.Height = 1;
+        bufDesc.DepthOrArraySize = 1;
+        bufDesc.MipLevels = 1;
+        bufDesc.Format = DXGI_FORMAT_UNKNOWN;
+        bufDesc.SampleDesc.Count = 1;
+        bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        bufDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+        hr = pDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc, 
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&m_frames[i].uavBuffer));
+        if (FAILED(hr)) return false;
+
+        // Create Readback Buffer (Readback Heap)
+        heapProps.Type = D3D12_HEAP_TYPE_READBACK;
+        bufDesc.Flags = D3D12_RESOURCE_FLAG_NONE; // No UAV for readback
+        
+        hr = pDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc, 
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_frames[i].readbackBuffer));
+        if (FAILED(hr)) return false;
+    }
+    return true;
+}
+
+bool HeuristicScanner::AnalyzeTexture(ID3D12GraphicsCommandList* pCmdList, ID3D12Resource* pResource, ScanResult& outResult) {
+    if (!m_initialized || !pCmdList || !pResource) return false;
+
+    // Cycle to next frame resources
+    m_ringIndex = (m_ringIndex + 1) % SCAN_RING_SIZE;
+    FrameResources& frame = m_frames[m_ringIndex];
+
+    // 1. Setup State
+    pCmdList->SetComputeRootSignature(m_rootSignature.Get());
+    pCmdList->SetPipelineState(m_pso.Get());
+    
+    ID3D12DescriptorHeap* heaps[] = { frame.srvUavHeap.Get() };
+    pCmdList->SetDescriptorHeaps(1, heaps);
+
+    // 2. Create Descriptors
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = frame.srvUavHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = frame.srvUavHeap->GetGPUDescriptorHandleForHeapStart();
+    
+    ID3D12Device* pDevice;
+    frame.uavBuffer->GetDevice(IID_PPV_ARGS(&pDevice)); // Get device from resource
+    
+    // SRV
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1; // Only check top mip
+    srvDesc.Format = pResource->GetDesc().Format;
+    
+    // Handle typeless formats
+    if (srvDesc.Format == DXGI_FORMAT_R16G16_TYPELESS) srvDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
+    else if (srvDesc.Format == DXGI_FORMAT_R32G32_TYPELESS) srvDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
+    else if (srvDesc.Format == DXGI_FORMAT_R32_TYPELESS) srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+    else if (srvDesc.Format == DXGI_FORMAT_R24G8_TYPELESS) srvDesc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+    else if (srvDesc.Format == DXGI_FORMAT_R32G8X24_TYPELESS) srvDesc.Format = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+
+    pDevice->CreateShaderResourceView(pResource, &srvDesc, cpuHandle);
+    
+    // UAV
+    cpuHandle.ptr += pDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+    uavDesc.Buffer.NumElements = SCAN_SAMPLE_COUNT;
+    uavDesc.Buffer.StructureByteStride = sizeof(float) * 4;
+    
+    pDevice->CreateUnorderedAccessView(frame.uavBuffer.Get(), nullptr, &uavDesc, cpuHandle);
+
+    // Set Root Constants
+    D3D12_RESOURCE_DESC inputDesc = pResource->GetDesc();
+    struct { uint32_t W, H, SX, SY; } constants = { 
+        (uint32_t)inputDesc.Width, (uint32_t)inputDesc.Height, SCAN_GRID_SIZE, SCAN_GRID_SIZE 
+    };
+    pCmdList->SetComputeRoot32BitConstants(0, 4, &constants, 0);
+
+    // Set Descriptor Table
+    pCmdList->SetComputeRootDescriptorTable(1, gpuHandle);
+
+    // 3. Dispatch
+    pCmdList->Dispatch(SCAN_GRID_SIZE, SCAN_GRID_SIZE, 1);
+
+    // 4. Barrier (UAV -> Copy Src)
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = frame.uavBuffer.Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    pCmdList->ResourceBarrier(1, &barrier);
+
+    // 5. Copy to Readback
+    pCmdList->CopyResource(frame.readbackBuffer.Get(), frame.uavBuffer.Get());
+
+    // 6. Restore Barrier
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    pCmdList->ResourceBarrier(1, &barrier);
+    
+    pDevice->Release();
+
+    return true;
+}
+
+bool HeuristicScanner::GetReadbackResult(ScanResult& outResult) {
+    // We assume this is called after fence sync, so we read from the current ring index
+    // Note: The caller MUST ensure the GPU work for this ring index is complete
+    FrameResources& frame = m_frames[m_ringIndex];
+    if (!frame.readbackBuffer) return false;
+
+    // Map the readback buffer
+    void* pData = nullptr;
+    D3D12_RANGE readRange = { 0, SCAN_SAMPLE_COUNT * sizeof(float) * 4 };
+    HRESULT hr = frame.readbackBuffer->Map(0, &readRange, &pData);
+    if (FAILED(hr) || !pData) {
+        LOG_ERROR("[Scanner] Failed to map readback buffer");
+        return false;
+    }
+
+    struct float4 { float x, y, z, w; };
+    float4* samples = reinterpret_cast<float4*>(pData);
+
+    // Statistical Analysis
+    float minX = 1e9f, maxX = -1e9f;
+    float minY = 1e9f, maxY = -1e9f;
+    double sumX = 0.0, sumY = 0.0;
+    double sumSqX = 0.0, sumSqY = 0.0;
+    int nonZeroCount = 0;
+
+    for (uint32_t i = 0; i < SCAN_SAMPLE_COUNT; ++i) {
+        float x = samples[i].x;
+        float y = samples[i].y;
+
+        if (x != 0.0f || y != 0.0f) nonZeroCount++;
+
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+
+        sumX += x;
+        sumY += y;
+        sumSqX += (x * x);
+        sumSqY += (y * y);
+    }
+
+    frame.readbackBuffer->Unmap(0, nullptr);
+
+    float count = static_cast<float>(SCAN_SAMPLE_COUNT);
+    float avgX = (float)(sumX / count);
+    float avgY = (float)(sumY / count);
+    float varX = (float)((sumSqX / count) - (avgX * avgX));
+    float varY = (float)((sumSqY / count) - (avgY * avgY));
+
+    outResult.minX = minX; outResult.maxX = maxX;
+    outResult.minY = minY; outResult.maxY = maxY;
+    outResult.avgX = avgX; outResult.avgY = avgY;
+    outResult.varianceX = varX; outResult.varianceY = varY;
+    
+    // Heuristic 1: Is it empty?
+    outResult.hasData = (nonZeroCount > (SCAN_SAMPLE_COUNT * 0.05f)); // At least 5% non-zero
+
+    // Heuristic 2: Is it a solid color? (Variance near zero)
+    // Threshold: 0.0001 is very small variance
+    outResult.isUniform = (varX < 0.0001f && varY < 0.0001f);
+
+    // Heuristic 3: Valid Range for Motion Vectors
+    // MVs are usually -1.0 to 1.0 (normalized) or screen space (width/height).
+    // If we see huge numbers like 10000.0, it's likely depth or garbage.
+    // If we see mostly 0..1, it might be UVs.
+    
+    // Normalized check (-2.0 to 2.0 to be safe)
+    bool isNormalized = (minX >= -2.0f && maxX <= 2.0f && minY >= -2.0f && maxY <= 2.0f);
+    
+    // Screen space check (usually much larger) - not handled yet, assuming normalized for Streamline
+    outResult.validRange = isNormalized;
+
+    return true;
+}

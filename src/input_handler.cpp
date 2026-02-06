@@ -1,6 +1,8 @@
 #include "input_handler.h"
 #include "logger.h"
-#include <stdio.h>
+#include "streamline_integration.h"
+#include <array>
+#include <format>
 
 // Global static for the hook procedure
 static InputHandler* g_pInputHandler = nullptr;
@@ -9,7 +11,7 @@ static std::mutex g_inputHandlerMutex;
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
-            KBDLLHOOKSTRUCT* pKey = (KBDLLHOOKSTRUCT*)lParam;
+            KBDLLHOOKSTRUCT* pKey = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
             InputHandler* handler = nullptr;
             {
                 std::lock_guard<std::mutex> lock(g_inputHandlerMutex);
@@ -31,7 +33,7 @@ InputHandler& InputHandler::Get() {
 void InputHandler::RegisterHotkey(int vKey, std::function<void()> callback, const char* name) {
     std::lock_guard<std::mutex> lock(m_callbackMutex);
     m_callbacks.push_back({vKey, callback, false, std::string(name)});
-    LOG_DEBUG("Registered Hotkey: %s (Key: %d)", name, vKey);
+    LOG_DEBUG("Registered Hotkey: {} (Key: {})", name, vKey);
 }
 
 void InputHandler::UpdateHotkey(const char* name, int vKey) {
@@ -40,7 +42,7 @@ void InputHandler::UpdateHotkey(const char* name, int vKey) {
         if (cb.name == name) {
             cb.vKey = vKey;
             cb.wasPressed = false;
-            LOG_DEBUG("Updated Hotkey: %s (Key: %d)", name, vKey);
+            LOG_DEBUG("Updated Hotkey: {} (Key: {})", name, vKey);
             return;
         }
     }
@@ -51,13 +53,14 @@ void InputHandler::ClearHotkeys() {
     m_callbacks.clear();
 }
 
-const char* InputHandler::GetKeyName(int vKey) const {
-    thread_local char buf[64];
+std::string InputHandler::GetKeyName(int vKey) const {
+    std::array<char, 64> buf{};
     UINT scan = MapVirtualKeyA(vKey, MAPVK_VK_TO_VSC);
     LONG lParam = (scan << 16);
-    if (GetKeyNameTextA(lParam, buf, sizeof(buf)) > 0) return buf;
-    snprintf(buf, sizeof(buf), "Key %d", vKey);
-    return buf;
+    if (GetKeyNameTextA(lParam, buf.data(), static_cast<int>(buf.size())) > 0) {
+        return std::string(buf.data());
+    }
+    return std::format("Key {}", vKey);
 }
 
 void InputHandler::InstallHook() {
@@ -66,13 +69,12 @@ void InputHandler::InstallHook() {
         std::lock_guard<std::mutex> lock(g_inputHandlerMutex);
         g_pInputHandler = this;
     }
-    HMODULE selfModule = nullptr;
-    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCSTR>(&LowLevelKeyboardProc), &selfModule);
-    m_hHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, selfModule, 0);
+    // Get a ref-counted handle to our module so it stays loaded while the hook is active
+    GetModuleHandleExA(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+        reinterpret_cast<LPCSTR>(&LowLevelKeyboardProc), &m_selfModule);
+    m_hHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, m_selfModule, 0);
     LOG_INFO("Global Keyboard Hook Installed");
-    if (selfModule) {
-        FreeLibrary(selfModule);
-    }
 }
 
 void InputHandler::UninstallHook() {
@@ -84,16 +86,22 @@ void InputHandler::UninstallHook() {
         std::lock_guard<std::mutex> lock(g_inputHandlerMutex);
         g_pInputHandler = nullptr;
     }
+    // Release the ref-counted module handle now that the hook is removed
+    if (m_selfModule) {
+        FreeLibrary(m_selfModule);
+        m_selfModule = nullptr;
+    }
 }
 
 void InputHandler::HandleKey(int vKey) {
+    StreamlineIntegration::Get().ReflexMarker(sl::PCLMarker::eControllerInputSample);
     std::vector<std::function<void()>> callbacksToRun;
     {
         std::lock_guard<std::mutex> lock(m_callbackMutex);
         for (auto& cb : m_callbacks) {
             if (cb.vKey == vKey) {
                 if (cb.wasPressed) continue;
-                LOG_DEBUG("Global Hotkey Triggered: %s", cb.name.c_str());
+                LOG_DEBUG("Global Hotkey Triggered: {}", cb.name);
                 if (cb.callback) callbacksToRun.push_back(cb.callback);
                 cb.wasPressed = true;
             }
@@ -106,19 +114,24 @@ void InputHandler::HandleKey(int vKey) {
 
 void InputHandler::ProcessInput() {
     std::vector<std::function<void()>> callbacksToRun;
+    bool anyPressed = false;
     {
         std::lock_guard<std::mutex> lock(m_callbackMutex);
         for (auto& cb : m_callbacks) {
             SHORT state = GetAsyncKeyState(cb.vKey);
             bool isDown = (state & 0x8000) != 0;
+            if (isDown) anyPressed = true;
             if (isDown && !cb.wasPressed) {
                 cb.wasPressed = true;
-                LOG_DEBUG("Polled Hotkey Triggered: %s", cb.name.c_str());
+                LOG_DEBUG("Polled Hotkey Triggered: {}", cb.name);
                 if (cb.callback) callbacksToRun.push_back(cb.callback);
             } else if (!isDown) {
                 cb.wasPressed = false;
             }
         }
+    }
+    if (anyPressed) {
+        StreamlineIntegration::Get().ReflexMarker(sl::PCLMarker::eControllerInputSample);
     }
     for (auto& cb : callbacksToRun) {
         cb();

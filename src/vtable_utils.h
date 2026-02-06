@@ -1,29 +1,59 @@
 #pragma once
 
-#include <windows.h>
-#include <cstdint>
+#include <concepts>
 #include <cstddef>
+#include <type_traits>
+#include <windows.h>
 
-inline bool IsReadablePtrRange(const void* ptr, size_t size = sizeof(void*)) {
-    if (!ptr) return false;
-    MEMORY_BASIC_INFORMATION mbi = {};
-    if (!VirtualQuery(ptr, &mbi, sizeof(mbi))) return false;
-    if (mbi.State != MEM_COMMIT) return false;
-    if ((mbi.Protect & PAGE_NOACCESS) || (mbi.Protect & PAGE_GUARD)) return false;
+// ============================================================================
+// VTable Index Strong Types — eliminate magic numbers in hook setup
+// ============================================================================
 
-    auto base = static_cast<const uint8_t*>(mbi.BaseAddress);
-    auto end = base + mbi.RegionSize;
-    auto p = static_cast<const uint8_t*>(ptr);
-    return p >= base && (p + size) <= end;
+namespace vtable {
+
+enum class Device : size_t {
+  CreateCommandQueue     = 8,
+  CreateCommandList      = 9,
+  CreateCommittedResource = 27,
+};
+
+enum class CommandList : size_t {
+  Close                              = 9,
+  ResourceBarrier                    = 26,
+  SetComputeRootConstantBufferView   = 31,
+  SetGraphicsRootConstantBufferView  = 32,
+};
+
+enum class CommandQueue : size_t {
+  ExecuteCommandLists = 10,
+};
+
+} // namespace vtable
+
+// ============================================================================
+// Concept: D3D12 Hookable COM Interface
+// ============================================================================
+
+template<typename T>
+concept D3D12Hookable = std::is_base_of_v<IUnknown, T> && requires(T* t) {
+  { *reinterpret_cast<void***>(t) } -> std::same_as<void**&>;
+};
+
+// ============================================================================
+// VTable Utilities
+// ============================================================================
+
+template <typename T> inline void **GetVTable(T *obj) {
+  return *reinterpret_cast<void ***>(obj);
 }
 
-inline bool ResolveVTableEntry(void* object, int index, void*** outVtable, void*** outEntry) {
-    if (!object || !outVtable || !outEntry || index < 0) return false;
-    void** vtable = *reinterpret_cast<void***>(object);
-    if (!IsReadablePtrRange(vtable, sizeof(void*) * (index + 1))) return false;
-    void** entry = &vtable[index];
-    if (!IsReadablePtrRange(entry)) return false;
-    *outVtable = vtable;
-    *outEntry = entry;
-    return true;
+template <typename T> inline T GetVTableFunc(void **vtable, size_t index) {
+  return reinterpret_cast<T>(vtable[index]);
+}
+
+// Overload for strongly-typed VTable indices
+template <typename Func, typename Index>
+  requires std::is_enum_v<Index>
+inline void* GetVTableEntry(void **vtable, Index index) {
+  return vtable[static_cast<size_t>(index)];
 }

@@ -2,13 +2,23 @@
 #include <windows.h>
 #include <dxgi1_4.h>
 #include <d3d12.h>
+#include <atomic>
+#include <thread>
 #include <vector>
+#include <wrl/client.h>
 
 struct ImGui_ImplDX12_InitInfo;
 
 class ImGuiOverlay {
 public:
     static ImGuiOverlay& Get();
+
+    // Non-copyable, non-movable singleton
+    ImGuiOverlay(const ImGuiOverlay&) = delete;
+    ImGuiOverlay& operator=(const ImGuiOverlay&) = delete;
+    ImGuiOverlay(ImGuiOverlay&&) = delete;
+    ImGuiOverlay& operator=(ImGuiOverlay&&) = delete;
+
     void Initialize(IDXGISwapChain* swapChain);
     void Shutdown();
     void OnResize(UINT width, UINT height);
@@ -56,6 +66,8 @@ private:
     UINT m_height = 0;
     RECT m_prevClip = {};
     bool m_showSetupWizard = false;
+    std::thread m_metricsThread;
+    std::atomic<bool> m_metricsThreadRunning{false};
 
     float m_cachedTotalFPS = 0.0f;
     float m_cachedJitterX = 0.0f;
@@ -65,6 +77,10 @@ private:
     float m_fpsHistory[kFpsHistorySize] = {};
     int m_fpsHistoryIndex = 0;
 
+    // D3D12 resources — lifecycle managed by Initialize()/Shutdown() and
+    // EnsureDeviceResources()/ReleaseDeviceResources(). Raw pointers are used
+    // because the overlay's explicit lifecycle management is tightly coupled
+    // with ImGui backend init/teardown which expects raw pointers.
     HWND m_hwnd = nullptr;
     WNDPROC m_prevWndProc = nullptr;
     ID3D12Device* m_device = nullptr;
@@ -91,4 +107,10 @@ private:
     UINT m_srvDescriptorCount = 0;
     UINT m_srvDescriptorNext = 0;
     std::vector<UINT> m_srvFreeList;
+    struct PendingUpload {
+        Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
+        UINT64 fenceValue = 0;
+    };
+    std::vector<PendingUpload> m_pendingUploads;
+    std::atomic<bool> m_shuttingDown{false};
 };

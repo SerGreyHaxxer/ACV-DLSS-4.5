@@ -1,93 +1,100 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <string_view>
+
 // ============================================================================
-// DLSS 4 PROXY CONFIGURATION
-// ============================================================================
-// Adjust these parameters to tune the DLSS 4 behavior.
-// Frame Generation multiplier: 2x, 3x, or 4x (DLSS-G where supported)
+// DLSS 4 PROXY CONFIGURATION — Modern C++23 Typed Constants
 // ============================================================================
 
-#define DLSS4_PROXY_VERSION "4.5"
-#define DLSS4_LOG_FILE "dlss4_proxy.log"
+namespace dlss4 {
 
-// -------------------------------
-// DLSS-G Frame Generation
-// -------------------------------
-// DLSS-G can generate up to 3 additional frames per rendered frame (4x total, GPU/driver dependent).
-// Set to desired multiplier: 2, 3, or 4.
-#define DLSS4_FRAME_GEN_MULTIPLIER 4
+inline constexpr std::string_view kProxyVersion = "4.5";
+inline constexpr std::string_view kLogFile      = "dlss4_proxy.log";
 
-// Enable/Disable specific DLSS features
-#define DLSS4_ENABLE_SUPER_RESOLUTION 1
-#define DLSS4_ENABLE_RAY_RECONSTRUCTION 1
-#define DLSS4_ENABLE_FRAME_GENERATION 1
+// DLSS-G Frame Generation (2x, 3x, or 4x — GPU/driver dependent)
+inline constexpr int kDefaultFrameGenMultiplier = 4;
 
-// Super Resolution Quality Mode
-// 0 = Performance, 1 = Balanced, 2 = Quality, 3 = Ultra Quality, 4 = DLAA
-#define DLSS4_SR_QUALITY_MODE 2
+// Feature toggles
+inline constexpr bool kEnableSuperResolution   = true;
+inline constexpr bool kEnableRayReconstruction = true;
+inline constexpr bool kEnableFrameGeneration   = true;
 
-// -------------------------------
-// Hooking Configuration
-// -------------------------------
-#define HOOK_DIRECTX12 1       // AC Valhalla uses DX12
-#define HOOK_DIRECTX11 0       // Fallback if needed
+// Super Resolution Quality Mode (0=Perf, 1=Balanced, 2=Quality, 3=UltraQuality, 4=DLAA)
+inline constexpr int kDefaultSRQualityMode = 2;
 
-// -------------------------------
+// Hooking
+inline constexpr bool kHookDirectX12 = true;
+inline constexpr bool kHookDirectX11 = false;
+
 // Logging
-// -------------------------------
-#define ENABLE_LOGGING 1
-#define LOG_VERBOSE 1          // Set to 1 for detailed frame-by-frame logging
+inline constexpr bool kEnableLogging = true;
+inline constexpr bool kLogVerbose    = true;
 
-// -------------------------------
-// Motion Vector / Depth Buffer Offsets (GAME SPECIFIC)
-// -------------------------------
-// NOTE: These hardcoded offsets are unused in this version.
-// The mod now uses Dynamic Pattern Scanning and Resource Sniffing
-// to automatically detect Jitter, Color, Depth, and Motion Vectors at runtime.
-// 
-#define MOTION_VECTOR_OFFSET 0x0        // Unused (Dynamic Sniffer)
-#define DEPTH_BUFFER_OFFSET  0x0        // Unused (Dynamic Sniffer)
-#define JITTER_OFFSET        0x0        // Unused (Dynamic Pattern Scan)
+// NGX SDK
+inline constexpr uint32_t kNgxAppId = 0; // Generic/Development AppID
+inline constexpr const wchar_t* kNgxDlssDllName  = L"nvngx_dlss.dll";
+inline constexpr const wchar_t* kNgxDlssgDllName = L"nvngx_dlssg.dll";
 
-// -------------------------------
-// NGX SDK Paths
-// -------------------------------
-// The proxy will look for these DLLs in the game directory first,
-// then fall back to the system path.
-#define NGX_DLSS_DLL_NAME    L"nvngx_dlss.dll"
-#define NGX_DLSSG_DLL_NAME   L"nvngx_dlssg.dll"  // Frame Generation module
+} // namespace dlss4
 
-// Application ID for NGX (Spoofing Generic/Dev ID to force DLSS enablement)
-#define NGX_APP_ID 0        // Generic/Development AppID
+// ============================================================================
+// Camera Scanning Heuristics
+// ============================================================================
 
-// -------------------------------
-// Resource Detector & Camera Heuristics
-// -------------------------------
-#define RESOURCE_CLEANUP_INTERVAL 900 // Frames between clearing resource cache
-#define CAMERA_CBV_MIN_SIZE (sizeof(float) * 32) // Minimum size for camera constant buffer
-#define CAMERA_POS_TOLERANCE 100000.0f // Max reasonable value for camera position
-#define CAMERA_SCAN_MIN_INTERVAL_FRAMES 2
-#define CAMERA_SCAN_STALE_FRAMES 120
-#define CAMERA_SCAN_FORCE_FULL_FRAMES 300
-#define CAMERA_SCAN_MAX_CBVS_PER_FRAME 64
-#define CAMERA_DESCRIPTOR_SCAN_MAX 32
-#define CAMERA_SCAN_LOG_INTERVAL 120
-#define CAMERA_SCAN_EXTENDED_MULTIPLIER 3
-#define CAMERA_SCAN_FINE_STRIDE 16
-#define CAMERA_SCAN_MED_STRIDE 128
-#define CAMERA_GRACE_FRAMES 240
-#define RESOURCE_EXPECTED_MIN_RATIO 0.35f
-#define RESOURCE_EXPECTED_MAX_RATIO 1.6f
-#define RESOURCE_EXPECTED_MATCH_BONUS 0.2f
-#define RESOURCE_MSAA_PENALTY 0.2f
-#define RESOURCE_MIP_PENALTY 0.1f
-#define RESOURCE_BARRIER_SCAN_MAX 16
-#define RESOURCE_STALE_FRAMES 120
-#define RESOURCE_RECENCY_FRAMES 60
-#define RESOURCE_RECENCY_BONUS 0.25f
-#define RESOURCE_FREQUENCY_BONUS 0.2f
-#define RESOURCE_FREQUENCY_HIT_CAP 30
-#define DEEPDVC_LUMA_SAMPLE_INTERVAL_MS 250
-#define DEEPDVC_LUMA_SAMPLE_SIZE 64
-#define STREAMLINE_INVALID_PARAM_FALLBACK_FRAMES 120
-#define STREAMLINE_INVALID_PARAM_DISABLE_FRAMES 240
+namespace camera_config {
+
+inline constexpr size_t   kCbvMinSize            = sizeof(float) * 32;
+inline constexpr float    kPosTolerance           = 100'000.0f;
+inline constexpr uint32_t kScanMinIntervalFrames  = 2;
+inline constexpr uint32_t kScanStaleFrames        = 120;
+inline constexpr uint32_t kScanForceFullFrames    = 300;
+inline constexpr uint32_t kScanMaxCbvsPerFrame    = 64;
+inline constexpr uint32_t kDescriptorScanMax      = 32;
+inline constexpr uint32_t kScanLogInterval        = 120;
+inline constexpr uint32_t kScanExtendedMultiplier = 3;
+inline constexpr uint32_t kScanFineStride         = 16;
+inline constexpr uint32_t kScanMedStride          = 128;
+inline constexpr uint32_t kGraceFrames            = 240;
+
+} // namespace camera_config
+
+// ============================================================================
+// Resource Detection Heuristics
+// ============================================================================
+
+namespace resource_config {
+
+inline constexpr uint32_t kCleanupInterval     = 900;
+inline constexpr float    kExpectedMinRatio     = 0.35f;
+inline constexpr float    kExpectedMaxRatio     = 1.6f;
+inline constexpr float    kExpectedMatchBonus   = 0.2f;
+inline constexpr float    kMsaaPenalty          = 0.2f;
+inline constexpr float    kMipPenalty           = 0.1f;
+inline constexpr uint32_t kBarrierScanMax       = 64;
+inline constexpr uint32_t kStaleFrames          = 120;
+inline constexpr uint32_t kRecencyFrames        = 60;
+inline constexpr float    kRecencyBonus         = 0.25f;
+inline constexpr float    kFrequencyBonus       = 0.2f;
+inline constexpr uint32_t kFrequencyHitCap      = 30;
+
+} // namespace resource_config
+
+// ============================================================================
+// DeepDVC & Streamline
+// ============================================================================
+
+namespace dvc_config {
+
+inline constexpr uint32_t kLumaSampleIntervalMs = 250;
+inline constexpr uint32_t kLumaSampleSize       = 64;
+
+} // namespace dvc_config
+
+namespace streamline_config {
+
+inline constexpr uint32_t kInvalidParamFallbackFrames = 120;
+inline constexpr uint32_t kInvalidParamDisableFrames  = 240;
+
+} // namespace streamline_config

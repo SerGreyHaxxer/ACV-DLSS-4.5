@@ -15,11 +15,17 @@ struct KeyCallback {
 class InputHandler {
 public:
     static InputHandler& Get();
+
+    // Non-copyable, non-movable singleton
+    InputHandler(const InputHandler&) = delete;
+    InputHandler& operator=(const InputHandler&) = delete;
+    InputHandler(InputHandler&&) = delete;
+    InputHandler& operator=(InputHandler&&) = delete;
     
     void RegisterHotkey(int vKey, std::function<void()> callback, const char* name);
     void UpdateHotkey(const char* name, int vKey);
     void ClearHotkeys();
-    const char* GetKeyName(int vKey) const;
+    [[nodiscard]] std::string GetKeyName(int vKey) const;
     
     // Global Hook
     void InstallHook();
@@ -35,4 +41,5 @@ private:
     std::vector<KeyCallback> m_callbacks;
     std::mutex m_callbackMutex;
     HHOOK m_hHook = nullptr;
+    HMODULE m_selfModule = nullptr; // Prevent premature unload
 };

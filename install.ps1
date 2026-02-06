@@ -141,27 +141,6 @@ foreach ($file in $sdkDlls) {
     }
 }
 
-# 5. Registry Fix
-Write-Host "Applying Registry Fix..."
-$regContent = @"
-Windows Registry Editor Version 5.00
-
-[HKEY_LOCAL_MACHINE\SOFTWARE\NVIDIA Corporation\Global\NGXCore]
-"EnableBetaSuperSampling"=dword:00000001
-"ShowDlssIndicator"=dword:00000000
-
-[HKEY_CURRENT_USER\Software\NVIDIA Corporation\Global\NGXCore]
-"EnableBetaSuperSampling"=dword:00000001
-"ShowDlssIndicator"=dword:00000000
-"@
-
-$regPath = "$gamePath\EnableNvidiaSigOverride.reg"
-$regContent | Out-File -FilePath $regPath -Encoding ASCII
-Write-Host "  [OK] Created $regPath" -ForegroundColor Gray
-
-# Attempt auto-import (might ask for admin)
-Start-Process "reg" -ArgumentList "import `"$regPath`"" -Verb RunAs -Wait
-
 Write-Host "==============================================" -ForegroundColor Green
 Write-Host "   INSTALLATION COMPLETE" -ForegroundColor Green
 Write-Host "==============================================" -ForegroundColor Green
