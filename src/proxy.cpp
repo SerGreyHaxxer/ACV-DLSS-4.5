@@ -1,3 +1,19 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #include "proxy.h"
 #include "config_manager.h"
 #include "crash_handler.h"
@@ -67,7 +83,7 @@ private:
 };
 
 static std::atomic<bool> s_startupTraceEnabled(true);
-// Lock hierarchy level 5 — lowest priority (Logging tier).
+// Lock hierarchy level 5 â€” lowest priority (Logging tier).
 static std::mutex s_startupTraceMutex;
 static std::ofstream s_startupTraceFile;
 
@@ -390,3 +406,4 @@ HRESULT WINAPI Proxy_D3D12CreateDevice(IUnknown *pAdapter,
 }
 
 } // extern "C"
+

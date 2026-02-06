@@ -1,3 +1,19 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #include <MinHook.h>
 #include <atomic>
 #include <d3d12.h>
@@ -106,7 +122,7 @@ void SetPatternJitterAddress(uintptr_t address) {
   g_JitterValid.store(address != 0);
 }
 
-// Isolated SEH helper — no C++ objects on stack (extern "C" avoids UB with destructors)
+// Isolated SEH helper â€” no C++ objects on stack (extern "C" avoids UB with destructors)
 extern "C" static bool SafeReadFloatPair(uintptr_t addr, float *outX, float *outY) {
   const float *vals = reinterpret_cast<const float *>(addr);
   __try {
@@ -312,7 +328,7 @@ void STDMETHODCALLTYPE HookedSetComputeRootCbv(
 }
 
 // ============================================================================
-// CLEAR HOOKS — Highest-confidence resource identification
+// CLEAR HOOKS â€” Highest-confidence resource identification
 // ============================================================================
 
 void STDMETHODCALLTYPE
@@ -359,7 +375,7 @@ HookedClearRenderTargetView(ID3D12GraphicsCommandList *pThis,
 }
 
 // ============================================================================
-// DEVICE VIEW-CREATION HOOKS — Feed descriptor tracker for format resolution
+// DEVICE VIEW-CREATION HOOKS â€” Feed descriptor tracker for format resolution
 // ============================================================================
 
 void STDMETHODCALLTYPE
@@ -432,7 +448,7 @@ HookedCreateDepthStencilView(ID3D12Device *pThis, ID3D12Resource *pResource,
 }
 
 // ============================================================================
-// CreatePlacedResource HOOK — captures pool-allocated resources
+// CreatePlacedResource HOOK â€” captures pool-allocated resources
 // ============================================================================
 
 HRESULT STDMETHODCALLTYPE Hooked_CreatePlacedResource(
@@ -456,7 +472,7 @@ void EnsureCommandListHooks(ID3D12GraphicsCommandList * /*pList*/) {
   // and crashes caused by hot-path hooks (Close, ResourceBarrier, CBV).
   //
   // Previously hooked: Close, ResourceBarrier, SetGraphics/ComputeRootCBV,
-  //                    ClearDSV, ClearRTV — all extremely hot paths that
+  //                    ClearDSV, ClearRTV â€” all extremely hot paths that
   //                    triggered access violations in game code.
   //
   // Camera data now comes from jitter pattern scan only.
@@ -534,7 +550,7 @@ void EnsureD3D12VTableHooks(ID3D12Device *pDevice) {
   //   - Streamline internal resource management
   //   - Jitter from pattern scan
   StreamlineIntegration::Get().Initialize(pDevice);
-  LOG_INFO("[HOOK] Device registered (stealth — no vtable hooks)");
+  LOG_INFO("[HOOK] Device registered (stealth â€” no vtable hooks)");
 }
 
 void WrapCreatedD3D12Device(REFIID /*riid*/, void **ppDevice, bool /*takeOwnership*/) {
@@ -576,14 +592,14 @@ void InstallD3D12Hooks() {
   if (installed.exchange(true))
     return;
   // Stealth mode: Only initialize MinHook framework.
-  // NO inline hooks on D3D12 functions — these trigger EasyAntiCheat detection
+  // NO inline hooks on D3D12 functions â€” these trigger EasyAntiCheat detection
   // and cause access violations (0xC0000005) when EAC corrupts game state.
   //
   // The device and command queue are obtained safely through DXGI factory
   // wrapping (WrappedIDXGIFactory::CreateSwapChain extracts the queue).
   // Present hook uses direct vtable pointer swap (data-only, no code patching).
   HookManager::Get().Initialize();
-  LOG_INFO("[HOOK] MinHook initialized (stealth mode — no D3D12 inline hooks)");
+  LOG_INFO("[HOOK] MinHook initialized (stealth mode â€” no D3D12 inline hooks)");
 }
 bool InitializeHooks() { return true; }
 void CleanupHooks() {
@@ -592,3 +608,4 @@ void CleanupHooks() {
   ImGuiOverlay::Get().Shutdown();
   StreamlineIntegration::Get().Shutdown();
 }
+

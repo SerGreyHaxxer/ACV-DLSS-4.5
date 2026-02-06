@@ -1,3 +1,19 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #include "imgui_overlay.h"
 #include "config_manager.h"
 #include "input_handler.h"
@@ -13,7 +29,7 @@
 #include <cmath>
 
 // ============================================================================
-// NvAPI Metrics (reused from original — independent of GUI library)
+// NvAPI Metrics (reused from original â€” independent of GUI library)
 // ============================================================================
 namespace {
 
@@ -228,7 +244,7 @@ void ImGuiOverlay::Shutdown() {
 }
 
 // ============================================================================
-// WndProc hook — captures mouse wheel scroll
+// WndProc hook â€” captures mouse wheel scroll
 // ============================================================================
 
 LRESULT CALLBACK ImGuiOverlay::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -264,7 +280,7 @@ void ImGuiOverlay::OnResize(UINT width, UINT height) {
   m_width = width; m_height = height;
   if (m_initialized) {
     m_renderer.OnResize();
-    // Render targets were released — they will be recreated on the next
+    // Render targets were released â€” they will be recreated on the next
     // BeginFrame call inside Render().  No action needed here.
   }
 }
@@ -345,7 +361,7 @@ void ImGuiOverlay::UpdateControls() {
 }
 
 // ============================================================================
-// Animation helpers — compute transform based on animation type
+// Animation helpers â€” compute transform based on animation type
 // ============================================================================
 
 float ImGuiOverlay::ComputeAnimProgress(float rawProgress, bool opening) const {
@@ -512,7 +528,7 @@ void ImGuiOverlay::BeginWidgetFrame() {
     if (!m_cursorUnlocked) {
       GetClipCursor(&m_prevClip);
       ClipCursor(nullptr);
-      // Force system cursor hidden — we draw our own Valhalla cursor.
+      // Force system cursor hidden â€” we draw our own Valhalla cursor.
       // ShowCursor uses an internal counter; drain it to ensure hidden.
       while (ShowCursor(FALSE) >= 0) {}
       SetCursor(nullptr);
@@ -529,7 +545,7 @@ void ImGuiOverlay::BeginWidgetFrame() {
 }
 
 // ============================================================================
-// WIDGETS — Immediate-mode GUI widgets drawn with the D2D renderer
+// WIDGETS â€” Immediate-mode GUI widgets drawn with the D2D renderer
 // ============================================================================
 
 void ImGuiOverlay::NorseSeparator() {
@@ -576,7 +592,7 @@ void ImGuiOverlay::SectionHeader(const char* label, bool* open) {
     m_renderer.DrawLine(chevX + 2.5f, chevY, chevX - 1.5f, chevY + 4.0f, chevColor, 1.8f);
   }
 
-  // Label text — accent color when open, secondary when closed
+  // Label text â€” accent color when open, secondary when closed
   D2D1_COLOR_F textColor = *open ? m_accent : vtheme::kTextPrimary;
   textColor.r = vanim::Lerp(textColor.r, m_accentBright.r, hoverT * 0.3f);
   textColor.g = vanim::Lerp(textColor.g, m_accentBright.g, hoverT * 0.3f);
@@ -659,7 +675,7 @@ bool ImGuiOverlay::Button(const char* label, float w) {
 
   float cr = 6.0f;
 
-  // Button background — subtle fill with border
+  // Button background â€” subtle fill with border
   D2D1_COLOR_F bg = vtheme::kBgWidget;
   bg.r = vanim::Lerp(bg.r, vtheme::kBgHover.r, hoverT);
   bg.g = vanim::Lerp(bg.g, vtheme::kBgHover.g, hoverT);
@@ -667,7 +683,7 @@ bool ImGuiOverlay::Button(const char* label, float w) {
   if (pressed) bg = vtheme::kBgActive;
   m_renderer.FillRoundedRect(x, y, w, h, cr, bg);
 
-  // Thin border — brighter on hover
+  // Thin border â€” brighter on hover
   D2D1_COLOR_F border = vtheme::hex(0x3D444D, 0.4f);
   border.r = vanim::Lerp(border.r, m_accent.r, hoverT * 0.5f);
   border.g = vanim::Lerp(border.g, m_accent.g, hoverT * 0.5f);
@@ -675,7 +691,7 @@ bool ImGuiOverlay::Button(const char* label, float w) {
   border.a = vanim::Lerp(0.35f, 0.7f, hoverT);
   m_renderer.OutlineRoundedRect(x, y, w, h, cr, border, 1.0f);
 
-  // Text — accent color on hover
+  // Text â€” accent color on hover
   D2D1_COLOR_F textColor = vtheme::kTextPrimary;
   textColor.r = vanim::Lerp(textColor.r, m_accentBright.r, hoverT * 0.6f);
   textColor.g = vanim::Lerp(textColor.g, m_accentBright.g, hoverT * 0.6f);
@@ -723,7 +739,7 @@ bool ImGuiOverlay::Checkbox(const char* label, bool* value, bool enabled) {
   float togY = y + (rowH - togH) * 0.5f;
   float togR = togH * 0.5f; // pill radius
 
-  // Track background — interpolate between off/on colors
+  // Track background â€” interpolate between off/on colors
   D2D1_COLOR_F trackOff = vtheme::hex(0x30363D, 1.0f);
   D2D1_COLOR_F trackOn = m_accent;
   if (!enabled) { trackOff.a = 0.3f; trackOn.a = 0.3f; }
@@ -734,7 +750,7 @@ bool ImGuiOverlay::Checkbox(const char* label, bool* value, bool enabled) {
   trackColor.a = vanim::Lerp(trackOff.a, trackOn.a, toggleT);
   m_renderer.FillRoundedRect(togX, togY, togW, togH, togR, trackColor);
 
-  // Knob — slides left to right
+  // Knob â€” slides left to right
   float knobPad = 2.0f;
   float knobD = togH - knobPad * 2.0f;
   float knobMinX = togX + knobPad;
@@ -768,7 +784,7 @@ bool ImGuiOverlay::SliderFloat(const char* label, float* value, float vmin, floa
   float w = m_contentWidth;
   float labelH = 20.0f;
 
-  // Label row — label left, value right
+  // Label row â€” label left, value right
   std::string valStr = std::vformat(fmt, std::make_format_args(*value));
   D2D1_COLOR_F textColor = enabled ? vtheme::kTextSecondary : vtheme::hex(0x484F58, 1.0f);
   m_renderer.DrawTextA(label, x + 4.0f, y, w * 0.65f, labelH, textColor, vtheme::kFontSmall);
@@ -817,7 +833,7 @@ bool ImGuiOverlay::SliderFloat(const char* label, float* value, float vmin, floa
     }
   }
 
-  // Grab handle — circle style
+  // Grab handle â€” circle style
   float grabR = 7.0f;
   bool isDragging = (m_activeId == id);
   bool grabHovered = enabled && PointInRect(m_input.mouseX, m_input.mouseY, grabCenterX - grabR - 2, trackY - grabR - 2, grabR * 2 + 4, grabR * 2 + 4);
@@ -1078,7 +1094,7 @@ void ImGuiOverlay::BuildMainPanel() {
   // --- Panel shadow (multi-layer) ---
   BuildPanelShadow(panelDrawX, panelDrawY, panelW, panelH, alpha);
 
-  // --- Panel background — clean solid with subtle top-to-bottom gradient ---
+  // --- Panel background â€” clean solid with subtle top-to-bottom gradient ---
   D2D1_COLOR_F bgTop = vtheme::kBgPanel;
   D2D1_COLOR_F bgBottom = vtheme::kBgDeep;
   bgTop.a *= alpha * panelOpacity;
@@ -1094,7 +1110,7 @@ void ImGuiOverlay::BuildMainPanel() {
   D2D1_COLOR_F titleBg = vtheme::hex(0x0D1117, 0.98f * alpha);
   m_renderer.FillRect(panelDrawX, panelDrawY, panelW, titleH, titleBg);
 
-  // Title text — clean and minimal
+  // Title text â€” clean and minimal
   m_renderer.DrawTextA("TENSOR CURIE", panelDrawX + 16.0f, panelDrawY, panelW * 0.5f, titleH,
                        m_accent, vtheme::kFontTitle * fontScl, ValhallaRenderer::TextAlign::Left, true);
   m_renderer.DrawTextA("DLSS 4.5", panelDrawX + 16.0f, panelDrawY, panelW - 56.0f, titleH,
@@ -1122,7 +1138,7 @@ void ImGuiOverlay::BuildMainPanel() {
     }
   }
 
-  // Close button [X] — minimal circle style
+  // Close button [X] â€” minimal circle style
   float closeS = 24.0f;
   float closeX = panelDrawX + panelW - closeS - 12.0f;
   float closeY = panelDrawY + (titleH - closeS) * 0.5f;
@@ -1140,7 +1156,7 @@ void ImGuiOverlay::BuildMainPanel() {
     return;
   }
 
-  // Title bar separator — subtle line
+  // Title bar separator â€” subtle line
   m_renderer.DrawLine(panelDrawX, panelDrawY + titleH, panelDrawX + panelW, panelDrawY + titleH, vtheme::hex(0x30363D, 0.4f), 1.0f);
 
   // --- Status bar ---
@@ -1736,7 +1752,7 @@ void ImGuiOverlay::BuildMainPanel() {
 
   m_renderer.PopClip();
 
-  // --- Scrollbar — minimal thin rail ---
+  // --- Scrollbar â€” minimal thin rail ---
   if (m_contentHeight > m_visibleHeight) {
     float sbW = vtheme::kScrollbarW;
     float sbX = panelDrawX + panelW - sbW - 3.0f;
@@ -1760,7 +1776,7 @@ void ImGuiOverlay::BuildMainPanel() {
 }
 
 // ============================================================================
-// Customization Section — Full UI customization panel
+// Customization Section â€” Full UI customization panel
 // ============================================================================
 
 void ImGuiOverlay::BuildCustomization() {
@@ -1987,7 +2003,7 @@ void ImGuiOverlay::BuildSetupWizard() {
   // Dark overlay behind wizard
   m_renderer.FillRect(0, 0, static_cast<float>(m_width), static_cast<float>(m_height), vtheme::hex(0x000000, 0.55f));
 
-  // Wizard panel — clean card style
+  // Wizard panel â€” clean card style
   m_renderer.FillRoundedRect(wizX, wizY, wizW, wizH, 12.0f, vtheme::hex(0x161B22, 0.98f));
   m_renderer.OutlineRoundedRect(wizX, wizY, wizW, wizH, 12.0f, vtheme::hex(0x30363D, 0.4f), 1.0f);
 
@@ -2055,7 +2071,7 @@ void ImGuiOverlay::BuildSetupWizard() {
 }
 
 // ============================================================================
-// FPS Overlay — Valhalla Themed
+// FPS Overlay â€” Valhalla Themed
 // ============================================================================
 
 void ImGuiOverlay::BuildFPSOverlay() {
@@ -2100,7 +2116,7 @@ void ImGuiOverlay::BuildFPSOverlay() {
     default:                       boxX = screenW - boxW - margin; boxY = margin; break; // TopRight
   }
 
-  // --- Background — clean frosted panel ---
+  // --- Background â€” clean frosted panel ---
   m_renderer.FillRoundedRect(boxX, boxY, boxW, boxH, 8.0f * fpsScale, vtheme::hex(0x0D1117, fpsOpacity * 0.92f));
   m_renderer.OutlineRoundedRect(boxX, boxY, boxW, boxH, 8.0f * fpsScale, vtheme::hex(0x30363D, 0.3f), 1.0f);
 
@@ -2176,7 +2192,7 @@ void ImGuiOverlay::BuildFPSOverlay() {
 }
 
 // ============================================================================
-// Vignette — D2D radial gradient (replaces D3D12 texture approach)
+// Vignette â€” D2D radial gradient (replaces D3D12 texture approach)
 // ============================================================================
 
 void ImGuiOverlay::BuildVignette() {
@@ -2208,7 +2224,7 @@ void ImGuiOverlay::BuildDebugWindow() {
   std::string debugInfo = ResourceDetector::Get().GetDebugInfo();
   if (debugInfo.empty()) debugInfo = "No debug info available yet...";
 
-  // Simple text wrapping — show first ~10 lines
+  // Simple text wrapping â€” show first ~10 lines
   float textY = dbgY + 38.0f;
   size_t pos = 0;
   for (int line = 0; line < 10 && pos < debugInfo.size(); ++line) {
@@ -2279,7 +2295,7 @@ void ImGuiOverlay::Render() {
     m_height = desc.BufferDesc.Height;
     m_renderer.Shutdown();
     m_renderer.Initialize(m_device, m_queue, m_swapChain, m_backBufferCount);
-    // Re-query index — it may have changed after Shutdown/Initialize
+    // Re-query index â€” it may have changed after Shutdown/Initialize
     backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
     if (!m_renderer.BeginFrame(backBufferIndex)) {
       ConfigManager::Get().SaveIfDirty();
@@ -2319,3 +2335,4 @@ void ImGuiOverlay::Render() {
   m_renderer.EndFrame();
   ConfigManager::Get().SaveIfDirty();
 }
+

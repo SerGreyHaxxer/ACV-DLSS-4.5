@@ -1,3 +1,19 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #include "heuristic_scanner.h"
 #include "logger.h"
 #include "shaders/scanner_cs.h"
@@ -181,7 +197,7 @@ bool HeuristicScanner::AnalyzeTexture(ID3D12GraphicsCommandList* pCmdList, ID3D1
     ID3D12Device* pDevice = nullptr;
     frame.uavBuffer->GetDevice(IID_PPV_ARGS(&pDevice));
     if (!pDevice) return false;
-    // RAII release — prevents leak on any early return
+    // RAII release â€” prevents leak on any early return
     struct DeviceGuard { ID3D12Device* d; ~DeviceGuard() { if (d) d->Release(); } } deviceGuard{pDevice};
     
     // SRV
@@ -313,12 +329,12 @@ bool HeuristicScanner::GetReadbackResult(ScanResult& outResult) {
 
     // Heuristic 3: Valid Range for Motion Vectors
     // MVs are usually -1.0 to 1.0 (normalized) or screen space (width/height).
-    // Screen-space MVs can have values up to ±render_resolution.
+    // Screen-space MVs can have values up to Â±render_resolution.
     
     // Normalized check (-2.0 to 2.0 to be safe)
     bool isNormalized = (minX >= -2.0f && maxX <= 2.0f && minY >= -2.0f && maxY <= 2.0f);
     
-    // Screen-space check: values bounded by typical resolutions (±8192 covers 8K)
+    // Screen-space check: values bounded by typical resolutions (Â±8192 covers 8K)
     bool isScreenSpace = !isNormalized &&
         (minX >= -8192.0f && maxX <= 8192.0f && minY >= -8192.0f && maxY <= 8192.0f);
     
@@ -327,3 +343,4 @@ bool HeuristicScanner::GetReadbackResult(ScanResult& outResult) {
 
     return true;
 }
+

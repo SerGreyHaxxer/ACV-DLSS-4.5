@@ -1,3 +1,19 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #include "resource_detector.h"
 #include "config_manager.h"
 #include "dlss4_config.h"
@@ -132,7 +148,7 @@ void ResourceDetector::UpdateHeuristics(ID3D12CommandQueue *pQueue) {
   if (!bestCandidate)
     return;
 
-  // Run Analysis — wait for GPU to finish previous submission first
+  // Run Analysis â€” wait for GPU to finish previous submission first
   if (m_fence && m_fenceVal > 1) {
     if (m_fence->GetCompletedValue() < m_fenceVal - 1) {
       m_fence->SetEventOnCompletion(m_fenceVal - 1, m_fenceEvent);
@@ -160,7 +176,7 @@ void ResourceDetector::UpdateHeuristics(ID3D12CommandQueue *pQueue) {
 
 void ResourceDetector::NewFrame() {
   std::unique_lock<std::shared_mutex> lock(m_mutex);
-  m_frameCount.fetch_add(1, std::memory_order_relaxed); // under unique_lock — relaxed is fine
+  m_frameCount.fetch_add(1, std::memory_order_relaxed); // under unique_lock â€” relaxed is fine
   const uint64_t currentFrame = m_frameCount.load(std::memory_order_relaxed);
 
   auto isStale = [currentFrame, this](const ResourceCandidate &cand) {
@@ -896,7 +912,7 @@ ID3D12Resource *ResourceDetector::GetBestColorCandidate() {
 }
 
 uint64_t ResourceDetector::GetFrameCount() {
-  // Lock-free read — acquire ensures we see at least the most recent increment
+  // Lock-free read â€” acquire ensures we see at least the most recent increment
   return m_frameCount.load(std::memory_order_acquire);
 }
 
@@ -936,3 +952,4 @@ void ResourceDetector::LogDebugInfo() {
       LOG_INFO("[MEM] {}", line);
   }
 }
+

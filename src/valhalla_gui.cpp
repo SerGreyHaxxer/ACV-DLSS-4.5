@@ -1,15 +1,31 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #include "valhalla_gui.h"
 #include "logger.h"
 #include <cstring>
 #include <locale>
 #include <codecvt>
 
-// Linking handled by CMakeLists.txt — no #pragma comment(lib) needed
+// Linking handled by CMakeLists.txt â€” no #pragma comment(lib) needed
 
 using Microsoft::WRL::ComPtr;
 
 // ============================================================================
-// ValhallaRenderer — D3D11On12 + Direct2D backend
+// ValhallaRenderer â€” D3D11On12 + Direct2D backend
 // ============================================================================
 
 bool ValhallaRenderer::Initialize(ID3D12Device* d3d12Device, ID3D12CommandQueue* cmdQueue,
@@ -379,7 +395,7 @@ void ValhallaRenderer::PopClip() {
 }
 
 // ============================================================================
-// Vignette — radial gradient drawn with D2D
+// Vignette â€” radial gradient drawn with D2D
 // ============================================================================
 
 void ValhallaRenderer::DrawVignette(float screenW, float screenH,
@@ -408,3 +424,4 @@ void ValhallaRenderer::DrawVignette(float screenW, float screenH,
 
   m_d2dContext->FillRectangle(D2D1::RectF(0, 0, screenW, screenH), vignetteBrush.Get());
 }
+

@@ -1,3 +1,19 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #include "streamline_integration.h"
 #include "config_manager.h"
 #include "dlss4_config.h"
@@ -310,7 +326,7 @@ void StreamlineIntegration::UpdateOptions() {
 }
 
 // ---------------------------------------------------------------------------
-// Dynamic Smart Frame Gen — adjust FG multiplier based on rolling-average FPS
+// Dynamic Smart Frame Gen â€” adjust FG multiplier based on rolling-average FPS
 // ---------------------------------------------------------------------------
 
 void StreamlineIntegration::UpdateFrameTiming(float fps) {
@@ -336,14 +352,14 @@ void StreamlineIntegration::UpdateSmartFrameGen() {
     sum += m_fpsRing[i];
   m_smartFgRollingAvg = sum / static_cast<float>(m_fpsRingSamples);
 
-  // Map FPS to a target multiplier.  Lower base FPS → higher multiplier to
-  // compensate.  Higher base FPS → lower multiplier (diminishing returns and
+  // Map FPS to a target multiplier.  Lower base FPS â†’ higher multiplier to
+  // compensate.  Higher base FPS â†’ lower multiplier (diminishing returns and
   // higher latency penalty).
   //
-  //   Base FPS ≤ 20  → 4x  (generate 3 extra frames)
-  //   Base FPS ≤ 40  → 3x
-  //   Base FPS ≤ 70  → 2x
-  //   Base FPS > 70  → user's configured multiplier (or 2x minimum)
+  //   Base FPS â‰¤ 20  â†’ 4x  (generate 3 extra frames)
+  //   Base FPS â‰¤ 40  â†’ 3x
+  //   Base FPS â‰¤ 70  â†’ 2x
+  //   Base FPS > 70  â†’ user's configured multiplier (or 2x minimum)
   //
   // Users can still override with m_smartFgAutoDisable to turn FG off entirely
   // above a certain threshold.
@@ -356,7 +372,7 @@ void StreamlineIntegration::UpdateSmartFrameGen() {
   } else if (m_smartFgRollingAvg <= 70.0f) {
     computed = 2;
   } else {
-    // Above 70 FPS — use user's configured value (at least 2)
+    // Above 70 FPS â€” use user's configured value (at least 2)
     computed = (std::max)(m_frameGenMultiplier, 2);
   }
 
@@ -368,7 +384,7 @@ void StreamlineIntegration::UpdateSmartFrameGen() {
     int prev = m_smartFgComputedMult;
     m_smartFgComputedMult = computed;
     m_optionsDirty = true;
-    LOG_INFO("[SmartFG] Rolling avg {:.1f} FPS → multiplier {}x (was {}x)",
+    LOG_INFO("[SmartFG] Rolling avg {:.1f} FPS â†’ multiplier {}x (was {}x)",
              m_smartFgRollingAvg, computed, prev);
   }
 
@@ -377,13 +393,13 @@ void StreamlineIntegration::UpdateSmartFrameGen() {
     if (!m_smartFgForceDisable) {
       m_smartFgForceDisable = true;
       m_optionsDirty = true;
-      LOG_INFO("[SmartFG] Base FPS {:.0f} > threshold {:.0f} — disabling FG",
+      LOG_INFO("[SmartFG] Base FPS {:.0f} > threshold {:.0f} â€” disabling FG",
                m_smartFgRollingAvg, m_smartFgAutoDisableFps);
     }
   } else if (m_smartFgForceDisable) {
     m_smartFgForceDisable = false;
     m_optionsDirty = true;
-    LOG_INFO("[SmartFG] Base FPS {:.0f} ≤ threshold {:.0f} — re-enabling FG",
+    LOG_INFO("[SmartFG] Base FPS {:.0f} â‰¤ threshold {:.0f} â€” re-enabling FG",
              m_smartFgRollingAvg, m_smartFgAutoDisableFps);
   }
 
@@ -547,3 +563,4 @@ void StreamlineIntegration::ReleaseResources() {
   m_motionVectors.Reset();
   m_backBuffer.Reset();
 }
+

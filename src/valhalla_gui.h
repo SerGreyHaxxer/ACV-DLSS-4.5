@@ -1,6 +1,22 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #pragma once
 // ============================================================================
-// Valhalla GUI — Custom D2D rendering backend + immediate-mode widget system
+// Valhalla GUI â€” Custom D2D rendering backend + immediate-mode widget system
 // Zero third-party GUI dependencies. Uses Windows D3D11On12 + Direct2D + DirectWrite.
 // ============================================================================
 #include <d3d12.h>
@@ -21,7 +37,7 @@
 #include <vector>
 
 // ============================================================================
-// THEME — Modern dark panel with NVIDIA-inspired green accent
+// THEME â€” Modern dark panel with NVIDIA-inspired green accent
 // ============================================================================
 namespace vtheme {
 
@@ -33,7 +49,7 @@ inline D2D1_COLOR_F hex(uint32_t c, float a = 1.0f) {
           (c & 0xFF) / 255.0f, a};
 }
 
-// Primary palette — Modern dark
+// Primary palette â€” Modern dark
 inline const auto kBgDeep      = hex(0x0D1117, 0.97f);   // Deepest background
 inline const auto kBgPanel     = hex(0x161B22, 0.96f);   // Panel background
 inline const auto kBgSection   = hex(0x1C2128, 1.0f);    // Section header bg
@@ -41,12 +57,12 @@ inline const auto kBgWidget    = hex(0x21262D, 1.0f);    // Widget background
 inline const auto kBgHover     = hex(0x30363D, 1.0f);    // Hover state
 inline const auto kBgActive    = hex(0x3D444D, 1.0f);    // Active/pressed
 
-// Accent — NVIDIA green / tech teal
+// Accent â€” NVIDIA green / tech teal
 inline const auto kGold        = hex(0x76B900, 1.0f);    // Primary accent (NVIDIA green)
 inline const auto kGoldBright  = hex(0x8ED610, 1.0f);    // Hover/active accent
 inline const auto kGoldDim     = hex(0x4A7A00, 0.50f);   // Borders, inactive
 
-// Text — High contrast on dark backgrounds
+// Text â€” High contrast on dark backgrounds
 inline const auto kTextPrimary = hex(0xE6EDF3, 1.0f);    // Main text (bright white)
 inline const auto kTextSecondary = hex(0x8B949E, 1.0f);  // Muted text
 inline const auto kTextGold    = hex(0x76B900, 1.0f);    // Highlighted / accent text
@@ -65,7 +81,7 @@ inline const auto kSliderGrab  = hex(0x8ED610, 1.0f);
 inline const auto kScrollBg    = hex(0x0D1117, 0.40f);
 inline const auto kScrollThumb = hex(0x484F58, 0.80f);
 
-// Sizes — roomier layout
+// Sizes â€” roomier layout
 inline constexpr float kPanelWidth     = 480.0f;
 inline constexpr float kTitleBarHeight = 48.0f;
 inline constexpr float kStatusBarHeight= 36.0f;
@@ -192,7 +208,7 @@ struct AnimatedFloat {
 } // namespace vanim
 
 // ============================================================================
-// ValhallaRenderer — D3D11On12 + Direct2D rendering backend
+// ValhallaRenderer â€” D3D11On12 + Direct2D rendering backend
 // ============================================================================
 class ValhallaRenderer {
 public:
@@ -277,3 +293,4 @@ struct VGuiInput {
   bool mouseReleased = false;  // just released this frame
   float scrollDelta = 0.0f;
 };
+

@@ -1,3 +1,19 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #include "camera_scanner.h"
 #include "streamline_integration.h"
 #include "dlss4_config.h"
@@ -24,7 +40,7 @@ namespace {
         bool valid = false;
     };
 
-    // Lock hierarchy level 3 — same tier as Resources
+    // Lock hierarchy level 3 â€” same tier as Resources
     // (SwapChain=1 > Hooks=2 > Resources/Camera=3 > Config=4 > Logging=5).
     std::mutex g_cameraMutex;
     CameraCandidate g_bestCamera;
@@ -37,7 +53,7 @@ namespace {
         uint8_t* cpuPtr = nullptr;
     };
 
-    // Lock hierarchy level 3 — same tier as Resources
+    // Lock hierarchy level 3 â€” same tier as Resources
     std::mutex g_cbvMutex;
     std::vector<UploadCbvInfo> g_cbvInfos;
     std::atomic<uint64_t> g_cameraFrame(0);
@@ -45,7 +61,7 @@ namespace {
     std::atomic<uint64_t> g_lastCameraFoundFrame(0);
 
     // CBV descriptor address tracking (separate from descriptor resource tracking)
-    // Lock hierarchy level 3 — same tier as Resources.  Never acquire while
+    // Lock hierarchy level 3 â€” same tier as Resources.  Never acquire while
     // holding g_cbvMutex or g_cameraMutex at the same level.
     std::mutex g_cbvAddrMutex;
     struct CbvGpuAddrEntry {
@@ -547,3 +563,4 @@ bool TryScanRootCbvsForCamera(float* outView, float* outProj, float* outScore, b
     if (found && outScore) *outScore = bestScore;
     return found;
 }
+

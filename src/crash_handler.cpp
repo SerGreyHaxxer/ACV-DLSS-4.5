@@ -1,3 +1,19 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #include "crash_handler.h"
 #include <cstdio>
 #include <dbghelp.h>
@@ -100,10 +116,10 @@ void OpenMainLog() {
     ShellExecuteA(nullptr, "open", "dlss4_proxy.log", nullptr, nullptr, SW_SHOW);
 }
 
-// Pre-allocated buffer for crash log — avoids CRT allocations inside VEH handler
+// Pre-allocated buffer for crash log â€” avoids CRT allocations inside VEH handler
 static char g_crashBuf[4096];
 
-// Async-signal-safe int-to-hex helper — no CRT dependency
+// Async-signal-safe int-to-hex helper â€” no CRT dependency
 static int UnsafeHex(char* buf, int maxLen, DWORD64 val) {
     static const char hexChars[] = "0123456789ABCDEF";
     char tmp[17];
@@ -193,7 +209,7 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS pExceptionInfo) {
         DWORD bytesWritten = 0;
         WriteFile(hFile, g_crashBuf, static_cast<DWORD>(pos), &bytesWritten, nullptr);
 
-        // Minidump — MiniDumpWriteDump is explicitly documented as safe in VEH
+        // Minidump â€” MiniDumpWriteDump is explicitly documented as safe in VEH
         MINIDUMP_EXCEPTION_INFORMATION dumpInfo;
         dumpInfo.ThreadId = GetCurrentThreadId();
         dumpInfo.ExceptionPointers = pExceptionInfo;
@@ -208,7 +224,7 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS pExceptionInfo) {
             GetModuleRange(selfModule, filterCtx.selfBase, filterCtx.selfSize);
         }
 
-        // Write filtered minidump directly (skip encryption in crash path — CryptProtectData is not async-safe)
+        // Write filtered minidump directly (skip encryption in crash path â€” CryptProtectData is not async-safe)
         HANDLE hDumpFile = CreateFileA("dlss4_crash.dmp", GENERIC_WRITE, 0, nullptr,
                                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (hDumpFile != INVALID_HANDLE_VALUE) {
@@ -238,3 +254,4 @@ void UninstallCrashHandler() {
         g_Handler = nullptr;
     }
 }
+

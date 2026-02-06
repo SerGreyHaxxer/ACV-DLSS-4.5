@@ -1,3 +1,19 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 // ============================================================================
 // DLSS 4 PROXY DLL - MAIN ENTRY POINT
 // ============================================================================
@@ -43,7 +59,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call,
     // MessageBoxA(NULL, "DLSS Proxy DLL Loading", "Debug", MB_OK);
     LogStartup("DLL_PROCESS_ATTACH Entry");
 
-    // Disable thread notifications FIRST — before any code that might spawn
+    // Disable thread notifications FIRST â€” before any code that might spawn
     // threads.  This avoids DLL_THREAD_ATTACH deadlocks inside the loader lock.
     DisableThreadLibraryCalls(hModule);
     LogStartup("Thread Library Calls Disabled");
@@ -97,3 +113,4 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call,
   }
   return TRUE;
 }
+

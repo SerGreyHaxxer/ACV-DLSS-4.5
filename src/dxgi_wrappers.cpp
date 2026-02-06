@@ -1,3 +1,19 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #include "dxgi_wrappers.h"
 #include "config_manager.h"
 #include "dlss4_config.h"
@@ -18,7 +34,7 @@ using Microsoft::WRL::ComPtr;
 // Global tracking
 ComPtr<IDXGISwapChain> g_pRealSwapChain;
 ComPtr<ID3D12CommandQueue> g_pRealCommandQueue;
-// Lock hierarchy level 1 — highest priority.  Never hold a lower-level lock
+// Lock hierarchy level 1 â€” highest priority.  Never hold a lower-level lock
 // when acquiring this.  Order: SwapChain(1) > Hooks(2) > Resources(3) >
 // Config(4) > Logging(5).
 static std::mutex g_swapChainMutex;
@@ -26,11 +42,11 @@ static std::mutex g_swapChainMutex;
 static std::unique_ptr<std::thread> g_timerThread;
 static std::atomic<bool> g_timerRunning(false);
 static std::condition_variable g_timerCV;
-// Timer mutex — used only for the condition variable; not part of the
+// Timer mutex â€” used only for the condition variable; not part of the
 // hierarchical ordering (never held while acquiring another lock).
 static std::mutex g_timerMutex;
 
-// Unified frame counter — single source of truth across the proxy
+// Unified frame counter â€” single source of truth across the proxy
 static std::atomic<uint64_t> g_unifiedFrameCount(0);
 
 static void RegisterHotkeys() {
@@ -59,7 +75,7 @@ static void RegisterHotkeys() {
 static void TimerThreadProc() {
   LOG_INFO("[TIMER] Thread started");
 
-  // Register hotkey callbacks (idempotent — callbacks are only added once)
+  // Register hotkey callbacks (idempotent â€” callbacks are only added once)
   bool hotkeysRegistered = false;
   bool hookInstalled = false;
   int hookRetryCount = 0;
@@ -85,7 +101,7 @@ static void TimerThreadProc() {
       InputHandler::Get().InstallHook();
       if (InputHandler::Get().HasHookInstalled()) {
         hookInstalled = true;
-        LOG_INFO("[TIMER] Keyboard hook active — F5 hotkey ready");
+        LOG_INFO("[TIMER] Keyboard hook active â€” F5 hotkey ready");
       } else {
         ++hookRetryCount;
         LOG_WARN("[TIMER] Hook install attempt {}/{} failed, will retry. "
@@ -135,7 +151,7 @@ static void TimerThreadProc() {
       hotReloadCounter = 0;
     }
 
-    // ProcessInput() is the polling fallback — works even when the global hook
+    // ProcessInput() is the polling fallback â€” works even when the global hook
     // failed to install, ensuring hotkeys always function.
     InputHandler::Get().ProcessInput();
   }
@@ -143,7 +159,7 @@ static void TimerThreadProc() {
   LOG_INFO("[TIMER] Thread exiting");
 }
 
-// Called from the D3D12 Present/submission thread — safe for GPU work
+// Called from the D3D12 Present/submission thread â€” safe for GPU work
 void OnPresentThread(IDXGISwapChain *pSwapChain) {
   if (!pSwapChain)
     return;
@@ -168,7 +184,7 @@ void OnPresentThread(IDXGISwapChain *pSwapChain) {
 }
 
 // ============================================================================
-// PRESENT HOOK — runs OnPresentThread on the GPU submission thread
+// PRESENT HOOK â€” runs OnPresentThread on the GPU submission thread
 // ============================================================================
 static PFN_Present g_OrigPresent = nullptr;
 
@@ -192,7 +208,7 @@ static void InstallPresentHook(IDXGISwapChain *pSwapChain) {
   if (!pSwapChain)
     return;
 
-  // Direct vtable pointer swap — modifies a data pointer, NOT executable code.
+  // Direct vtable pointer swap â€” modifies a data pointer, NOT executable code.
   // Much stealthier than MinHook inline hooks: anti-cheat monitors code sections
   // for JMP patches, but vtable pointers live in data sections.
   // Pointer-sized writes on x64 are naturally atomic.
@@ -550,3 +566,4 @@ WrappedIDXGIFactory::UnregisterAdaptersChangedEvent(DWORD c) {
     return E_NOINTERFACE;
   return f->UnregisterAdaptersChangedEvent(c);
 }
+

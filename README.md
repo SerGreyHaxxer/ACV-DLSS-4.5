@@ -370,7 +370,7 @@ Remove-Item dxgi.dll, sl.*.dll, nvngx_*.dll, dlss_settings.ini, dlss4_proxy.log 
 
 ## 📄 License
 
-MIT License - See [LICENSE](LICENSE) for details.
+GNU General Public License v3.0 - See [LICENSE](LICENSE) for details.
 
 ---
 

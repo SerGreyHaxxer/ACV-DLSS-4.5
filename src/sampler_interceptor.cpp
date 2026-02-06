@@ -1,3 +1,19 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #include "sampler_interceptor.h"
 #include "streamline_integration.h"
 #include "logger.h"
@@ -14,7 +30,7 @@ namespace {
         bool valid = false;
     };
 
-    // Lock hierarchy level 3 — same tier as Resources
+    // Lock hierarchy level 3 â€” same tier as Resources
     // (SwapChain=1 > Hooks=2 > Resources/Samplers=3 > Config=4 > Logging=5).
     std::mutex g_samplerMutex;
     std::vector<SamplerRecord> g_samplerRecords;
@@ -56,3 +72,4 @@ void ClearSamplers() {
     std::lock_guard<std::mutex> lock(g_samplerMutex);
     g_samplerRecords.clear();
 }
+

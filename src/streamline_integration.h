@@ -1,3 +1,19 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #pragma once
 #include <chrono>
 #include <cstdint>
@@ -45,7 +61,7 @@ public:
                      float jitterX, float jitterY);
 
   void EvaluateDLSS(ID3D12GraphicsCommandList *pCmdList);
-  void EvaluateDLSSFromPresent(); // Uses internal cmd list — no external hook needed
+  void EvaluateDLSSFromPresent(); // Uses internal cmd list â€” no external hook needed
   void EvaluateFrameGen(IDXGISwapChain *pSwapChain);
   void EvaluateDeepDVC(IDXGISwapChain *pSwapChain);
 
@@ -215,7 +231,7 @@ private:
   StreamlineIntegration() = default;
   ~StreamlineIntegration();
 
-  // Lock hierarchy level 2 — same tier as Hooks
+  // Lock hierarchy level 2 â€” same tier as Hooks
   // (SwapChain=1 > Hooks/Init=2 > Resources=3 > Config=4 > Logging=5).
   std::mutex m_initMutex;
   bool m_initialized = false;
@@ -271,7 +287,7 @@ private:
   bool m_smartFgForceDisable = false;
   bool m_disableFGDueToInvalidParam = false;
 
-  // Dynamic Smart FG — rolling FPS buffer for adaptive multiplier
+  // Dynamic Smart FG â€” rolling FPS buffer for adaptive multiplier
   static constexpr int kFpsRingSize = 10;   // ~10 seconds of history
   float m_fpsRing[kFpsRingSize]{};
   int   m_fpsRingIdx = 0;
@@ -312,3 +328,4 @@ private:
   void UpdateSmartFrameGen();
   void WaitForGpu();
 };
+

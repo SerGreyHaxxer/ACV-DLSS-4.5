@@ -1,3 +1,19 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #include "input_handler.h"
 #include "logger.h"
 #include "streamline_integration.h"
@@ -6,7 +22,7 @@
 
 // Global static for the hook procedure
 static InputHandler* g_pInputHandler = nullptr;
-// Lock hierarchy level 4 — same tier as Config/Input
+// Lock hierarchy level 4 â€” same tier as Config/Input
 // (SwapChain=1 > Hooks=2 > Resources=3 > Config/Input=4 > Logging=5).
 static std::mutex g_inputHandlerMutex;
 
@@ -78,7 +94,7 @@ void InputHandler::InstallHook() {
         DWORD err = GetLastError();
         LOG_ERROR("GetModuleHandleEx failed (error {}), keyboard hook unavailable", err);
         m_selfModule = nullptr;
-        // Fall through — SetWindowsHookEx can still work with a null module for
+        // Fall through â€” SetWindowsHookEx can still work with a null module for
         // low-level hooks, but log the warning so we know something is off.
     }
     m_hHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, m_selfModule, 0);
@@ -159,3 +175,4 @@ void InputHandler::ProcessInput() {
         cb();
     }
 }
+

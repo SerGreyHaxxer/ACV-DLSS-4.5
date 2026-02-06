@@ -1,3 +1,19 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #pragma once
 
 #include <cstddef>
@@ -5,7 +21,7 @@
 #include <string_view>
 
 // ============================================================================
-// DLSS 4 PROXY CONFIGURATION — Modern C++23 Typed Constants
+// DLSS 4 PROXY CONFIGURATION â€” Modern C++23 Typed Constants
 // ============================================================================
 
 namespace dlss4 {
@@ -13,7 +29,7 @@ namespace dlss4 {
 inline constexpr std::string_view kProxyVersion = "4.5";
 inline constexpr std::string_view kLogFile      = "dlss4_proxy.log";
 
-// DLSS-G Frame Generation (2x, 3x, or 4x — GPU/driver dependent)
+// DLSS-G Frame Generation (2x, 3x, or 4x â€” GPU/driver dependent)
 inline constexpr int kDefaultFrameGenMultiplier = 4;
 
 // Feature toggles
@@ -98,3 +114,4 @@ inline constexpr uint32_t kInvalidParamFallbackFrames = 120;
 inline constexpr uint32_t kInvalidParamDisableFrames  = 240;
 
 } // namespace streamline_config
+

@@ -1,6 +1,22 @@
+﻿/*
+ * Copyright (C) 2026 acerthyracer
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 #pragma once
 // ============================================================================
-// Valhalla Overlay — Custom AC Valhalla themed GUI overlay (replaces ImGui)
+// Valhalla Overlay â€” Custom AC Valhalla themed GUI overlay (replaces ImGui)
 // Built entirely on D3D11On12 + Direct2D + DirectWrite. Zero third-party GUI.
 // ============================================================================
 #include <windows.h>
@@ -59,7 +75,7 @@ private:
     void BeginWidgetFrame();
     bool PointInRect(float px, float py, float rx, float ry, float rw, float rh) const;
 
-    // Widget drawing methods — return true if value changed
+    // Widget drawing methods â€” return true if value changed
     void SectionHeader(const char* label, bool* open);
     void NorseSeparator();
     void Label(const char* text, const D2D1_COLOR_F& color = vtheme::kTextPrimary);
@@ -167,3 +183,4 @@ private:
     std::atomic<bool> m_metricsThreadRunning{false};
     std::atomic<bool> m_shuttingDown{false};
 };
+
