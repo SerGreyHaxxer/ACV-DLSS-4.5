@@ -15,7 +15,7 @@
 //   3. Place nvngx_dlss.dll and nvngx_dlssg.dll in the same folder
 //   4. Run the game - look for dlss4_proxy.log for debug output
 //
-// Author: SerGreyHaxxer
+// Author: acerthyracer
 // Version: 1.0.0
 // ============================================================================
 

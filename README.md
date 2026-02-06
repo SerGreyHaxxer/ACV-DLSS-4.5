@@ -4,7 +4,7 @@
 
 ### **Unlock Next-Gen Graphics & Up to 4× Frame Generation**
 
-[![Version](https://img.shields.io/badge/Version-4.5.0-blue?style=for-the-badge)](https://github.com/SerGreyHaxxer/tensor-curie)
+[![Version](https://img.shields.io/badge/Version-4.5.0-blue?style=for-the-badge)](https://github.com/acerthyracer/tensor-curie)
 [![Status](https://img.shields.io/badge/Status-Working-brightgreen?style=for-the-badge)](#)
 [![RTX](https://img.shields.io/badge/NVIDIA-RTX%20Optimized-76B900?style=for-the-badge&logo=nvidia)](https://nvidia.com)
 
@@ -376,7 +376,7 @@ MIT License - See [LICENSE](LICENSE) for details.
 
 ## 🙏 Credits
 
-- **SerGreyHaxxer** - Lead Developer
+- **acerthyracer** - Lead Developer
 - **NVIDIA** - Streamline SDK, DLSS, NGX
 - **ocornut** - Dear ImGui
 - **Microsoft** - DirectX 12
