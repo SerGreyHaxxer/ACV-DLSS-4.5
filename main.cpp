@@ -43,6 +43,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call,
     // MessageBoxA(NULL, "DLSS Proxy DLL Loading", "Debug", MB_OK);
     LogStartup("DLL_PROCESS_ATTACH Entry");
 
+    // Disable thread notifications FIRST — before any code that might spawn
+    // threads.  This avoids DLL_THREAD_ATTACH deadlocks inside the loader lock.
+    DisableThreadLibraryCalls(hModule);
+    LogStartup("Thread Library Calls Disabled");
+
     // Initialize Proxy Global State (CS)
     try {
       InitProxyGlobal();
@@ -50,10 +55,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call,
       LogStartup("EXCEPTION during InitProxyGlobal");
       return FALSE;
     }
-
-    // Disable thread notifications for performance
-    DisableThreadLibraryCalls(hModule);
-    LogStartup("Thread Library Calls Disabled");
 
     LogStartup("Logger deferred until first DXGI call");
 

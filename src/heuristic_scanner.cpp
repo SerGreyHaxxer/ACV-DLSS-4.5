@@ -220,8 +220,9 @@ bool HeuristicScanner::AnalyzeTexture(ID3D12GraphicsCommandList* pCmdList, ID3D1
     D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = frame.srvUavHeap->GetCPUDescriptorHandleForHeapStart();
     D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = frame.srvUavHeap->GetGPUDescriptorHandleForHeapStart();
     
-    ID3D12Device* pDevice;
+    ID3D12Device* pDevice = nullptr;
     frame.uavBuffer->GetDevice(IID_PPV_ARGS(&pDevice)); // Get device from resource
+    if (!pDevice) return false;
     
     // SRV
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};

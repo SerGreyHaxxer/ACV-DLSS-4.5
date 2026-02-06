@@ -21,7 +21,7 @@
 #include <vector>
 
 // ============================================================================
-// THEME — Assassin's Creed Valhalla inspired color palette
+// THEME — Modern dark panel with NVIDIA-inspired green accent
 // ============================================================================
 namespace vtheme {
 
@@ -33,64 +33,66 @@ inline D2D1_COLOR_F hex(uint32_t c, float a = 1.0f) {
           (c & 0xFF) / 255.0f, a};
 }
 
-// Primary palette — Nordic night
-inline const auto kBgDeep      = hex(0x0A0B14, 0.96f);   // Deepest background
-inline const auto kBgPanel     = hex(0x12131E, 0.94f);   // Panel background
-inline const auto kBgSection   = hex(0x1A1B2A, 1.0f);    // Section header bg
-inline const auto kBgWidget    = hex(0x1E1F30, 1.0f);    // Widget background
-inline const auto kBgHover     = hex(0x2A2C40, 1.0f);    // Hover state
-inline const auto kBgActive    = hex(0x353850, 1.0f);    // Active/pressed
+// Primary palette — Modern dark
+inline const auto kBgDeep      = hex(0x0D1117, 0.97f);   // Deepest background
+inline const auto kBgPanel     = hex(0x161B22, 0.96f);   // Panel background
+inline const auto kBgSection   = hex(0x1C2128, 1.0f);    // Section header bg
+inline const auto kBgWidget    = hex(0x21262D, 1.0f);    // Widget background
+inline const auto kBgHover     = hex(0x30363D, 1.0f);    // Hover state
+inline const auto kBgActive    = hex(0x3D444D, 1.0f);    // Active/pressed
 
-// Gold accents — Norse gold
-inline const auto kGold        = hex(0xD4AF37, 1.0f);    // Primary accent
-inline const auto kGoldBright  = hex(0xF0D060, 1.0f);    // Hover/active accent
-inline const auto kGoldDim     = hex(0x8B7530, 0.6f);    // Borders, inactive
+// Accent — NVIDIA green / tech teal
+inline const auto kGold        = hex(0x76B900, 1.0f);    // Primary accent (NVIDIA green)
+inline const auto kGoldBright  = hex(0x8ED610, 1.0f);    // Hover/active accent
+inline const auto kGoldDim     = hex(0x4A7A00, 0.50f);   // Borders, inactive
 
-// Text
-inline const auto kTextPrimary = hex(0xE2D8C4, 1.0f);    // Main text (parchment)
-inline const auto kTextSecondary = hex(0x9B9484, 1.0f);  // Muted text
-inline const auto kTextGold    = hex(0xD4AF37, 1.0f);    // Highlighted text
+// Text — High contrast on dark backgrounds
+inline const auto kTextPrimary = hex(0xE6EDF3, 1.0f);    // Main text (bright white)
+inline const auto kTextSecondary = hex(0x8B949E, 1.0f);  // Muted text
+inline const auto kTextGold    = hex(0x76B900, 1.0f);    // Highlighted / accent text
 
 // Status
-inline const auto kStatusOk    = hex(0x4CAF50, 1.0f);    // Green
-inline const auto kStatusWarn  = hex(0xFFB300, 1.0f);    // Amber
-inline const auto kStatusBad   = hex(0xEF5350, 1.0f);    // Red
+inline const auto kStatusOk    = hex(0x3FB950, 1.0f);    // Green
+inline const auto kStatusWarn  = hex(0xD29922, 1.0f);    // Amber
+inline const auto kStatusBad   = hex(0xF85149, 1.0f);    // Red
 
 // Slider
-inline const auto kSliderTrack = hex(0x2A2B3D, 1.0f);
-inline const auto kSliderFill  = hex(0xD4AF37, 1.0f);
-inline const auto kSliderGrab  = hex(0xF0D060, 1.0f);
+inline const auto kSliderTrack = hex(0x21262D, 1.0f);
+inline const auto kSliderFill  = hex(0x76B900, 1.0f);
+inline const auto kSliderGrab  = hex(0x8ED610, 1.0f);
 
 // Scrollbar
-inline const auto kScrollBg    = hex(0x0A0B14, 0.5f);
-inline const auto kScrollThumb = hex(0x3A3B4D, 1.0f);
+inline const auto kScrollBg    = hex(0x0D1117, 0.40f);
+inline const auto kScrollThumb = hex(0x484F58, 0.80f);
 
-// Sizes
-inline constexpr float kPanelWidth     = 520.0f;
-inline constexpr float kTitleBarHeight = 44.0f;
-inline constexpr float kStatusBarHeight= 32.0f;
-inline constexpr float kWidgetHeight   = 28.0f;
-inline constexpr float kSpacing        = 6.0f;
-inline constexpr float kPadding        = 16.0f;
-inline constexpr float kCornerRadius   = 6.0f;
-inline constexpr float kSectionHeight  = 32.0f;
-inline constexpr float kSliderGrabW    = 14.0f;
-inline constexpr float kScrollbarW     = 8.0f;
+// Sizes — roomier layout
+inline constexpr float kPanelWidth     = 480.0f;
+inline constexpr float kTitleBarHeight = 48.0f;
+inline constexpr float kStatusBarHeight= 36.0f;
+inline constexpr float kWidgetHeight   = 32.0f;
+inline constexpr float kSpacing        = 5.0f;
+inline constexpr float kPadding        = 18.0f;
+inline constexpr float kCornerRadius   = 8.0f;
+inline constexpr float kSectionHeight  = 36.0f;
+inline constexpr float kSliderGrabW    = 16.0f;
+inline constexpr float kScrollbarW     = 6.0f;
 inline constexpr float kCheckboxSize   = 20.0f;
-inline constexpr float kComboHeight    = 28.0f;
+inline constexpr float kToggleW        = 38.0f;
+inline constexpr float kToggleH        = 20.0f;
+inline constexpr float kComboHeight    = 32.0f;
 
 // Font sizes
-inline constexpr float kFontTitle      = 20.0f;
-inline constexpr float kFontSection    = 15.0f;
-inline constexpr float kFontBody       = 13.0f;
+inline constexpr float kFontTitle      = 16.0f;
+inline constexpr float kFontSection    = 13.0f;
+inline constexpr float kFontBody       = 12.5f;
 inline constexpr float kFontSmall      = 11.0f;
-inline constexpr float kFontFPS        = 36.0f;
-inline constexpr float kFontFPSLabel   = 13.0f;
+inline constexpr float kFontFPS        = 32.0f;
+inline constexpr float kFontFPSLabel   = 12.0f;
 
 // Animation timing
-inline constexpr float kAnimOpenDuration  = 0.35f;  // seconds
-inline constexpr float kAnimCloseDuration = 0.25f;
-inline constexpr float kAnimHoverDuration = 0.12f;
+inline constexpr float kAnimOpenDuration  = 0.30f;  // seconds
+inline constexpr float kAnimCloseDuration = 0.20f;
+inline constexpr float kAnimHoverDuration = 0.10f;
 
 } // namespace vtheme
 

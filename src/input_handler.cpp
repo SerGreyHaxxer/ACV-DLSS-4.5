@@ -70,11 +70,31 @@ void InputHandler::InstallHook() {
         g_pInputHandler = this;
     }
     // Get a ref-counted handle to our module so it stays loaded while the hook is active
-    GetModuleHandleExA(
-        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-        reinterpret_cast<LPCSTR>(&LowLevelKeyboardProc), &m_selfModule);
+    if (!GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+            reinterpret_cast<LPCSTR>(&LowLevelKeyboardProc), &m_selfModule)) {
+        DWORD err = GetLastError();
+        LOG_ERROR("GetModuleHandleEx failed (error {}), keyboard hook unavailable", err);
+        m_selfModule = nullptr;
+        // Fall through — SetWindowsHookEx can still work with a null module for
+        // low-level hooks, but log the warning so we know something is off.
+    }
     m_hHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, m_selfModule, 0);
-    LOG_INFO("Global Keyboard Hook Installed");
+    if (m_hHook) {
+        LOG_INFO("Global Keyboard Hook Installed");
+    } else {
+        DWORD err = GetLastError();
+        LOG_ERROR("SetWindowsHookEx FAILED (error {}). Hotkeys will use fallback polling.", err);
+        // Clean up the global pointer so we don't leave a dangling reference
+        {
+            std::lock_guard<std::mutex> lock(g_inputHandlerMutex);
+            g_pInputHandler = nullptr;
+        }
+        if (m_selfModule) {
+            FreeLibrary(m_selfModule);
+            m_selfModule = nullptr;
+        }
+    }
 }
 
 void InputHandler::UninstallHook() {

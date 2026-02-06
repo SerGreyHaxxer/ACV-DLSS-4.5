@@ -260,8 +260,13 @@ LRESULT CALLBACK ImGuiOverlay::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam
 // ============================================================================
 
 void ImGuiOverlay::OnResize(UINT width, UINT height) {
+  if (width == 0 || height == 0) return; // Ignore zero-sized resize (minimized)
   m_width = width; m_height = height;
-  if (m_initialized) m_renderer.OnResize();
+  if (m_initialized) {
+    m_renderer.OnResize();
+    // Render targets were released — they will be recreated on the next
+    // BeginFrame call inside Render().  No action needed here.
+  }
 }
 
 void ImGuiOverlay::SetFPS(float gameFps, float totalFps) {
@@ -444,11 +449,11 @@ void ImGuiOverlay::BuildBackgroundDim() {
 
 void ImGuiOverlay::BuildPanelShadow(float x, float y, float w, float h, float alpha) {
   if (!ConfigManager::Get().Data().customization.panelShadow) return;
-  // Multi-layer shadow for depth
-  for (int i = 3; i >= 0; --i) {
-    float offset = static_cast<float>(i + 1) * 4.0f;
-    float shadowAlpha = 0.08f * alpha * (4 - i);
-    m_renderer.FillRoundedRect(x + offset, y + offset, w, h, 8.0f, vtheme::hex(0x000000, shadowAlpha));
+  // Subtle multi-layer shadow
+  for (int i = 2; i >= 0; --i) {
+    float offset = static_cast<float>(i + 1) * 3.0f;
+    float shadowAlpha = 0.06f * alpha * (3 - i);
+    m_renderer.FillRoundedRect(x + offset * 0.5f, y + offset, w, h, 8.0f, vtheme::hex(0x000000, shadowAlpha));
   }
 }
 
@@ -456,20 +461,25 @@ void ImGuiOverlay::BuildMiniMode() {
   auto& cust = ConfigManager::Get().Data().customization;
   if (!cust.miniMode || m_visible) return;
 
-  // Small floating bar with mod name + FPS
-  float barW = 160.0f, barH = 32.0f;
+  // Compact floating pill with mod name + FPS
+  float barW = 140.0f, barH = 28.0f;
   float barX = 12.0f, barY = 12.0f;
 
-  m_renderer.FillRoundedRect(barX, barY, barW, barH, 16.0f, vtheme::hex(0x0A0B14, 0.8f));
-  m_renderer.OutlineRoundedRect(barX, barY, barW, barH, 16.0f, m_accentDim, 1.0f);
-  m_renderer.DrawDiamond(barX + 16, barY + barH * 0.5f, 4.0f, m_accent);
-  m_renderer.DrawTextA("DLSS 4.5", barX + 28, barY, 80.0f, barH, m_accent, 12.0f, ValhallaRenderer::TextAlign::Left, true);
+  bool hovered = PointInRect(m_input.mouseX, m_input.mouseY, barX, barY, barW, barH);
+  float bgAlpha = hovered ? 0.85f : 0.7f;
+
+  m_renderer.FillRoundedRect(barX, barY, barW, barH, barH * 0.5f, vtheme::hex(0x0D1117, bgAlpha));
+  m_renderer.OutlineRoundedRect(barX, barY, barW, barH, barH * 0.5f, vtheme::hex(0x30363D, 0.3f), 1.0f);
+
+  // Small accent dot
+  m_renderer.DrawCircle(barX + 14, barY + barH * 0.5f, 3.0f, m_accent);
+  m_renderer.DrawTextA("DLSS", barX + 24, barY, 50.0f, barH, vtheme::kTextSecondary, 11.0f, ValhallaRenderer::TextAlign::Left, true);
 
   std::string fpsStr = std::format("{:.0f}", m_smoothFPS);
-  m_renderer.DrawTextA(fpsStr.c_str(), barX + 100, barY, 50.0f, barH, vtheme::kTextPrimary, 14.0f, ValhallaRenderer::TextAlign::Right, true);
+  m_renderer.DrawTextA(fpsStr.c_str(), barX + 80, barY, 50.0f, barH, vtheme::kTextPrimary, 13.0f, ValhallaRenderer::TextAlign::Right, true);
 
   // Click to open
-  if (PointInRect(m_input.mouseX, m_input.mouseY, barX, barY, barW, barH) && m_input.mouseClicked) {
+  if (hovered && m_input.mouseClicked) {
     ToggleVisibility();
   }
 }
@@ -519,16 +529,12 @@ void ImGuiOverlay::BeginWidgetFrame() {
 // ============================================================================
 
 void ImGuiOverlay::NorseSeparator() {
-  float y = m_cursorY + 6.0f;
-  float lineY = y + 4.0f;
-  float midX = m_cursorX + m_contentWidth * 0.5f;
-
-  // Accent line with diamond center (uses dynamic accent)
-  m_renderer.DrawLine(m_cursorX + 10.0f, lineY, midX - 10.0f, lineY, m_accentDim, 1.0f);
-  m_renderer.DrawDiamond(midX, lineY, 4.0f, m_accent);
-  m_renderer.DrawLine(midX + 10.0f, lineY, m_cursorX + m_contentWidth - 10.0f, lineY, m_accentDim, 1.0f);
-
-  m_cursorY += 16.0f;
+  float y = m_cursorY + 8.0f;
+  float lineY = y + 1.0f;
+  // Clean subtle separator line
+  D2D1_COLOR_F lineColor = vtheme::hex(0x30363D, 0.5f);
+  m_renderer.DrawLine(m_cursorX + 4.0f, lineY, m_cursorX + m_contentWidth - 4.0f, lineY, lineColor, 1.0f);
+  m_cursorY += 14.0f;
 }
 
 void ImGuiOverlay::SectionHeader(const char* label, bool* open) {
@@ -544,31 +550,34 @@ void ImGuiOverlay::SectionHeader(const char* label, bool* open) {
   hoverT += (hovered ? 1.0f : -1.0f) * (m_time - m_lastFrameTime) / vtheme::kAnimHoverDuration;
   hoverT = std::clamp(hoverT, 0.0f, 1.0f);
 
-  // Background
-  D2D1_COLOR_F bg = vtheme::kBgSection;
-  bg.r = vanim::Lerp(bg.r, vtheme::kBgHover.r, hoverT);
-  bg.g = vanim::Lerp(bg.g, vtheme::kBgHover.g, hoverT);
-  bg.b = vanim::Lerp(bg.b, vtheme::kBgHover.b, hoverT);
-  m_renderer.FillRoundedRect(x, y, w, h, 4.0f, bg);
-
-  // Accent line at left (dynamic color)
-  float accentW = vanim::Lerp(3.0f, 5.0f, hoverT);
-  m_renderer.FillRect(x, y + 4.0f, accentW, h - 8.0f, m_accent);
-
-  // Widget glow effect on hover
-  if (ConfigManager::Get().Data().customization.widgetGlow && hoverT > 0.01f) {
-    D2D1_COLOR_F glow = m_accent;
-    glow.a = hoverT * 0.08f;
-    m_renderer.FillRoundedRect(x, y, w, h, 4.0f, glow);
+  // Subtle background on hover only
+  if (hoverT > 0.01f) {
+    D2D1_COLOR_F bg = vtheme::kBgHover;
+    bg.a = hoverT * 0.5f;
+    m_renderer.FillRoundedRect(x, y, w, h, 6.0f, bg);
   }
 
-  // Diamond indicator
-  float diamondSize = *open ? 4.0f : 3.5f;
-  float diamondX = x + 18.0f;
-  m_renderer.DrawDiamond(diamondX, y + h * 0.5f, diamondSize, m_accent);
+  // Chevron indicator (triangle pointing right when closed, down when open)
+  float chevX = x + 10.0f;
+  float chevY = y + h * 0.5f;
+  D2D1_COLOR_F chevColor = m_accent;
+  chevColor.a = vanim::Lerp(0.6f, 1.0f, hoverT);
+  if (*open) {
+    // Down chevron: small filled triangle
+    m_renderer.DrawLine(chevX - 3.5f, chevY - 2.0f, chevX, chevY + 2.5f, chevColor, 1.8f);
+    m_renderer.DrawLine(chevX, chevY + 2.5f, chevX + 3.5f, chevY - 2.0f, chevColor, 1.8f);
+  } else {
+    // Right chevron
+    m_renderer.DrawLine(chevX - 1.5f, chevY - 4.0f, chevX + 2.5f, chevY, chevColor, 1.8f);
+    m_renderer.DrawLine(chevX + 2.5f, chevY, chevX - 1.5f, chevY + 4.0f, chevColor, 1.8f);
+  }
 
-  // Label text
-  m_renderer.DrawTextA(label, x + 32.0f, y, w - 40.0f, h, m_accent, vtheme::kFontSection, ValhallaRenderer::TextAlign::Left, true);
+  // Label text — accent color when open, secondary when closed
+  D2D1_COLOR_F textColor = *open ? m_accent : vtheme::kTextPrimary;
+  textColor.r = vanim::Lerp(textColor.r, m_accentBright.r, hoverT * 0.3f);
+  textColor.g = vanim::Lerp(textColor.g, m_accentBright.g, hoverT * 0.3f);
+  textColor.b = vanim::Lerp(textColor.b, m_accentBright.b, hoverT * 0.3f);
+  m_renderer.DrawTextA(label, x + 24.0f, y, w - 32.0f, h, textColor, vtheme::kFontSection, ValhallaRenderer::TextAlign::Left, true);
 
   // Click to toggle
   if (hovered && m_input.mouseClicked) {
@@ -584,31 +593,30 @@ void ImGuiOverlay::Label(const char* text, const D2D1_COLOR_F& color) {
 }
 
 void ImGuiOverlay::LabelValue(const char* label, const char* value) {
-  float halfW = m_contentWidth * 0.5f;
-  m_renderer.DrawTextA(label, m_cursorX + 4.0f, m_cursorY, halfW - 8.0f, vtheme::kWidgetHeight, vtheme::kTextSecondary, vtheme::kFontBody);
-  m_renderer.DrawTextA(value, m_cursorX + halfW, m_cursorY, halfW - 4.0f, vtheme::kWidgetHeight, vtheme::kTextPrimary, vtheme::kFontBody, ValhallaRenderer::TextAlign::Right);
+  float w = m_contentWidth;
+  m_renderer.DrawTextA(label, m_cursorX + 4.0f, m_cursorY, w * 0.55f, vtheme::kWidgetHeight, vtheme::kTextSecondary, vtheme::kFontSmall);
+  m_renderer.DrawTextA(value, m_cursorX + w * 0.55f, m_cursorY, w * 0.45f - 4.0f, vtheme::kWidgetHeight, vtheme::kTextPrimary, vtheme::kFontBody, ValhallaRenderer::TextAlign::Right);
   m_cursorY += vtheme::kWidgetHeight;
 }
 
 void ImGuiOverlay::StatusDot(const char* label, const D2D1_COLOR_F& color) {
-  float dotR = 5.0f;
+  float dotR = 3.5f;
   float cx = m_cursorX + dotR + 4.0f;
   float cy = m_cursorY + vtheme::kWidgetHeight * 0.5f;
 
   // Pulse animation for status dots
   float pulseScale = 1.0f;
-  float pulseGlowAlpha = 0.3f;
   if (ConfigManager::Get().Data().customization.statusPulse) {
-    pulseScale = 1.0f + std::sin(m_statusPulsePhase) * 0.15f;
-    pulseGlowAlpha = 0.2f + std::sin(m_statusPulsePhase) * 0.15f;
+    pulseScale = 1.0f + std::sin(m_statusPulsePhase) * 0.1f;
   }
 
-  m_renderer.DrawCircle(cx, cy, dotR * pulseScale, color);
-  // Glow effect (pulsing)
+  // Subtle glow behind the dot
   D2D1_COLOR_F glow = color;
-  glow.a = pulseGlowAlpha;
-  m_renderer.DrawCircle(cx, cy, (dotR + 3.0f) * pulseScale, glow);
-  m_renderer.DrawTextA(label, m_cursorX + dotR * 2 + 12.0f, m_cursorY, 120.0f, vtheme::kWidgetHeight, vtheme::kTextPrimary, vtheme::kFontSmall);
+  glow.a = 0.15f;
+  m_renderer.DrawCircle(cx, cy, (dotR + 2.5f) * pulseScale, glow);
+  m_renderer.DrawCircle(cx, cy, dotR * pulseScale, color);
+
+  m_renderer.DrawTextA(label, m_cursorX + dotR * 2 + 12.0f, m_cursorY, 100.0f, vtheme::kWidgetHeight, vtheme::kTextSecondary, vtheme::kFontSmall);
 }
 
 void ImGuiOverlay::Spacing(float height) {
@@ -627,9 +635,8 @@ bool ImGuiOverlay::Button(const char* label, float w) {
   float y = m_cursorY;
 
   if (m_sameLine) {
-    // Place on same line as previous button
     auto ts = m_renderer.MeasureTextA(label, vtheme::kFontBody, false);
-    if (w <= 0.0f) w = ts.width + 24.0f;
+    if (w <= 0.0f) w = ts.width + 28.0f;
     x = m_sameLineX;
     y = m_lastButtonY;
     m_sameLine = false;
@@ -646,33 +653,33 @@ bool ImGuiOverlay::Button(const char* label, float w) {
   bool pressed = hovered && m_input.mouseDown;
   bool clicked = hovered && m_input.mouseClicked;
 
-  // Draw button
-  float cr = ConfigManager::Get().Data().customization.cornerRadius;
+  float cr = 6.0f;
+
+  // Button background — subtle fill with border
   D2D1_COLOR_F bg = vtheme::kBgWidget;
+  bg.r = vanim::Lerp(bg.r, vtheme::kBgHover.r, hoverT);
+  bg.g = vanim::Lerp(bg.g, vtheme::kBgHover.g, hoverT);
+  bg.b = vanim::Lerp(bg.b, vtheme::kBgHover.b, hoverT);
   if (pressed) bg = vtheme::kBgActive;
-  else { bg.r = vanim::Lerp(bg.r, vtheme::kBgHover.r, hoverT); bg.g = vanim::Lerp(bg.g, vtheme::kBgHover.g, hoverT); bg.b = vanim::Lerp(bg.b, vtheme::kBgHover.b, hoverT); }
-  m_renderer.FillRoundedRect(x, y, w, h, cr * 0.66f, bg);
+  m_renderer.FillRoundedRect(x, y, w, h, cr, bg);
 
-  // Accent border + glow on hover
-  if (hoverT > 0.01f) {
-    D2D1_COLOR_F border = m_accentDim;
-    border.a = hoverT * 0.6f;
-    m_renderer.OutlineRoundedRect(x, y, w, h, cr * 0.66f, border, 1.0f);
-    if (ConfigManager::Get().Data().customization.widgetGlow) {
-      D2D1_COLOR_F glow = m_accent;
-      glow.a = hoverT * 0.06f;
-      m_renderer.FillRoundedRect(x - 2, y - 2, w + 4, h + 4, cr * 0.66f + 2, glow);
-    }
-  }
+  // Thin border — brighter on hover
+  D2D1_COLOR_F border = vtheme::hex(0x3D444D, 0.4f);
+  border.r = vanim::Lerp(border.r, m_accent.r, hoverT * 0.5f);
+  border.g = vanim::Lerp(border.g, m_accent.g, hoverT * 0.5f);
+  border.b = vanim::Lerp(border.b, m_accent.b, hoverT * 0.5f);
+  border.a = vanim::Lerp(0.35f, 0.7f, hoverT);
+  m_renderer.OutlineRoundedRect(x, y, w, h, cr, border, 1.0f);
 
-  m_renderer.DrawTextA(label, x, y, w, h, vtheme::kTextPrimary, vtheme::kFontBody, ValhallaRenderer::TextAlign::Center);
+  // Text — accent color on hover
+  D2D1_COLOR_F textColor = vtheme::kTextPrimary;
+  textColor.r = vanim::Lerp(textColor.r, m_accentBright.r, hoverT * 0.6f);
+  textColor.g = vanim::Lerp(textColor.g, m_accentBright.g, hoverT * 0.6f);
+  textColor.b = vanim::Lerp(textColor.b, m_accentBright.b, hoverT * 0.6f);
+  m_renderer.DrawTextA(label, x, y, w, h, textColor, vtheme::kFontBody, ValhallaRenderer::TextAlign::Center);
 
-  // Record this button's position for SameLineButton
   m_lastButtonEndX = x + w;
   m_lastButtonY = y;
-
-  // Only advance cursor Y if this is the last button on the line
-  // (will be overwritten if SameLineButton is called next)
   m_cursorY = y + h + vtheme::kSpacing;
   return clicked;
 }
@@ -681,8 +688,9 @@ bool ImGuiOverlay::Checkbox(const char* label, bool* value, bool enabled) {
   uint32_t id = VGuiHash(label);
   float x = m_cursorX;
   float y = m_cursorY;
-  float boxSize = vtheme::kCheckboxSize;
   float rowH = vtheme::kWidgetHeight;
+  float togW = vtheme::kToggleW;
+  float togH = vtheme::kToggleH;
 
   bool hovered = enabled && PointInRect(m_input.mouseX, m_input.mouseY, x, y, m_contentWidth, rowH);
   bool clicked = hovered && m_input.mouseClicked;
@@ -691,36 +699,54 @@ bool ImGuiOverlay::Checkbox(const char* label, bool* value, bool enabled) {
   hoverT += (hovered ? 1.0f : -1.0f) * (m_time - m_lastFrameTime) / vtheme::kAnimHoverDuration;
   hoverT = std::clamp(hoverT, 0.0f, 1.0f);
 
-  // Checkbox box
-  float boxX = x + 4.0f;
-  float boxY = y + (rowH - boxSize) * 0.5f;
-  D2D1_COLOR_F boxBg = *value ? m_accent : vtheme::kBgWidget;
-  if (!enabled) { boxBg.a *= 0.4f; }
-  m_renderer.FillRoundedRect(boxX, boxY, boxSize, boxSize, 3.0f, boxBg);
-
-  if (*value) {
-    // Checkmark — draw two lines forming a check
-    float cx = boxX + boxSize * 0.5f;
-    float cy = boxY + boxSize * 0.5f;
-    m_renderer.DrawLine(cx - 5.0f, cy, cx - 1.0f, cy + 4.0f, vtheme::kBgDeep, 2.0f);
-    m_renderer.DrawLine(cx - 1.0f, cy + 4.0f, cx + 5.0f, cy - 3.0f, vtheme::kBgDeep, 2.0f);
+  // Animated toggle position (0 = off, 1 = on)
+  float& toggleT = m_toggleAnim[id];
+  float targetT = *value ? 1.0f : 0.0f;
+  float animSpeed = 10.0f;
+  float dt = m_time - m_lastFrameTime;
+  if (dt > 0 && dt < 1.0f) {
+    toggleT = vanim::SmoothDamp(toggleT, targetT, animSpeed, dt);
+  } else {
+    toggleT = targetT;
   }
 
-  // Hover outline + glow
-  if (hoverT > 0.01f) {
-    D2D1_COLOR_F border = m_accentBright;
-    border.a = hoverT * 0.5f;
-    m_renderer.OutlineRoundedRect(boxX, boxY, boxSize, boxSize, 3.0f, border, 1.0f);
-    if (ConfigManager::Get().Data().customization.widgetGlow) {
-      D2D1_COLOR_F glow = m_accent;
-      glow.a = hoverT * 0.06f;
-      m_renderer.FillRoundedRect(boxX - 2, boxY - 2, boxSize + 4, boxSize + 4, 4.0f, glow);
-    }
-  }
-
-  // Label
+  // Label text (left side)
   D2D1_COLOR_F textColor = enabled ? vtheme::kTextPrimary : vtheme::kTextSecondary;
-  m_renderer.DrawTextA(label, x + boxSize + 12.0f, y, m_contentWidth - boxSize - 16.0f, rowH, textColor, vtheme::kFontBody);
+  m_renderer.DrawTextA(label, x + 4.0f, y, m_contentWidth - togW - 16.0f, rowH, textColor, vtheme::kFontBody);
+
+  // Toggle switch (right-aligned)
+  float togX = x + m_contentWidth - togW - 4.0f;
+  float togY = y + (rowH - togH) * 0.5f;
+  float togR = togH * 0.5f; // pill radius
+
+  // Track background — interpolate between off/on colors
+  D2D1_COLOR_F trackOff = vtheme::hex(0x30363D, 1.0f);
+  D2D1_COLOR_F trackOn = m_accent;
+  if (!enabled) { trackOff.a = 0.3f; trackOn.a = 0.3f; }
+  D2D1_COLOR_F trackColor;
+  trackColor.r = vanim::Lerp(trackOff.r, trackOn.r, toggleT);
+  trackColor.g = vanim::Lerp(trackOff.g, trackOn.g, toggleT);
+  trackColor.b = vanim::Lerp(trackOff.b, trackOn.b, toggleT);
+  trackColor.a = vanim::Lerp(trackOff.a, trackOn.a, toggleT);
+  m_renderer.FillRoundedRect(togX, togY, togW, togH, togR, trackColor);
+
+  // Knob — slides left to right
+  float knobPad = 2.0f;
+  float knobD = togH - knobPad * 2.0f;
+  float knobMinX = togX + knobPad;
+  float knobMaxX = togX + togW - knobD - knobPad;
+  float knobX = vanim::Lerp(knobMinX, knobMaxX, toggleT);
+  float knobY = togY + knobPad;
+
+  D2D1_COLOR_F knobColor = vtheme::hex(0xFFFFFF, enabled ? 1.0f : 0.4f);
+  m_renderer.FillRoundedRect(knobX, knobY, knobD, knobD, knobD * 0.5f, knobColor);
+
+  // Hover highlight on track
+  if (hoverT > 0.01f && enabled) {
+    D2D1_COLOR_F hoverGlow = m_accent;
+    hoverGlow.a = hoverT * 0.12f;
+    m_renderer.FillRoundedRect(togX - 2, togY - 2, togW + 4, togH + 4, togR + 2, hoverGlow);
+  }
 
   m_cursorY += rowH + vtheme::kSpacing;
 
@@ -736,44 +762,43 @@ bool ImGuiOverlay::SliderFloat(const char* label, float* value, float vmin, floa
   float x = m_cursorX;
   float y = m_cursorY;
   float w = m_contentWidth;
-  float rowH = vtheme::kWidgetHeight;
+  float labelH = 20.0f;
 
-  // Label row
+  // Label row — label left, value right
   std::string valStr = std::vformat(fmt, std::make_format_args(*value));
-  D2D1_COLOR_F textColor = enabled ? vtheme::kTextPrimary : vtheme::kTextSecondary;
-  m_renderer.DrawTextA(label, x + 4.0f, y, w * 0.65f, rowH, textColor, vtheme::kFontBody);
-  m_renderer.DrawTextA(valStr.c_str(), x + w * 0.65f, y, w * 0.35f - 4.0f, rowH, enabled ? m_accent : vtheme::kTextSecondary, vtheme::kFontBody, ValhallaRenderer::TextAlign::Right);
-  y += rowH;
+  D2D1_COLOR_F textColor = enabled ? vtheme::kTextSecondary : vtheme::hex(0x484F58, 1.0f);
+  m_renderer.DrawTextA(label, x + 4.0f, y, w * 0.65f, labelH, textColor, vtheme::kFontSmall);
+  m_renderer.DrawTextA(valStr.c_str(), x + w * 0.65f, y, w * 0.35f - 4.0f, labelH,
+                       enabled ? vtheme::kTextPrimary : vtheme::kTextSecondary, vtheme::kFontSmall, ValhallaRenderer::TextAlign::Right);
+  y += labelH;
 
-  // Track
-  float trackH = 6.0f;
-  float trackX = x + 8.0f;
-  float trackW = w - 16.0f;
-  float trackY = y + (12.0f - trackH) * 0.5f;
+  // Track geometry
+  float trackH = 4.0f;
+  float trackX = x + 4.0f;
+  float trackW = w - 8.0f;
+  float trackY = y + 6.0f;
 
   float t = (vmax > vmin) ? std::clamp((*value - vmin) / (vmax - vmin), 0.0f, 1.0f) : 0.0f;
-  float grabX = trackX + t * trackW;
+  float grabCenterX = trackX + t * trackW;
 
-  // Draw track background
-  m_renderer.FillRoundedRect(trackX, trackY, trackW, trackH, 3.0f, enabled ? vtheme::kSliderTrack : vtheme::hex(0x1A1B2A, 0.5f));
-  // Draw filled portion (dynamic accent)
-  if (t > 0.001f) {
-    m_renderer.FillRoundedRect(trackX, trackY, t * trackW, trackH, 3.0f, enabled ? m_accent : vtheme::hex(0x8B7530, 0.3f));
+  // Track background (pill shape)
+  D2D1_COLOR_F trackBg = enabled ? vtheme::hex(0x21262D, 1.0f) : vtheme::hex(0x1C2128, 0.5f);
+  m_renderer.FillRoundedRect(trackX, trackY, trackW, trackH, trackH * 0.5f, trackBg);
+
+  // Filled portion
+  if (t > 0.002f) {
+    D2D1_COLOR_F fillColor = enabled ? m_accent : vtheme::hex(0x30363D, 0.5f);
+    m_renderer.FillRoundedRect(trackX, trackY, t * trackW, trackH, trackH * 0.5f, fillColor);
   }
 
-  // Grab handle
-  float grabW = vtheme::kSliderGrabW;
-  float grabH = 16.0f;
-  float grabY = trackY + trackH * 0.5f - grabH * 0.5f;
-  bool grabHovered = enabled && PointInRect(m_input.mouseX, m_input.mouseY, grabX - grabW, grabY - 2.0f, grabW * 2, grabH + 4.0f);
-  bool trackHovered = enabled && PointInRect(m_input.mouseX, m_input.mouseY, trackX - 4.0f, trackY - 8.0f, trackW + 8.0f, trackH + 16.0f);
+  // Interaction
+  float hitPad = 10.0f;
+  bool trackHovered = enabled && PointInRect(m_input.mouseX, m_input.mouseY, trackX - 4.0f, trackY - hitPad, trackW + 8.0f, trackH + hitPad * 2.0f);
 
-  // Click on track to jump
   if (trackHovered && m_input.mouseClicked && enabled) {
     m_activeId = id;
   }
 
-  // Dragging
   bool changed = false;
   if (m_activeId == id) {
     if (m_input.mouseDown) {
@@ -788,12 +813,29 @@ bool ImGuiOverlay::SliderFloat(const char* label, float* value, float vmin, floa
     }
   }
 
-  // Draw grab (dynamic accent)
-  D2D1_COLOR_F grabColor = (m_activeId == id) ? m_accentBright : (grabHovered ? m_accentBright : m_accent);
-  if (!enabled) grabColor = vtheme::hex(0x5A5B6D, 1.0f);
-  m_renderer.FillRoundedRect(grabX - grabW * 0.5f, grabY, grabW, grabH, 3.0f, grabColor);
+  // Grab handle — circle style
+  float grabR = 7.0f;
+  bool isDragging = (m_activeId == id);
+  bool grabHovered = enabled && PointInRect(m_input.mouseX, m_input.mouseY, grabCenterX - grabR - 2, trackY - grabR - 2, grabR * 2 + 4, grabR * 2 + 4);
 
-  m_cursorY = y + 18.0f;
+  // Hover animation for grab
+  float& hoverT = m_hoverAnim[id];
+  hoverT += ((grabHovered || isDragging) ? 1.0f : -1.0f) * (m_time - m_lastFrameTime) / vtheme::kAnimHoverDuration;
+  hoverT = std::clamp(hoverT, 0.0f, 1.0f);
+
+  float grabDrawR = vanim::Lerp(grabR - 1.0f, grabR, hoverT);
+  float grabCY = trackY + trackH * 0.5f;
+  D2D1_COLOR_F grabColor = enabled ? vtheme::hex(0xFFFFFF, 1.0f) : vtheme::hex(0x484F58, 1.0f);
+  m_renderer.DrawCircle(grabCenterX, grabCY, grabDrawR, grabColor);
+
+  // Accent ring on hover/drag
+  if (hoverT > 0.01f && enabled) {
+    D2D1_COLOR_F ring = m_accent;
+    ring.a = hoverT * 0.25f;
+    m_renderer.DrawCircle(grabCenterX, grabCY, grabDrawR + 4.0f, ring);
+  }
+
+  m_cursorY = y + 20.0f;
   return changed;
 }
 
@@ -805,9 +847,9 @@ bool ImGuiOverlay::Combo(const char* label, int* selectedIndex, const char* cons
   float h = vtheme::kComboHeight;
 
   // Label above
-  D2D1_COLOR_F textColor = enabled ? vtheme::kTextPrimary : vtheme::kTextSecondary;
-  m_renderer.DrawTextA(label, x + 4.0f, y, w, h * 0.8f, textColor, vtheme::kFontSmall);
-  y += h * 0.7f;
+  D2D1_COLOR_F textColor = enabled ? vtheme::kTextSecondary : vtheme::hex(0x484F58, 1.0f);
+  m_renderer.DrawTextA(label, x + 4.0f, y, w, 18.0f, textColor, vtheme::kFontSmall);
+  y += 20.0f;
 
   // Combo header
   bool isOpen = (m_openComboId == id);
@@ -817,25 +859,37 @@ bool ImGuiOverlay::Combo(const char* label, int* selectedIndex, const char* cons
   hoverT += (headerHovered ? 1.0f : -1.0f) * (m_time - m_lastFrameTime) / vtheme::kAnimHoverDuration;
   hoverT = std::clamp(hoverT, 0.0f, 1.0f);
 
+  // Background
   D2D1_COLOR_F bg = vtheme::kBgWidget;
   bg.r = vanim::Lerp(bg.r, vtheme::kBgHover.r, hoverT);
   bg.g = vanim::Lerp(bg.g, vtheme::kBgHover.g, hoverT);
   bg.b = vanim::Lerp(bg.b, vtheme::kBgHover.b, hoverT);
   if (!enabled) bg.a *= 0.5f;
-  m_renderer.FillRoundedRect(x, y, w, h, 4.0f, bg);
-  m_renderer.OutlineRoundedRect(x, y, w, h, 4.0f, m_accentDim, 1.0f);
+  m_renderer.FillRoundedRect(x, y, w, h, 6.0f, bg);
+
+  // Border
+  D2D1_COLOR_F border = vtheme::hex(0x3D444D, 0.4f);
+  border.r = vanim::Lerp(border.r, m_accent.r, hoverT * 0.4f);
+  border.g = vanim::Lerp(border.g, m_accent.g, hoverT * 0.4f);
+  border.b = vanim::Lerp(border.b, m_accent.b, hoverT * 0.4f);
+  border.a = vanim::Lerp(0.35f, 0.6f, hoverT);
+  m_renderer.OutlineRoundedRect(x, y, w, h, 6.0f, border, 1.0f);
 
   // Current selection text
   const char* currentText = (*selectedIndex >= 0 && *selectedIndex < itemCount) ? items[*selectedIndex] : "---";
-  m_renderer.DrawTextA(currentText, x + 8.0f, y, w - 32.0f, h, enabled ? vtheme::kTextPrimary : vtheme::kTextSecondary, vtheme::kFontBody);
+  m_renderer.DrawTextA(currentText, x + 10.0f, y, w - 36.0f, h,
+                       enabled ? vtheme::kTextPrimary : vtheme::kTextSecondary, vtheme::kFontBody);
 
-  // Dropdown arrow (dynamic accent)
-  float arrowX = x + w - 20.0f;
+  // Dropdown chevron
+  float arrowX = x + w - 18.0f;
   float arrowY = y + h * 0.5f;
+  D2D1_COLOR_F chevColor = isOpen ? m_accent : vtheme::kTextSecondary;
   if (isOpen) {
-    m_renderer.DrawDiamond(arrowX, arrowY - 2.0f, 4.0f, m_accent);
+    m_renderer.DrawLine(arrowX - 4.0f, arrowY + 1.5f, arrowX, arrowY - 2.5f, chevColor, 1.5f);
+    m_renderer.DrawLine(arrowX, arrowY - 2.5f, arrowX + 4.0f, arrowY + 1.5f, chevColor, 1.5f);
   } else {
-    m_renderer.DrawDiamond(arrowX, arrowY + 2.0f, 4.0f, m_accentDim);
+    m_renderer.DrawLine(arrowX - 4.0f, arrowY - 1.5f, arrowX, arrowY + 2.5f, chevColor, 1.5f);
+    m_renderer.DrawLine(arrowX, arrowY + 2.5f, arrowX + 4.0f, arrowY - 1.5f, chevColor, 1.5f);
   }
 
   // Toggle dropdown on click
@@ -850,13 +904,32 @@ bool ImGuiOverlay::Combo(const char* label, int* selectedIndex, const char* cons
   // Dropdown items
   if (isOpen && enabled) {
     float itemY = y + h + 2.0f;
+    // Dropdown container background
+    float dropH = static_cast<float>(itemCount) * (h - 2.0f) + static_cast<float>(itemCount - 1) * 1.0f;
+    m_renderer.FillRoundedRect(x, itemY - 1.0f, w, dropH + 2.0f, 6.0f, vtheme::hex(0x1C2128, 0.98f));
+    m_renderer.OutlineRoundedRect(x, itemY - 1.0f, w, dropH + 2.0f, 6.0f, vtheme::hex(0x3D444D, 0.3f), 1.0f);
+
     for (int i = 0; i < itemCount; ++i) {
       float ih = h - 2.0f;
       bool itemHov = PointInRect(m_input.mouseX, m_input.mouseY, x, itemY, w, ih);
-      D2D1_COLOR_F itemBg = (i == *selectedIndex) ? vtheme::kBgActive : (itemHov ? vtheme::kBgHover : vtheme::kBgWidget);
-      m_renderer.FillRect(x, itemY, w, ih, itemBg);
-      D2D1_COLOR_F itemText = (i == *selectedIndex) ? m_accent : vtheme::kTextPrimary;
-      m_renderer.DrawTextA(items[i], x + 8.0f, itemY, w - 16.0f, ih, itemText, vtheme::kFontBody);
+      bool isSel = (i == *selectedIndex);
+
+      // Item background
+      if (isSel) {
+        D2D1_COLOR_F selBg = m_accent;
+        selBg.a = 0.15f;
+        m_renderer.FillRoundedRect(x + 2, itemY, w - 4, ih, 4.0f, selBg);
+      } else if (itemHov) {
+        m_renderer.FillRoundedRect(x + 2, itemY, w - 4, ih, 4.0f, vtheme::hex(0x30363D, 0.6f));
+      }
+
+      // Selection accent dot
+      if (isSel) {
+        m_renderer.DrawCircle(x + 12.0f, itemY + ih * 0.5f, 3.0f, m_accent);
+      }
+
+      D2D1_COLOR_F itemText = isSel ? m_accent : vtheme::kTextPrimary;
+      m_renderer.DrawTextA(items[i], x + (isSel ? 22.0f : 10.0f), itemY, w - 24.0f, ih, itemText, vtheme::kFontBody);
 
       if (itemHov && m_input.mouseClicked) {
         *selectedIndex = i;
@@ -865,7 +938,7 @@ bool ImGuiOverlay::Combo(const char* label, int* selectedIndex, const char* cons
       }
       itemY += ih + 1.0f;
     }
-    advanceY += static_cast<float>(itemCount) * (h - 1.0f) + 4.0f;
+    advanceY += dropH + 6.0f;
   }
 
   m_cursorY = y + advanceY;
@@ -880,25 +953,38 @@ bool ImGuiOverlay::ColorEdit3(const char* label, float* r, float* g, float* b) {
   float h = vtheme::kWidgetHeight;
   bool isOpen = (m_openColorId == id);
 
-  // Color preview + label
-  float previewSize = 20.0f;
-  float previewX = x + 4.0f;
-  float previewY = y + (h - previewSize) * 0.5f;
-  m_renderer.FillRoundedRect(previewX, previewY, previewSize, previewSize, 3.0f, vtheme::rgba(*r, *g, *b, 1.0f));
-  m_renderer.OutlineRoundedRect(previewX, previewY, previewSize, previewSize, 3.0f, vtheme::kGoldDim, 1.0f);
-  m_renderer.DrawTextA(label, x + previewSize + 12.0f, y, w - previewSize - 16.0f, h, vtheme::kTextPrimary, vtheme::kFontBody);
+  // Color swatch + label
+  float swatchSize = 18.0f;
+  float swatchX = x + 4.0f;
+  float swatchY = y + (h - swatchSize) * 0.5f;
+  m_renderer.FillRoundedRect(swatchX, swatchY, swatchSize, swatchSize, 4.0f, vtheme::rgba(*r, *g, *b, 1.0f));
+  m_renderer.OutlineRoundedRect(swatchX, swatchY, swatchSize, swatchSize, 4.0f, vtheme::hex(0x484F58, 0.5f), 1.0f);
 
+  m_renderer.DrawTextA(label, x + swatchSize + 12.0f, y, w - swatchSize - 16.0f, h, vtheme::kTextPrimary, vtheme::kFontBody);
+
+  // Click to expand/collapse
   bool headerHovered = PointInRect(m_input.mouseX, m_input.mouseY, x, y, w, h);
   if (headerHovered && m_input.mouseClicked) {
     m_openColorId = isOpen ? 0 : id;
     isOpen = !isOpen;
   }
 
+  // Expand indicator
+  D2D1_COLOR_F chevColor = isOpen ? m_accent : vtheme::kTextSecondary;
+  float chevX = x + w - 14.0f;
+  float chevY = y + h * 0.5f;
+  if (isOpen) {
+    m_renderer.DrawLine(chevX - 3, chevY + 1.5f, chevX, chevY - 2, chevColor, 1.5f);
+    m_renderer.DrawLine(chevX, chevY - 2, chevX + 3, chevY + 1.5f, chevColor, 1.5f);
+  } else {
+    m_renderer.DrawLine(chevX - 3, chevY - 1.5f, chevX, chevY + 2, chevColor, 1.5f);
+    m_renderer.DrawLine(chevX, chevY + 2, chevX + 3, chevY - 1.5f, chevColor, 1.5f);
+  }
+
   m_cursorY += h + 2.0f;
   bool changed = false;
 
   if (isOpen) {
-    // RGB sliders
     float tempR = *r, tempG = *g, tempB = *b;
     if (SliderFloat("  Red", &tempR, 0.0f, 1.0f, "%.2f")) { *r = tempR; changed = true; }
     if (SliderFloat("  Green", &tempG, 0.0f, 1.0f, "%.2f")) { *g = tempG; changed = true; }
@@ -915,16 +1001,25 @@ void ImGuiOverlay::PlotLines(const char* label, const float* values, int count, 
   float w = m_contentWidth - 8.0f;
 
   // Label
-  m_renderer.DrawTextA(label, x, y, w, 18.0f, vtheme::kTextSecondary, vtheme::kFontSmall);
+  m_renderer.DrawTextA(label, x, y, w, 16.0f, vtheme::kTextSecondary, vtheme::kFontSmall);
   y += 18.0f;
 
   // Graph background
-  m_renderer.FillRoundedRect(x, y, w, graphH, 4.0f, vtheme::kBgWidget);
+  m_renderer.FillRoundedRect(x, y, w, graphH, 6.0f, vtheme::hex(0x161B22, 1.0f));
+  m_renderer.OutlineRoundedRect(x, y, w, graphH, 6.0f, vtheme::hex(0x30363D, 0.25f), 1.0f);
+
+  // Subtle horizontal grid lines
+  for (int g = 1; g <= 3; ++g) {
+    float gy = y + graphH * static_cast<float>(g) / 4.0f;
+    m_renderer.DrawLine(x + 4.0f, gy, x + w - 4.0f, gy, vtheme::hex(0x21262D, 0.6f), 1.0f);
+  }
 
   // Draw lines
   float range = vmax - vmin;
   if (range < 0.001f) range = 1.0f;
   float stepX = w / static_cast<float>(count > 1 ? count - 1 : 1);
+  float pad = 4.0f;
+  float drawH = graphH - pad * 2.0f;
 
   for (int i = 1; i < count; ++i) {
     int idx0 = (offset + i - 1) % count;
@@ -933,8 +1028,8 @@ void ImGuiOverlay::PlotLines(const char* label, const float* values, int count, 
     float t1 = std::clamp((values[idx1] - vmin) / range, 0.0f, 1.0f);
     float x0 = x + static_cast<float>(i - 1) * stepX;
     float x1 = x + static_cast<float>(i) * stepX;
-    float y0 = y + graphH - t0 * graphH;
-    float y1 = y + graphH - t1 * graphH;
+    float y0 = y + pad + drawH - t0 * drawH;
+    float y1 = y + pad + drawH - t1 * drawH;
     m_renderer.DrawLine(x0, y0, x1, y1, m_accent, 1.5f);
   }
 
@@ -979,27 +1074,27 @@ void ImGuiOverlay::BuildMainPanel() {
   // --- Panel shadow (multi-layer) ---
   BuildPanelShadow(panelDrawX, panelDrawY, panelW, panelH, alpha);
 
-  // --- Panel background with gradient ---
+  // --- Panel background — clean solid with subtle top-to-bottom gradient ---
   D2D1_COLOR_F bgTop = vtheme::kBgPanel;
   D2D1_COLOR_F bgBottom = vtheme::kBgDeep;
   bgTop.a *= alpha * panelOpacity;
   bgBottom.a *= alpha * panelOpacity;
   m_renderer.FillGradientV(panelDrawX, panelDrawY, panelW, panelH, bgTop, bgBottom);
 
-  // Edge accent lines (left + right)
-  D2D1_COLOR_F edgeColor = m_accentDim;
-  edgeColor.a = 0.4f * alpha;
-  m_renderer.DrawLine(panelDrawX + panelW - 1, panelDrawY, panelDrawX + panelW - 1, panelDrawY + panelH, edgeColor, 2.0f);
-  m_renderer.DrawLine(panelDrawX, panelDrawY, panelDrawX, panelDrawY + panelH, edgeColor, 1.0f);
+  // Subtle right border only
+  D2D1_COLOR_F edgeColor = vtheme::hex(0x30363D, 0.3f * alpha);
+  m_renderer.DrawLine(panelDrawX + panelW - 1, panelDrawY, panelDrawX + panelW - 1, panelDrawY + panelH, edgeColor, 1.0f);
 
   // --- Title bar ---
   float titleH = vtheme::kTitleBarHeight;
-  D2D1_COLOR_F titleBg = vtheme::hex(0x0A0B14, 0.98f * alpha);
-  m_renderer.FillRoundedRect(panelDrawX, panelDrawY, panelW, titleH, cr, titleBg);
+  D2D1_COLOR_F titleBg = vtheme::hex(0x0D1117, 0.98f * alpha);
+  m_renderer.FillRect(panelDrawX, panelDrawY, panelW, titleH, titleBg);
 
-  // Title decorations with dynamic accent
-  m_renderer.DrawDiamond(panelDrawX + 20.0f, panelDrawY + titleH * 0.5f, 5.0f, m_accent);
-  m_renderer.DrawTextA("TENSOR CURIE  |  DLSS 4.5", panelDrawX + 36.0f, panelDrawY, panelW - 80.0f, titleH, m_accent, vtheme::kFontTitle * fontScl, ValhallaRenderer::TextAlign::Left, true);
+  // Title text — clean and minimal
+  m_renderer.DrawTextA("TENSOR CURIE", panelDrawX + 16.0f, panelDrawY, panelW * 0.5f, titleH,
+                       m_accent, vtheme::kFontTitle * fontScl, ValhallaRenderer::TextAlign::Left, true);
+  m_renderer.DrawTextA("DLSS 4.5", panelDrawX + 16.0f, panelDrawY, panelW - 56.0f, titleH,
+                       vtheme::kTextSecondary, vtheme::kFontSmall, ValhallaRenderer::TextAlign::Right);
 
   // --- Dragging on title bar ---
   bool onTitleBar = PointInRect(m_input.mouseX, m_input.mouseY, panelDrawX, panelDrawY, panelW - 40.0f, titleH);
@@ -1012,11 +1107,9 @@ void ImGuiOverlay::BuildMainPanel() {
     if (m_input.mouseDown) {
       m_panelX = m_input.mouseX - m_dragOffsetX;
       m_panelY = m_input.mouseY - m_dragOffsetY;
-      // Clamp to screen
       m_panelX = std::clamp(m_panelX, -panelW + 60.0f, screenW - 60.0f);
       m_panelY = std::clamp(m_panelY, 0.0f, screenH - titleH);
       SnapPanel(screenW, screenH);
-      // Save position
       cust.panelX = m_panelX;
       cust.panelY = m_panelY;
       ConfigManager::Get().MarkDirty();
@@ -1025,21 +1118,26 @@ void ImGuiOverlay::BuildMainPanel() {
     }
   }
 
-  // Close button [X]
-  float closeX = panelDrawX + panelW - 36.0f;
-  float closeY = panelDrawY + 8.0f;
-  float closeS = 28.0f;
+  // Close button [X] — minimal circle style
+  float closeS = 24.0f;
+  float closeX = panelDrawX + panelW - closeS - 12.0f;
+  float closeY = panelDrawY + (titleH - closeS) * 0.5f;
   bool closeHovered = PointInRect(m_input.mouseX, m_input.mouseY, closeX, closeY, closeS, closeS);
-  D2D1_COLOR_F closeColor = closeHovered ? vtheme::kStatusBad : vtheme::kTextSecondary;
-  m_renderer.DrawLine(closeX + 8, closeY + 8, closeX + closeS - 8, closeY + closeS - 8, closeColor, 2.0f);
-  m_renderer.DrawLine(closeX + closeS - 8, closeY + 8, closeX + 8, closeY + closeS - 8, closeColor, 2.0f);
+  if (closeHovered) {
+    m_renderer.FillRoundedRect(closeX, closeY, closeS, closeS, closeS * 0.5f, vtheme::hex(0xF85149, 0.2f));
+  }
+  D2D1_COLOR_F closeColor = closeHovered ? vtheme::kStatusBad : vtheme::hex(0x8B949E, 0.6f);
+  float cx = closeX + closeS * 0.5f;
+  float cy = closeY + closeS * 0.5f;
+  m_renderer.DrawLine(cx - 4.5f, cy - 4.5f, cx + 4.5f, cy + 4.5f, closeColor, 1.5f);
+  m_renderer.DrawLine(cx + 4.5f, cy - 4.5f, cx - 4.5f, cy + 4.5f, closeColor, 1.5f);
   if (closeHovered && m_input.mouseClicked) {
     ToggleVisibility();
     return;
   }
 
-  // Title bar separator with accent
-  m_renderer.DrawLine(panelDrawX + 12, panelDrawY + titleH, panelDrawX + panelW - 12, panelDrawY + titleH, m_accentDim, 1.0f);
+  // Title bar separator — subtle line
+  m_renderer.DrawLine(panelDrawX, panelDrawY + titleH, panelDrawX + panelW, panelDrawY + titleH, vtheme::hex(0x30363D, 0.4f), 1.0f);
 
   // --- Status bar ---
   float statusY = panelDrawY + titleH + 2.0f;
@@ -1515,18 +1613,19 @@ void ImGuiOverlay::BuildMainPanel() {
 
   m_renderer.PopClip();
 
-  // --- Scrollbar ---
+  // --- Scrollbar — minimal thin rail ---
   if (m_contentHeight > m_visibleHeight) {
-    float sbX = panelDrawX + panelW - vtheme::kScrollbarW - 2.0f;
+    float sbW = vtheme::kScrollbarW;
+    float sbX = panelDrawX + panelW - sbW - 3.0f;
     float sbY = contentStartY;
     float sbH = m_visibleHeight;
-    float thumbH = (std::max)(30.0f, sbH * (m_visibleHeight / m_contentHeight));
+    float thumbH = (std::max)(24.0f, sbH * (m_visibleHeight / m_contentHeight));
     float maxScroll = m_contentHeight - m_visibleHeight;
     float thumbY = sbY + (m_scrollOffset / maxScroll) * (sbH - thumbH);
 
-    m_renderer.FillRect(sbX, sbY, vtheme::kScrollbarW, sbH, vtheme::kScrollBg);
-    bool sbHovered = PointInRect(m_input.mouseX, m_input.mouseY, sbX - 4, thumbY, vtheme::kScrollbarW + 8, thumbH);
-    m_renderer.FillRoundedRect(sbX, thumbY, vtheme::kScrollbarW, thumbH, 3.0f, sbHovered ? m_accent : vtheme::kScrollThumb);
+    bool sbHovered = PointInRect(m_input.mouseX, m_input.mouseY, sbX - 6, thumbY, sbW + 12, thumbH);
+    D2D1_COLOR_F thumbColor = sbHovered ? vtheme::hex(0x8B949E, 0.7f) : vtheme::hex(0x484F58, 0.5f);
+    m_renderer.FillRoundedRect(sbX, thumbY, sbW, thumbH, sbW * 0.5f, thumbColor);
   }
 
   // --- Scroll input ---
@@ -1758,21 +1857,22 @@ void ImGuiOverlay::BuildSetupWizard() {
   ModConfig& cfg = ConfigManager::Get().Data();
   StreamlineIntegration& sli = StreamlineIntegration::Get();
 
-  float wizW = 480.0f, wizH = 380.0f;
+  float wizW = 460.0f, wizH = 380.0f;
   float wizX = (static_cast<float>(m_width) - wizW) * 0.5f;
   float wizY = (static_cast<float>(m_height) - wizH) * 0.5f;
 
   // Dark overlay behind wizard
-  m_renderer.FillRect(0, 0, static_cast<float>(m_width), static_cast<float>(m_height), vtheme::hex(0x000000, 0.5f));
+  m_renderer.FillRect(0, 0, static_cast<float>(m_width), static_cast<float>(m_height), vtheme::hex(0x000000, 0.55f));
 
-  // Wizard panel
-  m_renderer.FillRoundedRect(wizX, wizY, wizW, wizH, 8.0f, vtheme::kBgPanel);
-  m_renderer.OutlineRoundedRect(wizX, wizY, wizW, wizH, 8.0f, vtheme::kGoldDim, 1.5f);
+  // Wizard panel — clean card style
+  m_renderer.FillRoundedRect(wizX, wizY, wizW, wizH, 12.0f, vtheme::hex(0x161B22, 0.98f));
+  m_renderer.OutlineRoundedRect(wizX, wizY, wizW, wizH, 12.0f, vtheme::hex(0x30363D, 0.4f), 1.0f);
 
-  // Title
-  m_renderer.DrawDiamond(wizX + 20.0f, wizY + 24.0f, 5.0f, vtheme::kGold);
-  m_renderer.DrawTextA("First-Time Setup Wizard", wizX + 36.0f, wizY + 8.0f, wizW - 48.0f, 36.0f, vtheme::kGold, vtheme::kFontTitle, ValhallaRenderer::TextAlign::Left, true);
-  m_renderer.DrawLine(wizX + 16.0f, wizY + 44.0f, wizX + wizW - 16.0f, wizY + 44.0f, vtheme::kGoldDim, 1.0f);
+  // Title bar area
+  m_renderer.FillRect(wizX + 1, wizY + 1, wizW - 2, 48.0f, vtheme::hex(0x0D1117, 0.9f));
+  m_renderer.DrawTextA("Setup Wizard", wizX + 20.0f, wizY + 8.0f, wizW - 40.0f, 36.0f,
+                       m_accent, vtheme::kFontTitle, ValhallaRenderer::TextAlign::Left, true);
+  m_renderer.DrawLine(wizX + 1, wizY + 49.0f, wizX + wizW - 1, wizY + 49.0f, vtheme::hex(0x30363D, 0.3f), 1.0f);
 
   // Content
   m_cursorX = wizX + 24.0f;
@@ -1877,14 +1977,9 @@ void ImGuiOverlay::BuildFPSOverlay() {
     default:                       boxX = screenW - boxW - margin; boxY = margin; break; // TopRight
   }
 
-  // --- Background ---
-  m_renderer.FillRoundedRect(boxX, boxY, boxW, boxH, 6.0f * fpsScale, vtheme::hex(0x0A0B14, fpsOpacity));
-  m_renderer.OutlineRoundedRect(boxX, boxY, boxW, boxH, 6.0f * fpsScale, m_accentDim, 1.0f);
-
-  // Norse corner decorations
-  float ds = 5.0f * fpsScale;
-  m_renderer.DrawDiamond(boxX + ds + 4, boxY + ds + 4, ds, m_accent);
-  m_renderer.DrawDiamond(boxX + boxW - ds - 4, boxY + ds + 4, ds, m_accent);
+  // --- Background — clean frosted panel ---
+  m_renderer.FillRoundedRect(boxX, boxY, boxW, boxH, 8.0f * fpsScale, vtheme::hex(0x0D1117, fpsOpacity * 0.92f));
+  m_renderer.OutlineRoundedRect(boxX, boxY, boxW, boxH, 8.0f * fpsScale, vtheme::hex(0x30363D, 0.3f), 1.0f);
 
   // --- FPS color based on value ---
   D2D1_COLOR_F fpsColor = m_accent;
@@ -1951,11 +2046,10 @@ void ImGuiOverlay::BuildFPSOverlay() {
     }
   }
 
-  // Bottom accent line
-  m_renderer.DrawLine(boxX + 16, boxY + boxH - 6 * fpsScale, boxX + boxW - 16, boxY + boxH - 6 * fpsScale, m_accentDim, 1.0f);
-  // Bottom corner decorations
-  m_renderer.DrawDiamond(boxX + ds + 4, boxY + boxH - ds - 4, ds * 0.7f, m_accentDim);
-  m_renderer.DrawDiamond(boxX + boxW - ds - 4, boxY + boxH - ds - 4, ds * 0.7f, m_accentDim);
+  // Clean bottom accent bar
+  D2D1_COLOR_F barAccent = m_accent;
+  barAccent.a = 0.4f;
+  m_renderer.FillRoundedRect(boxX + 8, boxY + boxH - 3.0f * fpsScale, boxW - 16, 2.0f * fpsScale, 1.0f, barAccent);
 }
 
 // ============================================================================
@@ -1983,10 +2077,10 @@ void ImGuiOverlay::BuildDebugWindow() {
   float dbgX = static_cast<float>(m_width) - dbgW - 24.0f;
   float dbgY = static_cast<float>(m_height) - dbgH - 24.0f;
 
-  m_renderer.FillRoundedRect(dbgX, dbgY, dbgW, dbgH, 6.0f, vtheme::hex(0x0A0B14, 0.9f));
-  m_renderer.OutlineRoundedRect(dbgX, dbgY, dbgW, dbgH, 6.0f, vtheme::kGoldDim, 1.0f);
-  m_renderer.DrawTextA("Resource Debug", dbgX + 12, dbgY + 4, dbgW - 24, 28.0f, vtheme::kGold, vtheme::kFontSection, ValhallaRenderer::TextAlign::Left, true);
-  m_renderer.DrawLine(dbgX + 12, dbgY + 32, dbgX + dbgW - 12, dbgY + 32, vtheme::kGoldDim, 1.0f);
+  m_renderer.FillRoundedRect(dbgX, dbgY, dbgW, dbgH, 8.0f, vtheme::hex(0x0D1117, 0.92f));
+  m_renderer.OutlineRoundedRect(dbgX, dbgY, dbgW, dbgH, 8.0f, vtheme::hex(0x30363D, 0.4f), 1.0f);
+  m_renderer.DrawTextA("Resource Debug", dbgX + 12, dbgY + 6, dbgW - 24, 26.0f, m_accent, vtheme::kFontSection, ValhallaRenderer::TextAlign::Left, true);
+  m_renderer.DrawLine(dbgX + 12, dbgY + 32, dbgX + dbgW - 12, dbgY + 32, vtheme::hex(0x30363D, 0.3f), 1.0f);
 
   std::string debugInfo = ResourceDetector::Get().GetDebugInfo();
   if (debugInfo.empty()) debugInfo = "No debug info available yet...";

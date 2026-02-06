@@ -28,39 +28,67 @@ static std::mutex g_timerMutex;
 // Unified frame counter — single source of truth across the proxy
 static std::atomic<uint64_t> g_unifiedFrameCount(0);
 
+static void RegisterHotkeys() {
+  ModConfig &cfg = ConfigManager::Get().Data();
+  InputHandler::Get().RegisterHotkey(
+      cfg.ui.menuHotkey, []() { ImGuiOverlay::Get().ToggleVisibility(); },
+      "Toggle Menu");
+  InputHandler::Get().RegisterHotkey(
+      cfg.ui.fpsHotkey, []() { ImGuiOverlay::Get().ToggleFPS(); }, "Toggle FPS");
+  InputHandler::Get().RegisterHotkey(
+      cfg.ui.vignetteHotkey, []() { ImGuiOverlay::Get().ToggleVignette(); },
+      "Toggle Vignette");
+  InputHandler::Get().RegisterHotkey(
+      VK_F8,
+      []() {
+        float jx = 0.0f, jy = 0.0f;
+        StreamlineIntegration::Get().GetLastCameraJitter(jx, jy);
+        bool hasCam = StreamlineIntegration::Get().HasCameraData();
+        LOG_INFO("F8 Debug: Camera={} Jitter=({:.4f}, {:.4f})",
+                 hasCam ? "OK" : "MISSING", jx, jy);
+        ImGuiOverlay::Get().SetCameraStatus(hasCam, jx, jy);
+      },
+      "Debug Camera Status");
+}
+
 static void TimerThreadProc() {
   LOG_INFO("[TIMER] Thread started");
 
-  static bool hotkeysRegistered = false;
-  if (!hotkeysRegistered) {
-    ModConfig &cfg = ConfigManager::Get().Data();
-    InputHandler::Get().RegisterHotkey(
-        cfg.ui.menuHotkey, []() { ImGuiOverlay::Get().ToggleVisibility(); },
-        "Toggle Menu");
-    InputHandler::Get().RegisterHotkey(
-        cfg.ui.fpsHotkey, []() { ImGuiOverlay::Get().ToggleFPS(); }, "Toggle FPS");
-    InputHandler::Get().RegisterHotkey(
-        cfg.ui.vignetteHotkey, []() { ImGuiOverlay::Get().ToggleVignette(); },
-        "Toggle Vignette");
-    InputHandler::Get().RegisterHotkey(
-        VK_F8,
-        []() {
-          float jx = 0.0f, jy = 0.0f;
-          StreamlineIntegration::Get().GetLastCameraJitter(jx, jy);
-          bool hasCam = StreamlineIntegration::Get().HasCameraData();
-          LOG_INFO("F8 Debug: Camera={} Jitter=({:.4f}, {:.4f})",
-                   hasCam ? "OK" : "MISSING", jx, jy);
-          ImGuiOverlay::Get().SetCameraStatus(hasCam, jx, jy);
-        },
-        "Debug Camera Status");
-    InputHandler::Get().InstallHook();
-    hotkeysRegistered = true;
-  }
+  // Register hotkey callbacks (idempotent — callbacks are only added once)
+  bool hotkeysRegistered = false;
+  bool hookInstalled = false;
+  int hookRetryCount = 0;
+  constexpr int kMaxHookRetries = 10;
 
   auto lastFpsTime = std::chrono::steady_clock::now();
   uint64_t lastFrameCount = 0;
+  int hotReloadCounter = 0;
 
   while (g_timerRunning.load(std::memory_order_acquire)) {
+    // --- Hotkey registration (one-time) ---
+    if (!hotkeysRegistered) {
+      RegisterHotkeys();
+      hotkeysRegistered = true;
+    }
+
+    // --- Hook installation with retry ---
+    // Low-level keyboard hooks require a message pump on the thread that
+    // installed them.  If the hook fails (e.g. security software blocked it),
+    // retry a few times before giving up.  Polling via ProcessInput() still
+    // works as a fallback.
+    if (!hookInstalled && hookRetryCount < kMaxHookRetries) {
+      InputHandler::Get().InstallHook();
+      if (InputHandler::Get().HasHookInstalled()) {
+        hookInstalled = true;
+        LOG_INFO("[TIMER] Keyboard hook active — F5 hotkey ready");
+      } else {
+        ++hookRetryCount;
+        LOG_WARN("[TIMER] Hook install attempt {}/{} failed, will retry. "
+                 "Polling fallback is active.",
+                 hookRetryCount, kMaxHookRetries);
+      }
+    }
+
     std::unique_lock<std::mutex> lock(g_timerMutex);
     g_timerCV.wait_for(lock, std::chrono::milliseconds(16), [] {
       return !g_timerRunning.load(std::memory_order_acquire);
@@ -97,12 +125,13 @@ static void TimerThreadProc() {
     // Timer thread handles ONLY: FPS calculation, config hot-reload, input polling.
     // GUI init and rendering are done on the Present/D3D12 submission thread.
 
-    static int hotReloadCounter = 0;
     if (++hotReloadCounter >= 100) {
       ConfigManager::Get().CheckHotReload();
       hotReloadCounter = 0;
     }
 
+    // ProcessInput() is the polling fallback — works even when the global hook
+    // failed to install, ensuring hotkeys always function.
     InputHandler::Get().ProcessInput();
   }
 

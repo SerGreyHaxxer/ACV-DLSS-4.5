@@ -94,6 +94,7 @@ private:
     uint32_t m_openColorId = 0;    // which color picker is currently expanded
     std::unordered_map<uint32_t, bool>  m_sectionOpen;  // section collapse state
     std::unordered_map<uint32_t, float> m_hoverAnim;    // hover animation progress [0..1]
+    std::unordered_map<uint32_t, float> m_toggleAnim;   // toggle switch animation [0..1]
 
     // --- Input ---
     VGuiInput m_input;

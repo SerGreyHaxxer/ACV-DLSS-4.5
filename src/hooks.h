@@ -90,12 +90,9 @@ typedef void(STDMETHODCALLTYPE *PFN_ClearRenderTargetView)(
 
 void WrapCreatedD3D12Device(REFIID riid, void **ppDevice,
                             bool takeOwnership = true);
-void WrapCommandQueue(void **ppCommandQueue, bool takeOwnership = true);
 void InstallD3D12Hooks();
-void InstallGetProcAddressHook();
 bool InitializeHooks();
 void CleanupHooks();
-void InitDescriptorHooks();
 void EnsureD3D12VTableHooks(ID3D12Device *device);
 void NotifyWrappedCommandListUsed();
 bool IsWrappedCommandListUsed();

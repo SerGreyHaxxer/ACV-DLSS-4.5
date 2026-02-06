@@ -177,6 +177,15 @@ void ConfigManager::Load() {
     m_config.system.setupWizardCompleted =
         tbl["System"]["wizard_completed"].value_or(
             m_config.system.setupWizardCompleted);
+    m_config.system.quietResourceScan =
+        tbl["System"]["quiet_resource_scan"].value_or(
+            m_config.system.quietResourceScan);
+    m_config.system.setupWizardForceShow =
+        tbl["System"]["wizard_force_show"].value_or(
+            m_config.system.setupWizardForceShow);
+    m_config.system.hudFixEnabled =
+        tbl["System"]["hud_fix_enabled"].value_or(
+            m_config.system.hudFixEnabled);
 
     LOG_INFO("Configuration loaded from TOML.");
   } catch (const std::exception &ex) {
@@ -264,7 +273,13 @@ void ConfigManager::Save() {
        {"System", toml::table{{{"log_verbosity", m_config.system.logVerbosity},
                                {"debug_mode", m_config.system.debugMode},
                                {"wizard_completed",
-                                m_config.system.setupWizardCompleted}}}}}};
+                                m_config.system.setupWizardCompleted},
+                               {"quiet_resource_scan",
+                                m_config.system.quietResourceScan},
+                               {"wizard_force_show",
+                                m_config.system.setupWizardForceShow},
+                               {"hud_fix_enabled",
+                                m_config.system.hudFixEnabled}}}}}};
 
   std::ofstream file(GetConfigPath());
   file << tbl;

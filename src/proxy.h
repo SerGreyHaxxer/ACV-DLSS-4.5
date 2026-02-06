@@ -67,7 +67,6 @@ void ShutdownProxy();
 
 void InitProxyGlobal();
 void CleanupProxyGlobal();
-void SetStartupTraceEnabled(bool enabled);
 
 // Note: The actual exported functions are declared in proxy.cpp with 
 // extern "C" __declspec(dllexport) to avoid conflicts with SDK headers
