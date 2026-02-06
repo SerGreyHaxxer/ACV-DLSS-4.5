@@ -6,6 +6,8 @@
 
 // Global static for the hook procedure
 static InputHandler* g_pInputHandler = nullptr;
+// Lock hierarchy level 4 — same tier as Config/Input
+// (SwapChain=1 > Hooks=2 > Resources=3 > Config/Input=4 > Logging=5).
 static std::mutex g_inputHandlerMutex;
 
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {

@@ -38,154 +38,164 @@ void ConfigManager::Load() {
 
   try {
     auto tbl = toml::parse_file(path.string());
-    m_lastWriteTime = std::filesystem::last_write_time(path);
+
+    // Parse into a temporary config, then swap under lock to avoid tearing.
+    ModConfig parsed = m_config; // start from current defaults
 
     // DLSS
-    m_config.dlss.mode = tbl["DLSS"]["mode"].value_or(m_config.dlss.mode);
-    m_config.dlss.preset = tbl["DLSS"]["preset"].value_or(m_config.dlss.preset);
-    m_config.dlss.sharpness =
-        tbl["DLSS"]["sharpness"].value_or(m_config.dlss.sharpness);
-    m_config.dlss.lodBias =
-        tbl["DLSS"]["lod_bias"].value_or(m_config.dlss.lodBias);
+    parsed.dlss.mode = tbl["DLSS"]["mode"].value_or(parsed.dlss.mode);
+    parsed.dlss.preset = tbl["DLSS"]["preset"].value_or(parsed.dlss.preset);
+    parsed.dlss.sharpness =
+        tbl["DLSS"]["sharpness"].value_or(parsed.dlss.sharpness);
+    parsed.dlss.lodBias =
+        tbl["DLSS"]["lod_bias"].value_or(parsed.dlss.lodBias);
 
     // FrameGen
-    m_config.fg.multiplier =
-        tbl["FrameGen"]["multiplier"].value_or(m_config.fg.multiplier);
-    m_config.fg.smartEnabled =
-        tbl["FrameGen"]["smart_enabled"].value_or(m_config.fg.smartEnabled);
-    m_config.fg.autoDisable =
-        tbl["FrameGen"]["auto_disable"].value_or(m_config.fg.autoDisable);
-    m_config.fg.autoDisableFps = tbl["FrameGen"]["auto_disable_fps"].value_or(
-        m_config.fg.autoDisableFps);
-    m_config.fg.sceneChangeEnabled =
+    parsed.fg.multiplier =
+        tbl["FrameGen"]["multiplier"].value_or(parsed.fg.multiplier);
+    parsed.fg.smartEnabled =
+        tbl["FrameGen"]["smart_enabled"].value_or(parsed.fg.smartEnabled);
+    parsed.fg.autoDisable =
+        tbl["FrameGen"]["auto_disable"].value_or(parsed.fg.autoDisable);
+    parsed.fg.autoDisableFps = tbl["FrameGen"]["auto_disable_fps"].value_or(
+        parsed.fg.autoDisableFps);
+    parsed.fg.sceneChangeEnabled =
         tbl["FrameGen"]["scene_change_enabled"].value_or(
-            m_config.fg.sceneChangeEnabled);
-    m_config.fg.sceneChangeThreshold =
+            parsed.fg.sceneChangeEnabled);
+    parsed.fg.sceneChangeThreshold =
         tbl["FrameGen"]["scene_change_threshold"].value_or(
-            m_config.fg.sceneChangeThreshold);
-    m_config.fg.interpolationQuality =
+            parsed.fg.sceneChangeThreshold);
+    parsed.fg.interpolationQuality =
         tbl["FrameGen"]["interpolation_quality"].value_or(
-            m_config.fg.interpolationQuality);
+            parsed.fg.interpolationQuality);
 
     // MotionVectors
-    m_config.mvec.autoScale =
-        tbl["MotionVectors"]["auto_scale"].value_or(m_config.mvec.autoScale);
-    m_config.mvec.scaleX =
-        tbl["MotionVectors"]["scale_x"].value_or(m_config.mvec.scaleX);
-    m_config.mvec.scaleY =
-        tbl["MotionVectors"]["scale_y"].value_or(m_config.mvec.scaleY);
+    parsed.mvec.autoScale =
+        tbl["MotionVectors"]["auto_scale"].value_or(parsed.mvec.autoScale);
+    parsed.mvec.scaleX =
+        tbl["MotionVectors"]["scale_x"].value_or(parsed.mvec.scaleX);
+    parsed.mvec.scaleY =
+        tbl["MotionVectors"]["scale_y"].value_or(parsed.mvec.scaleY);
 
     // RayReconstruction
-    m_config.rr.enabled =
-        tbl["RayReconstruction"]["enabled"].value_or(m_config.rr.enabled);
-    m_config.rr.preset =
-        tbl["RayReconstruction"]["preset"].value_or(m_config.rr.preset);
-    m_config.rr.denoiserStrength =
+    parsed.rr.enabled =
+        tbl["RayReconstruction"]["enabled"].value_or(parsed.rr.enabled);
+    parsed.rr.preset =
+        tbl["RayReconstruction"]["preset"].value_or(parsed.rr.preset);
+    parsed.rr.denoiserStrength =
         tbl["RayReconstruction"]["denoiser_strength"].value_or(
-            m_config.rr.denoiserStrength);
+            parsed.rr.denoiserStrength);
 
     // DeepDVC
-    m_config.dvc.enabled =
-        tbl["DeepDVC"]["enabled"].value_or(m_config.dvc.enabled);
-    m_config.dvc.intensity =
-        tbl["DeepDVC"]["intensity"].value_or(m_config.dvc.intensity);
-    m_config.dvc.saturation =
-        tbl["DeepDVC"]["saturation"].value_or(m_config.dvc.saturation);
-    m_config.dvc.adaptiveEnabled = tbl["DeepDVC"]["adaptive_enabled"].value_or(
-        m_config.dvc.adaptiveEnabled);
-    m_config.dvc.adaptiveStrength =
+    parsed.dvc.enabled =
+        tbl["DeepDVC"]["enabled"].value_or(parsed.dvc.enabled);
+    parsed.dvc.intensity =
+        tbl["DeepDVC"]["intensity"].value_or(parsed.dvc.intensity);
+    parsed.dvc.saturation =
+        tbl["DeepDVC"]["saturation"].value_or(parsed.dvc.saturation);
+    parsed.dvc.adaptiveEnabled = tbl["DeepDVC"]["adaptive_enabled"].value_or(
+        parsed.dvc.adaptiveEnabled);
+    parsed.dvc.adaptiveStrength =
         tbl["DeepDVC"]["adaptive_strength"].value_or(
-            m_config.dvc.adaptiveStrength);
-    m_config.dvc.adaptiveMin =
-        tbl["DeepDVC"]["adaptive_min"].value_or(m_config.dvc.adaptiveMin);
-    m_config.dvc.adaptiveMax =
-        tbl["DeepDVC"]["adaptive_max"].value_or(m_config.dvc.adaptiveMax);
-    m_config.dvc.adaptiveSmoothing =
+            parsed.dvc.adaptiveStrength);
+    parsed.dvc.adaptiveMin =
+        tbl["DeepDVC"]["adaptive_min"].value_or(parsed.dvc.adaptiveMin);
+    parsed.dvc.adaptiveMax =
+        tbl["DeepDVC"]["adaptive_max"].value_or(parsed.dvc.adaptiveMax);
+    parsed.dvc.adaptiveSmoothing =
         tbl["DeepDVC"]["adaptive_smoothing"].value_or(
-            m_config.dvc.adaptiveSmoothing);
+            parsed.dvc.adaptiveSmoothing);
 
     // HDR
-    m_config.hdr.enabled = tbl["HDR"]["enabled"].value_or(m_config.hdr.enabled);
-    m_config.hdr.peakNits =
-        tbl["HDR"]["peak_nits"].value_or(m_config.hdr.peakNits);
-    m_config.hdr.paperWhiteNits =
-        tbl["HDR"]["paper_white_nits"].value_or(m_config.hdr.paperWhiteNits);
-    m_config.hdr.exposure =
-        tbl["HDR"]["exposure"].value_or(m_config.hdr.exposure);
-    m_config.hdr.gamma = tbl["HDR"]["gamma"].value_or(m_config.hdr.gamma);
-    m_config.hdr.tonemapCurve =
-        tbl["HDR"]["tonemap_curve"].value_or(m_config.hdr.tonemapCurve);
-    m_config.hdr.saturation =
-        tbl["HDR"]["saturation"].value_or(m_config.hdr.saturation);
+    parsed.hdr.enabled = tbl["HDR"]["enabled"].value_or(parsed.hdr.enabled);
+    parsed.hdr.peakNits =
+        tbl["HDR"]["peak_nits"].value_or(parsed.hdr.peakNits);
+    parsed.hdr.paperWhiteNits =
+        tbl["HDR"]["paper_white_nits"].value_or(parsed.hdr.paperWhiteNits);
+    parsed.hdr.exposure =
+        tbl["HDR"]["exposure"].value_or(parsed.hdr.exposure);
+    parsed.hdr.gamma = tbl["HDR"]["gamma"].value_or(parsed.hdr.gamma);
+    parsed.hdr.tonemapCurve =
+        tbl["HDR"]["tonemap_curve"].value_or(parsed.hdr.tonemapCurve);
+    parsed.hdr.saturation =
+        tbl["HDR"]["saturation"].value_or(parsed.hdr.saturation);
 
     // UI
-    m_config.ui.visible = tbl["UI"]["visible"].value_or(m_config.ui.visible);
-    m_config.ui.showFPS = tbl["UI"]["show_fps"].value_or(m_config.ui.showFPS);
-    m_config.ui.showVignette =
-        tbl["UI"]["show_vignette"].value_or(m_config.ui.showVignette);
-    m_config.ui.menuHotkey =
-        tbl["UI"]["menu_hotkey"].value_or(m_config.ui.menuHotkey);
-    m_config.ui.fpsHotkey =
-        tbl["UI"]["fps_hotkey"].value_or(m_config.ui.fpsHotkey);
-    m_config.ui.vignetteHotkey =
-        tbl["UI"]["vignette_hotkey"].value_or(m_config.ui.vignetteHotkey);
-    m_config.ui.vignetteIntensity =
-        tbl["UI"]["vignette_intensity"].value_or(m_config.ui.vignetteIntensity);
-    m_config.ui.vignetteRadius =
-        tbl["UI"]["vignette_radius"].value_or(m_config.ui.vignetteRadius);
-    m_config.ui.vignetteSoftness =
-        tbl["UI"]["vignette_softness"].value_or(m_config.ui.vignetteSoftness);
-    m_config.ui.vignetteColorR =
-        tbl["UI"]["vignette_color_r"].value_or(m_config.ui.vignetteColorR);
-    m_config.ui.vignetteColorG =
-        tbl["UI"]["vignette_color_g"].value_or(m_config.ui.vignetteColorG);
-    m_config.ui.vignetteColorB =
-        tbl["UI"]["vignette_color_b"].value_or(m_config.ui.vignetteColorB);
+    parsed.ui.visible = tbl["UI"]["visible"].value_or(parsed.ui.visible);
+    parsed.ui.showFPS = tbl["UI"]["show_fps"].value_or(parsed.ui.showFPS);
+    parsed.ui.showVignette =
+        tbl["UI"]["show_vignette"].value_or(parsed.ui.showVignette);
+    parsed.ui.menuHotkey =
+        tbl["UI"]["menu_hotkey"].value_or(parsed.ui.menuHotkey);
+    parsed.ui.fpsHotkey =
+        tbl["UI"]["fps_hotkey"].value_or(parsed.ui.fpsHotkey);
+    parsed.ui.vignetteHotkey =
+        tbl["UI"]["vignette_hotkey"].value_or(parsed.ui.vignetteHotkey);
+    parsed.ui.vignetteIntensity =
+        tbl["UI"]["vignette_intensity"].value_or(parsed.ui.vignetteIntensity);
+    parsed.ui.vignetteRadius =
+        tbl["UI"]["vignette_radius"].value_or(parsed.ui.vignetteRadius);
+    parsed.ui.vignetteSoftness =
+        tbl["UI"]["vignette_softness"].value_or(parsed.ui.vignetteSoftness);
+    parsed.ui.vignetteColorR =
+        tbl["UI"]["vignette_color_r"].value_or(parsed.ui.vignetteColorR);
+    parsed.ui.vignetteColorG =
+        tbl["UI"]["vignette_color_g"].value_or(parsed.ui.vignetteColorG);
+    parsed.ui.vignetteColorB =
+        tbl["UI"]["vignette_color_b"].value_or(parsed.ui.vignetteColorB);
 
     // Customization
-    m_config.customization.animationType = tbl["Customization"]["anim_type"].value_or(m_config.customization.animationType);
-    m_config.customization.animSpeed = tbl["Customization"]["anim_speed"].value_or(m_config.customization.animSpeed);
-    m_config.customization.panelOpacity = tbl["Customization"]["panel_opacity"].value_or(m_config.customization.panelOpacity);
-    m_config.customization.panelWidth = tbl["Customization"]["panel_width"].value_or(m_config.customization.panelWidth);
-    m_config.customization.cornerRadius = tbl["Customization"]["corner_radius"].value_or(m_config.customization.cornerRadius);
-    m_config.customization.panelShadow = tbl["Customization"]["panel_shadow"].value_or(m_config.customization.panelShadow);
-    m_config.customization.panelX = tbl["Customization"]["panel_x"].value_or(m_config.customization.panelX);
-    m_config.customization.panelY = tbl["Customization"]["panel_y"].value_or(m_config.customization.panelY);
-    m_config.customization.snapToEdges = tbl["Customization"]["snap_to_edges"].value_or(m_config.customization.snapToEdges);
-    m_config.customization.snapDistance = tbl["Customization"]["snap_distance"].value_or(m_config.customization.snapDistance);
-    m_config.customization.fpsPosition = tbl["Customization"]["fps_position"].value_or(m_config.customization.fpsPosition);
-    m_config.customization.fpsStyle = tbl["Customization"]["fps_style"].value_or(m_config.customization.fpsStyle);
-    m_config.customization.fpsOpacity = tbl["Customization"]["fps_opacity"].value_or(m_config.customization.fpsOpacity);
-    m_config.customization.fpsScale = tbl["Customization"]["fps_scale"].value_or(m_config.customization.fpsScale);
-    m_config.customization.accentR = tbl["Customization"]["accent_r"].value_or(m_config.customization.accentR);
-    m_config.customization.accentG = tbl["Customization"]["accent_g"].value_or(m_config.customization.accentG);
-    m_config.customization.accentB = tbl["Customization"]["accent_b"].value_or(m_config.customization.accentB);
-    m_config.customization.backgroundDim = tbl["Customization"]["background_dim"].value_or(m_config.customization.backgroundDim);
-    m_config.customization.backgroundDimAmount = tbl["Customization"]["background_dim_amount"].value_or(m_config.customization.backgroundDimAmount);
-    m_config.customization.widgetGlow = tbl["Customization"]["widget_glow"].value_or(m_config.customization.widgetGlow);
-    m_config.customization.statusPulse = tbl["Customization"]["status_pulse"].value_or(m_config.customization.statusPulse);
-    m_config.customization.smoothFPS = tbl["Customization"]["smooth_fps"].value_or(m_config.customization.smoothFPS);
-    m_config.customization.layoutMode = tbl["Customization"]["layout_mode"].value_or(m_config.customization.layoutMode);
-    m_config.customization.fontScale = tbl["Customization"]["font_scale"].value_or(m_config.customization.fontScale);
-    m_config.customization.miniMode = tbl["Customization"]["mini_mode"].value_or(m_config.customization.miniMode);
+    parsed.customization.animationType = tbl["Customization"]["anim_type"].value_or(parsed.customization.animationType);
+    parsed.customization.animSpeed = tbl["Customization"]["anim_speed"].value_or(parsed.customization.animSpeed);
+    parsed.customization.panelOpacity = tbl["Customization"]["panel_opacity"].value_or(parsed.customization.panelOpacity);
+    parsed.customization.panelWidth = tbl["Customization"]["panel_width"].value_or(parsed.customization.panelWidth);
+    parsed.customization.cornerRadius = tbl["Customization"]["corner_radius"].value_or(parsed.customization.cornerRadius);
+    parsed.customization.panelShadow = tbl["Customization"]["panel_shadow"].value_or(parsed.customization.panelShadow);
+    parsed.customization.panelX = tbl["Customization"]["panel_x"].value_or(parsed.customization.panelX);
+    parsed.customization.panelY = tbl["Customization"]["panel_y"].value_or(parsed.customization.panelY);
+    parsed.customization.snapToEdges = tbl["Customization"]["snap_to_edges"].value_or(parsed.customization.snapToEdges);
+    parsed.customization.snapDistance = tbl["Customization"]["snap_distance"].value_or(parsed.customization.snapDistance);
+    parsed.customization.fpsPosition = tbl["Customization"]["fps_position"].value_or(parsed.customization.fpsPosition);
+    parsed.customization.fpsStyle = tbl["Customization"]["fps_style"].value_or(parsed.customization.fpsStyle);
+    parsed.customization.fpsOpacity = tbl["Customization"]["fps_opacity"].value_or(parsed.customization.fpsOpacity);
+    parsed.customization.fpsScale = tbl["Customization"]["fps_scale"].value_or(parsed.customization.fpsScale);
+    parsed.customization.accentR = tbl["Customization"]["accent_r"].value_or(parsed.customization.accentR);
+    parsed.customization.accentG = tbl["Customization"]["accent_g"].value_or(parsed.customization.accentG);
+    parsed.customization.accentB = tbl["Customization"]["accent_b"].value_or(parsed.customization.accentB);
+    parsed.customization.backgroundDim = tbl["Customization"]["background_dim"].value_or(parsed.customization.backgroundDim);
+    parsed.customization.backgroundDimAmount = tbl["Customization"]["background_dim_amount"].value_or(parsed.customization.backgroundDimAmount);
+    parsed.customization.widgetGlow = tbl["Customization"]["widget_glow"].value_or(parsed.customization.widgetGlow);
+    parsed.customization.statusPulse = tbl["Customization"]["status_pulse"].value_or(parsed.customization.statusPulse);
+    parsed.customization.smoothFPS = tbl["Customization"]["smooth_fps"].value_or(parsed.customization.smoothFPS);
+    parsed.customization.layoutMode = tbl["Customization"]["layout_mode"].value_or(parsed.customization.layoutMode);
+    parsed.customization.fontScale = tbl["Customization"]["font_scale"].value_or(parsed.customization.fontScale);
+    parsed.customization.miniMode = tbl["Customization"]["mini_mode"].value_or(parsed.customization.miniMode);
 
     // System
-    m_config.system.logVerbosity =
-        tbl["System"]["log_verbosity"].value_or(m_config.system.logVerbosity);
-    m_config.system.debugMode =
-        tbl["System"]["debug_mode"].value_or(m_config.system.debugMode);
-    m_config.system.setupWizardCompleted =
+    parsed.system.logVerbosity =
+        tbl["System"]["log_verbosity"].value_or(parsed.system.logVerbosity);
+    parsed.system.debugMode =
+        tbl["System"]["debug_mode"].value_or(parsed.system.debugMode);
+    parsed.system.setupWizardCompleted =
         tbl["System"]["wizard_completed"].value_or(
-            m_config.system.setupWizardCompleted);
-    m_config.system.quietResourceScan =
+            parsed.system.setupWizardCompleted);
+    parsed.system.quietResourceScan =
         tbl["System"]["quiet_resource_scan"].value_or(
-            m_config.system.quietResourceScan);
-    m_config.system.setupWizardForceShow =
+            parsed.system.quietResourceScan);
+    parsed.system.setupWizardForceShow =
         tbl["System"]["wizard_force_show"].value_or(
-            m_config.system.setupWizardForceShow);
-    m_config.system.hudFixEnabled =
+            parsed.system.setupWizardForceShow);
+    parsed.system.hudFixEnabled =
         tbl["System"]["hud_fix_enabled"].value_or(
-            m_config.system.hudFixEnabled);
+            parsed.system.hudFixEnabled);
+
+    // Swap the parsed config into m_config atomically (under lock) so that
+    // cross-thread readers via DataSnapshot() never observe a half-written state.
+    {
+      std::lock_guard<std::mutex> lock(m_configMutex);
+      m_config = parsed;
+    }
+    m_lastWriteTime = std::filesystem::last_write_time(path);
 
     LOG_INFO("Configuration loaded from TOML.");
   } catch (const std::exception &ex) {
@@ -194,92 +204,98 @@ void ConfigManager::Load() {
 }
 
 void ConfigManager::Save() {
+  // Take a snapshot under lock so we serialize a consistent state
+  ModConfig snapshot;
+  {
+    std::lock_guard<std::mutex> lock(m_configMutex);
+    snapshot = m_config;
+  }
   auto tbl = toml::table{
-      {{"DLSS", toml::table{{{"mode", m_config.dlss.mode},
-                             {"preset", m_config.dlss.preset},
-                             {"sharpness", m_config.dlss.sharpness},
-                             {"lod_bias", m_config.dlss.lodBias}}}},
+      {{"DLSS", toml::table{{{"mode", snapshot.dlss.mode},
+                             {"preset", snapshot.dlss.preset},
+                             {"sharpness", snapshot.dlss.sharpness},
+                             {"lod_bias", snapshot.dlss.lodBias}}}},
        {"FrameGen",
         toml::table{
-            {{"multiplier", m_config.fg.multiplier},
-             {"smart_enabled", m_config.fg.smartEnabled},
-             {"auto_disable", m_config.fg.autoDisable},
-             {"auto_disable_fps", m_config.fg.autoDisableFps},
-             {"scene_change_enabled", m_config.fg.sceneChangeEnabled},
-             {"scene_change_threshold", m_config.fg.sceneChangeThreshold},
-             {"interpolation_quality", m_config.fg.interpolationQuality}}}},
-       {"MotionVectors", toml::table{{{"auto_scale", m_config.mvec.autoScale},
-                                      {"scale_x", m_config.mvec.scaleX},
-                                      {"scale_y", m_config.mvec.scaleY}}}},
+            {{"multiplier", snapshot.fg.multiplier},
+             {"smart_enabled", snapshot.fg.smartEnabled},
+             {"auto_disable", snapshot.fg.autoDisable},
+             {"auto_disable_fps", snapshot.fg.autoDisableFps},
+             {"scene_change_enabled", snapshot.fg.sceneChangeEnabled},
+             {"scene_change_threshold", snapshot.fg.sceneChangeThreshold},
+             {"interpolation_quality", snapshot.fg.interpolationQuality}}}},
+       {"MotionVectors", toml::table{{{"auto_scale", snapshot.mvec.autoScale},
+                                      {"scale_x", snapshot.mvec.scaleX},
+                                      {"scale_y", snapshot.mvec.scaleY}}}},
        {"RayReconstruction",
-        toml::table{{{"enabled", m_config.rr.enabled},
-                     {"preset", m_config.rr.preset},
-                     {"denoiser_strength", m_config.rr.denoiserStrength}}}},
+        toml::table{{{"enabled", snapshot.rr.enabled},
+                     {"preset", snapshot.rr.preset},
+                     {"denoiser_strength", snapshot.rr.denoiserStrength}}}},
        {"DeepDVC",
-        toml::table{{{"enabled", m_config.dvc.enabled},
-                     {"intensity", m_config.dvc.intensity},
-                     {"saturation", m_config.dvc.saturation},
-                     {"adaptive_enabled", m_config.dvc.adaptiveEnabled},
-                     {"adaptive_strength", m_config.dvc.adaptiveStrength},
-                     {"adaptive_min", m_config.dvc.adaptiveMin},
-                     {"adaptive_max", m_config.dvc.adaptiveMax},
-                     {"adaptive_smoothing", m_config.dvc.adaptiveSmoothing}}}},
-       {"HDR", toml::table{{{"enabled", m_config.hdr.enabled},
-                            {"peak_nits", m_config.hdr.peakNits},
-                            {"paper_white_nits", m_config.hdr.paperWhiteNits},
-                            {"exposure", m_config.hdr.exposure},
-                            {"gamma", m_config.hdr.gamma},
-                            {"tonemap_curve", m_config.hdr.tonemapCurve},
-                            {"saturation", m_config.hdr.saturation}}}},
+        toml::table{{{"enabled", snapshot.dvc.enabled},
+                     {"intensity", snapshot.dvc.intensity},
+                     {"saturation", snapshot.dvc.saturation},
+                     {"adaptive_enabled", snapshot.dvc.adaptiveEnabled},
+                     {"adaptive_strength", snapshot.dvc.adaptiveStrength},
+                     {"adaptive_min", snapshot.dvc.adaptiveMin},
+                     {"adaptive_max", snapshot.dvc.adaptiveMax},
+                     {"adaptive_smoothing", snapshot.dvc.adaptiveSmoothing}}}},
+       {"HDR", toml::table{{{"enabled", snapshot.hdr.enabled},
+                            {"peak_nits", snapshot.hdr.peakNits},
+                            {"paper_white_nits", snapshot.hdr.paperWhiteNits},
+                            {"exposure", snapshot.hdr.exposure},
+                            {"gamma", snapshot.hdr.gamma},
+                            {"tonemap_curve", snapshot.hdr.tonemapCurve},
+                            {"saturation", snapshot.hdr.saturation}}}},
        {"UI",
-        toml::table{{{"visible", m_config.ui.visible},
-                     {"show_fps", m_config.ui.showFPS},
-                     {"show_vignette", m_config.ui.showVignette},
-                     {"menu_hotkey", m_config.ui.menuHotkey},
-                     {"fps_hotkey", m_config.ui.fpsHotkey},
-                     {"vignette_hotkey", m_config.ui.vignetteHotkey},
-                     {"vignette_intensity", m_config.ui.vignetteIntensity},
-                     {"vignette_radius", m_config.ui.vignetteRadius},
-                     {"vignette_softness", m_config.ui.vignetteSoftness},
-                     {"vignette_color_r", m_config.ui.vignetteColorR},
-                     {"vignette_color_g", m_config.ui.vignetteColorG},
-                     {"vignette_color_b", m_config.ui.vignetteColorB}}}},
+        toml::table{{{"visible", snapshot.ui.visible},
+                     {"show_fps", snapshot.ui.showFPS},
+                     {"show_vignette", snapshot.ui.showVignette},
+                     {"menu_hotkey", snapshot.ui.menuHotkey},
+                     {"fps_hotkey", snapshot.ui.fpsHotkey},
+                     {"vignette_hotkey", snapshot.ui.vignetteHotkey},
+                     {"vignette_intensity", snapshot.ui.vignetteIntensity},
+                     {"vignette_radius", snapshot.ui.vignetteRadius},
+                     {"vignette_softness", snapshot.ui.vignetteSoftness},
+                     {"vignette_color_r", snapshot.ui.vignetteColorR},
+                     {"vignette_color_g", snapshot.ui.vignetteColorG},
+                     {"vignette_color_b", snapshot.ui.vignetteColorB}}}},
        {"Customization",
-        toml::table{{{"anim_type", m_config.customization.animationType},
-                     {"anim_speed", m_config.customization.animSpeed},
-                     {"panel_opacity", m_config.customization.panelOpacity},
-                     {"panel_width", m_config.customization.panelWidth},
-                     {"corner_radius", m_config.customization.cornerRadius},
-                     {"panel_shadow", m_config.customization.panelShadow},
-                     {"panel_x", m_config.customization.panelX},
-                     {"panel_y", m_config.customization.panelY},
-                     {"snap_to_edges", m_config.customization.snapToEdges},
-                     {"snap_distance", m_config.customization.snapDistance},
-                     {"fps_position", m_config.customization.fpsPosition},
-                     {"fps_style", m_config.customization.fpsStyle},
-                     {"fps_opacity", m_config.customization.fpsOpacity},
-                     {"fps_scale", m_config.customization.fpsScale},
-                     {"accent_r", m_config.customization.accentR},
-                     {"accent_g", m_config.customization.accentG},
-                     {"accent_b", m_config.customization.accentB},
-                     {"background_dim", m_config.customization.backgroundDim},
-                     {"background_dim_amount", m_config.customization.backgroundDimAmount},
-                     {"widget_glow", m_config.customization.widgetGlow},
-                     {"status_pulse", m_config.customization.statusPulse},
-                     {"smooth_fps", m_config.customization.smoothFPS},
-                     {"layout_mode", m_config.customization.layoutMode},
-                     {"font_scale", m_config.customization.fontScale},
-                     {"mini_mode", m_config.customization.miniMode}}}},
-       {"System", toml::table{{{"log_verbosity", m_config.system.logVerbosity},
-                               {"debug_mode", m_config.system.debugMode},
+        toml::table{{{"anim_type", snapshot.customization.animationType},
+                     {"anim_speed", snapshot.customization.animSpeed},
+                     {"panel_opacity", snapshot.customization.panelOpacity},
+                     {"panel_width", snapshot.customization.panelWidth},
+                     {"corner_radius", snapshot.customization.cornerRadius},
+                     {"panel_shadow", snapshot.customization.panelShadow},
+                     {"panel_x", snapshot.customization.panelX},
+                     {"panel_y", snapshot.customization.panelY},
+                     {"snap_to_edges", snapshot.customization.snapToEdges},
+                     {"snap_distance", snapshot.customization.snapDistance},
+                     {"fps_position", snapshot.customization.fpsPosition},
+                     {"fps_style", snapshot.customization.fpsStyle},
+                     {"fps_opacity", snapshot.customization.fpsOpacity},
+                     {"fps_scale", snapshot.customization.fpsScale},
+                     {"accent_r", snapshot.customization.accentR},
+                     {"accent_g", snapshot.customization.accentG},
+                     {"accent_b", snapshot.customization.accentB},
+                     {"background_dim", snapshot.customization.backgroundDim},
+                     {"background_dim_amount", snapshot.customization.backgroundDimAmount},
+                     {"widget_glow", snapshot.customization.widgetGlow},
+                     {"status_pulse", snapshot.customization.statusPulse},
+                     {"smooth_fps", snapshot.customization.smoothFPS},
+                     {"layout_mode", snapshot.customization.layoutMode},
+                     {"font_scale", snapshot.customization.fontScale},
+                     {"mini_mode", snapshot.customization.miniMode}}}},
+       {"System", toml::table{{{"log_verbosity", snapshot.system.logVerbosity},
+                               {"debug_mode", snapshot.system.debugMode},
                                {"wizard_completed",
-                                m_config.system.setupWizardCompleted},
+                                snapshot.system.setupWizardCompleted},
                                {"quiet_resource_scan",
-                                m_config.system.quietResourceScan},
+                                snapshot.system.quietResourceScan},
                                {"wizard_force_show",
-                                m_config.system.setupWizardForceShow},
+                                snapshot.system.setupWizardForceShow},
                                {"hud_fix_enabled",
-                                m_config.system.hudFixEnabled}}}}}};
+                                snapshot.system.hudFixEnabled}}}}}};
 
   std::ofstream file(GetConfigPath());
   file << tbl;

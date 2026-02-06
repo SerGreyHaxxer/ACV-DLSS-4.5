@@ -14,6 +14,8 @@ namespace {
         bool valid = false;
     };
 
+    // Lock hierarchy level 3 — same tier as Resources
+    // (SwapChain=1 > Hooks=2 > Resources/Samplers=3 > Config=4 > Logging=5).
     std::mutex g_samplerMutex;
     std::vector<SamplerRecord> g_samplerRecords;
 }

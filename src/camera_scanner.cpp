@@ -24,6 +24,8 @@ namespace {
         bool valid = false;
     };
 
+    // Lock hierarchy level 3 — same tier as Resources
+    // (SwapChain=1 > Hooks=2 > Resources/Camera=3 > Config=4 > Logging=5).
     std::mutex g_cameraMutex;
     CameraCandidate g_bestCamera;
     std::atomic<bool> g_loggedCamera(false);
@@ -35,6 +37,7 @@ namespace {
         uint8_t* cpuPtr = nullptr;
     };
 
+    // Lock hierarchy level 3 — same tier as Resources
     std::mutex g_cbvMutex;
     std::vector<UploadCbvInfo> g_cbvInfos;
     std::atomic<uint64_t> g_cameraFrame(0);
@@ -42,6 +45,8 @@ namespace {
     std::atomic<uint64_t> g_lastCameraFoundFrame(0);
 
     // CBV descriptor address tracking (separate from descriptor resource tracking)
+    // Lock hierarchy level 3 — same tier as Resources.  Never acquire while
+    // holding g_cbvMutex or g_cameraMutex at the same level.
     std::mutex g_cbvAddrMutex;
     struct CbvGpuAddrEntry {
         D3D12_GPU_VIRTUAL_ADDRESS addr = 0;

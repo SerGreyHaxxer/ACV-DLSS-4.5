@@ -249,7 +249,11 @@ void StreamlineIntegration::UpdateOptions() {
     sl::DLSSGOptions fgOpt{};
     fgOpt.mode =
         m_smartFgForceDisable ? sl::DLSSGMode::eOff : sl::DLSSGMode::eOn;
-    fgOpt.numFramesToGenerate = m_frameGenMultiplier - 1;
+    // Use dynamic multiplier when smart FG is active, otherwise user's setting
+    int effectiveMult = (m_smartFgEnabled && m_smartFgComputedMult >= 2)
+                            ? m_smartFgComputedMult
+                            : m_frameGenMultiplier;
+    fgOpt.numFramesToGenerate = effectiveMult - 1;
 
     sl::Result fgResult = slDLSSGSetOptions(m_viewport, fgOpt);
     if (fgResult != sl::Result::eOk) {
@@ -271,6 +275,88 @@ void StreamlineIntegration::UpdateOptions() {
     }
   }
   m_optionsDirty = false;
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic Smart Frame Gen — adjust FG multiplier based on rolling-average FPS
+// ---------------------------------------------------------------------------
+
+void StreamlineIntegration::UpdateFrameTiming(float fps) {
+  m_lastBaseFps = fps;
+
+  // Feed into the rolling ring buffer
+  m_fpsRing[m_fpsRingIdx] = fps;
+  m_fpsRingIdx = (m_fpsRingIdx + 1) % kFpsRingSize;
+  if (m_fpsRingSamples < kFpsRingSize)
+    ++m_fpsRingSamples;
+
+  // If smart FG is enabled, recompute the dynamic multiplier
+  if (m_smartFgEnabled)
+    UpdateSmartFrameGen();
+}
+
+void StreamlineIntegration::UpdateSmartFrameGen() {
+  // Compute rolling average
+  if (m_fpsRingSamples < 3)
+    return; // need a minimum history before making decisions
+  float sum = 0.0f;
+  for (int i = 0; i < m_fpsRingSamples; ++i)
+    sum += m_fpsRing[i];
+  m_smartFgRollingAvg = sum / static_cast<float>(m_fpsRingSamples);
+
+  // Map FPS to a target multiplier.  Lower base FPS → higher multiplier to
+  // compensate.  Higher base FPS → lower multiplier (diminishing returns and
+  // higher latency penalty).
+  //
+  //   Base FPS ≤ 20  → 4x  (generate 3 extra frames)
+  //   Base FPS ≤ 40  → 3x
+  //   Base FPS ≤ 70  → 2x
+  //   Base FPS > 70  → user's configured multiplier (or 2x minimum)
+  //
+  // Users can still override with m_smartFgAutoDisable to turn FG off entirely
+  // above a certain threshold.
+
+  int computed = 2; // floor
+  if (m_smartFgRollingAvg <= 20.0f) {
+    computed = 4;
+  } else if (m_smartFgRollingAvg <= 40.0f) {
+    computed = 3;
+  } else if (m_smartFgRollingAvg <= 70.0f) {
+    computed = 2;
+  } else {
+    // Above 70 FPS — use user's configured value (at least 2)
+    computed = (std::max)(m_frameGenMultiplier, 2);
+  }
+
+  // Clamp to valid range [2, 4] for DLSS-G
+  computed = std::clamp(computed, 2, 4);
+
+  // Only apply if the computed value actually changed
+  if (computed != m_smartFgComputedMult) {
+    int prev = m_smartFgComputedMult;
+    m_smartFgComputedMult = computed;
+    m_optionsDirty = true;
+    LOG_INFO("[SmartFG] Rolling avg {:.1f} FPS → multiplier {}x (was {}x)",
+             m_smartFgRollingAvg, computed, prev);
+  }
+
+  // Auto-disable: if rolling average exceeds the threshold, force-disable FG
+  if (m_smartFgAutoDisable && m_smartFgRollingAvg > m_smartFgAutoDisableFps) {
+    if (!m_smartFgForceDisable) {
+      m_smartFgForceDisable = true;
+      m_optionsDirty = true;
+      LOG_INFO("[SmartFG] Base FPS {:.0f} > threshold {:.0f} — disabling FG",
+               m_smartFgRollingAvg, m_smartFgAutoDisableFps);
+    }
+  } else if (m_smartFgForceDisable) {
+    m_smartFgForceDisable = false;
+    m_optionsDirty = true;
+    LOG_INFO("[SmartFG] Base FPS {:.0f} ≤ threshold {:.0f} — re-enabling FG",
+             m_smartFgRollingAvg, m_smartFgAutoDisableFps);
+  }
+
+  // Track the actual effective multiplier (for GUI display)
+  m_fgActualMultiplier = m_smartFgForceDisable ? 1.0f : static_cast<float>(computed);
 }
 
 void StreamlineIntegration::UpdateSwapChain(IDXGISwapChain *pSwapChain) {

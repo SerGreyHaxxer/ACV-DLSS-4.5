@@ -142,7 +142,7 @@ ImGuiOverlay& ImGuiOverlay::Get() {
 
 void ImGuiOverlay::Initialize(IDXGISwapChain* swapChain) {
   if (m_initialized || !swapChain) return;
-  m_shuttingDown.store(false, std::memory_order_relaxed);
+  m_shuttingDown.store(false, std::memory_order_release);
 
   if (FAILED(swapChain->QueryInterface(__uuidof(IDXGISwapChain3), (void**)&m_swapChain)) || !m_swapChain)
     return;
@@ -182,11 +182,11 @@ void ImGuiOverlay::Initialize(IDXGISwapChain* swapChain) {
   m_firstFrame = true;
 
   // Start metrics polling thread
-  m_metricsThreadRunning.store(true, std::memory_order_relaxed);
+  m_metricsThreadRunning.store(true, std::memory_order_release);
   m_metricsThread = std::thread([this]() {
     ID3D12Device* device = m_device;
     if (device) device->AddRef();
-    while (m_metricsThreadRunning.load(std::memory_order_relaxed)) {
+    while (m_metricsThreadRunning.load(std::memory_order_acquire)) {
       if (!device) break;
       UpdateMetrics(device);
       EnsureDxgiName(device);
@@ -202,7 +202,7 @@ void ImGuiOverlay::Initialize(IDXGISwapChain* swapChain) {
 
 void ImGuiOverlay::Shutdown() {
   if (!m_initialized) return;
-  m_shuttingDown.store(true, std::memory_order_relaxed);
+  m_shuttingDown.store(true, std::memory_order_release);
 
   if (m_cursorUnlocked) {
     ClipCursor(&m_prevClip);
@@ -210,7 +210,7 @@ void ImGuiOverlay::Shutdown() {
     m_cursorUnlocked = false;
   }
 
-  if (m_metricsThreadRunning.exchange(false, std::memory_order_relaxed)) {
+  if (m_metricsThreadRunning.exchange(false, std::memory_order_acq_rel)) {
     if (m_metricsThread.joinable()) m_metricsThread.join();
   }
 
@@ -1604,6 +1604,125 @@ void ImGuiOverlay::BuildMainPanel() {
         sli.SetMVecScale(reset.mvec.scaleX, reset.mvec.scaleY);
         m_showFPS = reset.ui.showFPS; m_showVignette = reset.ui.showVignette;
       }
+      Spacing();
+    }
+  }
+
+  // ---- Internals Section (Debug mode only) ----
+  if (cfg.system.debugMode) {
+    bool internalsOpen = m_sectionOpen[VGuiHash("internals_section")];
+    SectionHeader("Internals", &internalsOpen);
+    m_sectionOpen[VGuiHash("internals_section")] = internalsOpen;
+    if (internalsOpen) {
+      // --- Hook status ---
+      Label("HOOK STATUS");
+      LabelValue("Streamline", sli.IsInitialized() ? "OK" : "Not Initialized");
+      LabelValue("DLSS", sli.IsDLSSSupported() ? "Supported" : "Unsupported");
+      LabelValue("Frame Gen", sli.IsFrameGenSupported() ? "Supported" : "Unsupported");
+      LabelValue("Ray Recon", sli.IsRayReconstructionSupported() ? "Supported" : "Unsupported");
+      LabelValue("DeepDVC", sli.IsDeepDVCSupported() ? "Supported" : "Unsupported");
+      LabelValue("HDR", sli.IsHDRSupported() ? "Supported" : "Unsupported");
+      LabelValue("Keyboard Hook", InputHandler::Get().HasHookInstalled() ? "Installed" : "Polling");
+
+      NorseSeparator();
+
+      // --- Resource detection confidence ---
+      Label("RESOURCE DETECTION");
+      auto& det = ResourceDetector::Get();
+      {
+        std::string frameStr = std::format("{}", det.GetFrameCount());
+        LabelValue("Detector Frame", frameStr.c_str());
+      }
+
+      ID3D12Resource* bestColor = det.GetBestColorCandidate();
+      ID3D12Resource* bestDepth = det.GetBestDepthCandidate();
+      ID3D12Resource* bestMV = det.GetBestMotionVectorCandidate();
+
+      if (bestColor) {
+        D3D12_RESOURCE_DESC d = bestColor->GetDesc();
+        std::string s = std::format("{}x{} fmt:{}", d.Width, d.Height, static_cast<int>(d.Format));
+        LabelValue("Color Buffer", s.c_str());
+        StatusDot("color_ok", vtheme::kStatusOk);
+      } else {
+        LabelValue("Color Buffer", "Not found");
+        StatusDot("color_missing", vtheme::kStatusBad);
+      }
+
+      if (bestDepth) {
+        D3D12_RESOURCE_DESC d = bestDepth->GetDesc();
+        std::string s = std::format("{}x{} fmt:{}", d.Width, d.Height, static_cast<int>(d.Format));
+        LabelValue("Depth Buffer", s.c_str());
+        StatusDot("depth_ok", vtheme::kStatusOk);
+        std::string depthType = det.IsDepthInverted() ? "Inverted (0=far)" : "Standard (1=far)";
+        LabelValue("Depth Type", depthType.c_str());
+      } else {
+        LabelValue("Depth Buffer", "Not found");
+        StatusDot("depth_missing", vtheme::kStatusBad);
+      }
+
+      if (bestMV) {
+        D3D12_RESOURCE_DESC d = bestMV->GetDesc();
+        std::string s = std::format("{}x{} fmt:{}", d.Width, d.Height, static_cast<int>(d.Format));
+        LabelValue("Motion Vectors", s.c_str());
+        StatusDot("mv_ok", vtheme::kStatusOk);
+      } else {
+        LabelValue("Motion Vectors", "Not found");
+        StatusDot("mv_missing", vtheme::kStatusBad);
+      }
+
+      ID3D12Resource* exposure = det.GetExposureResource();
+      LabelValue("Exposure", exposure ? "Detected" : "Not found");
+
+      NorseSeparator();
+
+      // --- Streamline feature states ---
+      Label("FRAME GENERATION");
+      {
+        std::string statusStr;
+        auto fgStatus = sli.GetFrameGenStatus();
+        switch (fgStatus) {
+        case sl::DLSSGStatus::eOk: statusStr = "OK"; break;
+        default: statusStr = std::format("Error ({})", static_cast<int>(fgStatus)); break;
+        }
+        LabelValue("FG Status", statusStr.c_str());
+      }
+      {
+        std::string multStr = std::format("{}x (effective {:.1f}x)",
+                                          sli.GetFrameGenMultiplier(),
+                                          sli.GetFgActualMultiplier());
+        LabelValue("FG Multiplier", multStr.c_str());
+      }
+      if (cfg.fg.smartEnabled) {
+        std::string avgStr = std::format("{:.1f} FPS", sli.GetSmartFgRollingAvgFps());
+        LabelValue("SmartFG Avg", avgStr.c_str());
+        std::string compStr = std::format("{}x", sli.GetSmartFgComputedMultiplier());
+        LabelValue("SmartFG Target", compStr.c_str());
+        LabelValue("SmartFG Paused", sli.IsSmartFGTemporarilyDisabled() ? "Yes" : "No");
+      }
+      {
+        std::string frameStr = std::format("{}", sli.GetFrameCount());
+        LabelValue("SL Frame Index", frameStr.c_str());
+      }
+      LabelValue("Camera Data", sli.HasCameraData() ? "Available" : "Missing");
+      {
+        std::string deltaStr = std::format("{:.4f}", sli.GetLastCameraDelta());
+        LabelValue("Camera Delta", deltaStr.c_str());
+      }
+
+      NorseSeparator();
+
+      // --- Descriptor / sampler stats ---
+      Label("SYSTEM");
+      {
+        std::string verStr =
+#ifdef TENSOR_CURIE_VERSION
+            TENSOR_CURIE_VERSION;
+#else
+            "dev";
+#endif
+        LabelValue("Build Version", verStr.c_str());
+      }
+
       Spacing();
     }
   }

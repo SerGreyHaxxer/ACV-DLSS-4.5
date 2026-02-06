@@ -2,9 +2,10 @@
 #include <d3d12.h>
 #include <vector>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
-#include <wrl/client.h> // Added
+#include <wrl/client.h>
 
 struct ResourceCandidate {
     Microsoft::WRL::ComPtr<ID3D12Resource> pResource;
@@ -64,7 +65,10 @@ private:
     float ScoreDepth(const D3D12_RESOURCE_DESC& desc);
     float ScoreColor(const D3D12_RESOURCE_DESC& desc);
 
-    std::mutex m_mutex;
+    // Lock hierarchy level 3 (SwapChain=1 > Hooks=2 > Resources=3 > Config=4 > Logging=5).
+    // Use shared_lock for read-only access (Get*, GetDebugInfo, Score*),
+    // unique_lock for mutations (Register*, NewFrame, Clear, SetExpected*).
+    mutable std::shared_mutex m_mutex;
     std::vector<ResourceCandidate> m_motionCandidates;
     std::vector<ResourceCandidate> m_depthCandidates;
     std::vector<ResourceCandidate> m_colorCandidates;

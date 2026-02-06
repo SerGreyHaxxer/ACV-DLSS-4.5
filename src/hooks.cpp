@@ -82,6 +82,7 @@ PFN_Present g_OriginalPresent = nullptr;
 PFN_Present1 g_OriginalPresent1 = nullptr;
 PFN_ResizeBuffers g_OriginalResizeBuffers = nullptr;
 
+// Lock hierarchy level 2 (SwapChain=1 > Hooks=2 > Resources=3 > Config=4 > Logging=5).
 static std::mutex g_HookMutex;
 static std::atomic<bool> g_HooksInitialized(false);
 static std::atomic<bool> g_PatternScanDone(false);

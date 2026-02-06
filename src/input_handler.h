@@ -39,6 +39,8 @@ public:
 private:
     InputHandler() = default;
     std::vector<KeyCallback> m_callbacks;
+    // Lock hierarchy level 4 — same tier as Config
+    // (SwapChain=1 > Hooks=2 > Resources=3 > Config/Input=4 > Logging=5).
     std::mutex m_callbackMutex;
     HHOOK m_hHook = nullptr;
     HMODULE m_selfModule = nullptr; // Prevent premature unload

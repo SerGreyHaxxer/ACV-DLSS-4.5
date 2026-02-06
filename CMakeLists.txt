@@ -1,11 +1,20 @@
 cmake_minimum_required(VERSION 3.25)
-project(tensor-curie LANGUAGES CXX)
+project(tensor-curie
+    VERSION 4.5.0
+    DESCRIPTION "DLSS 4.5 DXGI Proxy for Assassin's Creed Valhalla"
+    LANGUAGES CXX
+)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ============================================================================
-# Static Analysis & Sanitizers (CRITICAL/HIGH priority enhancements)
+# Options
+# ============================================================================
+option(TENSOR_CURIE_WERROR "Treat warnings as errors (used by CI)" OFF)
+
+# ============================================================================
+# Static Analysis & Sanitizers
 # ============================================================================
 
 # Address Sanitizer for debug builds
@@ -15,17 +24,19 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_link_options(/fsanitize=address)
 endif()
 
-# Clang-tidy integration (if available)
-find_program(CLANG_TIDY_EXE NAMES clang-tidy clang-tidy.exe)
-if(CLANG_TIDY_EXE)
-    message(STATUS "Found clang-tidy: ${CLANG_TIDY_EXE}")
-    set(CMAKE_CXX_CLANG_TIDY 
-        "${CLANG_TIDY_EXE};-checks=modernize-*,performance-*,readability-*,bugprone-*,cppcoreguidelines-*,-modernize-use-trailing-return-type")
-else()
-    message(STATUS "clang-tidy not found, skipping static analysis")
+# Clang-tidy integration (if available, skip in CI to avoid noise)
+if(NOT TENSOR_CURIE_WERROR)
+    find_program(CLANG_TIDY_EXE NAMES clang-tidy clang-tidy.exe)
+    if(CLANG_TIDY_EXE)
+        message(STATUS "Found clang-tidy: ${CLANG_TIDY_EXE}")
+        set(CMAKE_CXX_CLANG_TIDY
+            "${CLANG_TIDY_EXE};-checks=modernize-*,performance-*,readability-*,bugprone-*,cppcoreguidelines-*,-modernize-use-trailing-return-type")
+    else()
+        message(STATUS "clang-tidy not found, skipping static analysis")
+    endif()
 endif()
 
-# Configure Vcpkg integration
+# Configure Vcpkg integration (fallback for users not using presets)
 if(DEFINED ENV{VCPKG_ROOT} AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
 endif()
@@ -105,9 +116,24 @@ target_compile_options(${PROJECT_NAME} PRIVATE
     /Zc:__cplusplus
 )
 
+# Warnings-as-errors for CI builds
+if(TENSOR_CURIE_WERROR)
+    target_compile_options(${PROJECT_NAME} PRIVATE /WX)
+    message(STATUS "Warnings-as-errors enabled (CI mode)")
+endif()
+
 # C++ Modernization Definitions
-target_compile_definitions(${PROJECT_NAME} PRIVATE 
+target_compile_definitions(${PROJECT_NAME} PRIVATE
     UNICODE _UNICODE
     WIN32_LEAN_AND_MEAN
     _CRT_SECURE_NO_WARNINGS
+    TENSOR_CURIE_VERSION="${PROJECT_VERSION}"
+)
+
+# ============================================================================
+# Install target — for packaging and deployment scripts
+# ============================================================================
+install(TARGETS ${PROJECT_NAME}
+    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION lib
 )

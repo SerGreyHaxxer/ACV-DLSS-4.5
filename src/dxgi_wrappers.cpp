@@ -18,11 +18,16 @@ using Microsoft::WRL::ComPtr;
 // Global tracking
 ComPtr<IDXGISwapChain> g_pRealSwapChain;
 ComPtr<ID3D12CommandQueue> g_pRealCommandQueue;
+// Lock hierarchy level 1 — highest priority.  Never hold a lower-level lock
+// when acquiring this.  Order: SwapChain(1) > Hooks(2) > Resources(3) >
+// Config(4) > Logging(5).
 static std::mutex g_swapChainMutex;
 
 static std::unique_ptr<std::thread> g_timerThread;
 static std::atomic<bool> g_timerRunning(false);
 static std::condition_variable g_timerCV;
+// Timer mutex — used only for the condition variable; not part of the
+// hierarchical ordering (never held while acquiring another lock).
 static std::mutex g_timerMutex;
 
 // Unified frame counter — single source of truth across the proxy
@@ -195,14 +200,14 @@ static void InstallPresentHook(IDXGISwapChain *pSwapChain) {
 }
 
 void StartFrameTimer() {
-  if (g_timerRunning.exchange(true))
-    return;
+  if (g_timerRunning.exchange(true, std::memory_order_acq_rel))
+    return; // already running
   g_timerThread = std::make_unique<std::thread>(TimerThreadProc);
 }
 
 void StopFrameTimer() {
-  if (!g_timerRunning.exchange(false))
-    return;
+  if (!g_timerRunning.exchange(false, std::memory_order_acq_rel))
+    return; // already stopped
   g_timerCV.notify_all();
   if (g_timerThread && g_timerThread->joinable()) {
     g_timerThread->join();

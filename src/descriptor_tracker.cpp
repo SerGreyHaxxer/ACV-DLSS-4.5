@@ -13,6 +13,8 @@ namespace {
         UINT descriptorSize = 0;
     };
 
+    // Lock hierarchy level 3 — same tier as Resources
+    // (SwapChain=1 > Hooks=2 > Resources/Descriptors=3 > Config=4 > Logging=5).
     std::mutex g_descriptorMutex;
     std::vector<DescriptorRecord> g_descriptorRecords;
     std::unordered_map<uintptr_t, Microsoft::WRL::ComPtr<ID3D12Resource>> g_descriptorResources;

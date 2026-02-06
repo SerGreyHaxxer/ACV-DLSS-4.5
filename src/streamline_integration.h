@@ -186,8 +186,10 @@ public:
   bool IsHDRActive() const { return m_hdrActive; }
 
   bool HasCameraData() const { return m_hasCameraData; }
-  void UpdateFrameTiming(float fps) { m_lastBaseFps = fps; }
+  void UpdateFrameTiming(float fps);
   float GetFgActualMultiplier() const { return m_fgActualMultiplier; }
+  int   GetSmartFgComputedMultiplier() const { return m_smartFgComputedMult; }
+  float GetSmartFgRollingAvgFps() const { return m_smartFgRollingAvg; }
   void PrintDLSSGStatus();
   bool IsDLSSSupported() const { return m_dlssSupported; }
   bool IsFrameGenSupported() const { return m_dlssgSupported; }
@@ -212,6 +214,8 @@ private:
   StreamlineIntegration() = default;
   ~StreamlineIntegration();
 
+  // Lock hierarchy level 2 — same tier as Hooks
+  // (SwapChain=1 > Hooks/Init=2 > Resources=3 > Config=4 > Logging=5).
   std::mutex m_initMutex;
   bool m_initialized = false;
   Microsoft::WRL::ComPtr<ID3D12Device> m_pDevice;
@@ -265,6 +269,14 @@ private:
   float m_smartFgInterpolationQuality = 0.5f;
   bool m_smartFgForceDisable = false;
   bool m_disableFGDueToInvalidParam = false;
+
+  // Dynamic Smart FG — rolling FPS buffer for adaptive multiplier
+  static constexpr int kFpsRingSize = 10;   // ~10 seconds of history
+  float m_fpsRing[kFpsRingSize]{};
+  int   m_fpsRingIdx = 0;
+  int   m_fpsRingSamples = 0;
+  float m_smartFgRollingAvg = 0.0f;
+  int   m_smartFgComputedMult = 0;          // 0 = not overriding
   sl::DLSSGStatus m_dlssgStatus = sl::DLSSGStatus::eOk;
   bool m_hdrEnabled = false;
   bool m_hdrSupported = false;
@@ -296,5 +308,6 @@ private:
   void TagResources();
   bool EnsureCommandList();
   void UpdateOptions();
+  void UpdateSmartFrameGen();
   void WaitForGpu();
 };

@@ -62,5 +62,7 @@ private:
     FrameResources m_frames[SCAN_RING_SIZE];
 
     bool m_initialized = false;
+    // Lock hierarchy level 3 — same tier as Resources
+    // (SwapChain=1 > Hooks=2 > Resources/Scanner=3 > Config=4 > Logging=5).
     std::mutex m_mutex;
 };

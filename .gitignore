@@ -1,6 +1,7 @@
 # Build artifacts
 build/
 bin/
+out/
 *.obj
 *.lib
 *.exp
@@ -12,6 +13,7 @@ bin/
 *.idb
 *.iobj
 *.ipdb
+*.cso
 
 # Visual Studio
 .vs/
@@ -20,9 +22,15 @@ bin/
 *.vcxproj.user
 *.vcxproj.filters
 
+# CMake
+CMakeUserPresets.json
+compile_commands.json
+.cache/
+
 # User-specific configuration
 dlss_settings.ini
 mod_config.ini
+config.toml
 startup_trace.log
 dlss4_proxy.log
 dlss4_crash.log

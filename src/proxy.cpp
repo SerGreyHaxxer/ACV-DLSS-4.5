@@ -67,6 +67,7 @@ private:
 };
 
 static std::atomic<bool> s_startupTraceEnabled(true);
+// Lock hierarchy level 5 — lowest priority (Logging tier).
 static std::mutex s_startupTraceMutex;
 static std::ofstream s_startupTraceFile;
 

@@ -1,6 +1,7 @@
 #pragma once
 #include <chrono>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <type_traits>
 
@@ -137,7 +138,17 @@ public:
   void SaveIfDirty();
   void CheckHotReload();
 
+  // Returns a mutable reference to the config.  Safe ONLY when called from the
+  // render / Present thread (the "owning" thread).  For cross-thread reads use
+  // DataSnapshot() instead.
   ModConfig &Data() { return m_config; }
+
+  // Returns a thread-safe copy of the current config.  Use this from any
+  // non-render thread (e.g. timer thread, metrics thread).
+  ModConfig DataSnapshot() const {
+    std::lock_guard<std::mutex> lock(m_configMutex);
+    return m_config;
+  }
 
 private:
   ConfigManager() = default;
@@ -145,6 +156,10 @@ private:
   void ImportLegacyIni(const std::filesystem::path &iniPath);
 
   ModConfig m_config;
+  // Lock hierarchy level 4 (SwapChain=1 > Hooks=2 > Resources=3 > Config=4 > Logging=5).
+  // Protects m_config during Load/Save/CheckHotReload so that cross-thread
+  // readers via DataSnapshot() observe a consistent state.
+  mutable std::mutex m_configMutex;
   bool m_dirty = false;
   std::filesystem::file_time_type m_lastWriteTime;
 };

@@ -50,7 +50,7 @@ void ResourceDetector::UpdateHeuristics(ID3D12CommandQueue *pQueue) {
   if (!pQueue)
     return;
 
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::shared_mutex> lock(m_mutex);
 
   // Check if previous analysis is done
   if (m_fence && m_fence->GetCompletedValue() < m_fenceVal - 1 &&
@@ -166,9 +166,9 @@ void ResourceDetector::UpdateHeuristics(ID3D12CommandQueue *pQueue) {
 }
 
 void ResourceDetector::NewFrame() {
-  std::lock_guard<std::mutex> lock(m_mutex);
-  m_frameCount++;
-  const uint64_t currentFrame = m_frameCount.load();
+  std::unique_lock<std::shared_mutex> lock(m_mutex);
+  m_frameCount.fetch_add(1, std::memory_order_relaxed); // under unique_lock — relaxed is fine
+  const uint64_t currentFrame = m_frameCount.load(std::memory_order_relaxed);
 
   auto isStale = [currentFrame, this](const ResourceCandidate &cand) {
     // Don't prune the BEST candidates if we are recently active
@@ -203,14 +203,14 @@ void ResourceDetector::NewFrame() {
     if (m_colorCandidates.size() > 50 || m_depthCandidates.size() > 50 ||
         m_motionCandidates.size() > 50) {
       LOG_INFO("Resource detector cache trimming (Frame {})",
-               m_frameCount.load());
+               m_frameCount.load(std::memory_order_relaxed));
       // Trimming logic instead of full clear would go here
     }
   }
 }
 
 void ResourceDetector::Clear() {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::shared_mutex> lock(m_mutex);
   // Persist best candidates across 'Clear' calls to prevent losing buffers
   // during UI/Menu transitions. We only clear them if they haven't been updated
   // in a very long time (handled by stale logic in NewFrame).
@@ -228,7 +228,7 @@ void ResourceDetector::Clear() {
 }
 
 void ResourceDetector::SetExpectedDimensions(uint32_t width, uint32_t height) {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::shared_mutex> lock(m_mutex);
   m_expectedWidth = width;
   m_expectedHeight = height;
 }
@@ -256,7 +256,7 @@ void ResourceDetector::RegisterDepthFromView(ID3D12Resource *pResource,
   if (!(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) &&
       viewFormat == DXGI_FORMAT_UNKNOWN)
     return;
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::shared_mutex> lock(m_mutex);
   if (viewFormat != DXGI_FORMAT_UNKNOWN) {
     m_depthFormatOverrides[pResource] = viewFormat;
   }
@@ -275,7 +275,7 @@ void ResourceDetector::RegisterDepthFromClear(ID3D12Resource *pResource,
                                               float clearDepth) {
   if (!pResource)
     return;
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::shared_mutex> lock(m_mutex);
 
   // Detection of depth inversion
   // Standard: Clear to 1.0 (Far), Near is 0.0
@@ -309,7 +309,7 @@ void ResourceDetector::RegisterDepthFromClear(ID3D12Resource *pResource,
 void ResourceDetector::RegisterColorFromClear(ID3D12Resource *pResource) {
   if (!pResource)
     return;
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::shared_mutex> lock(m_mutex);
   if (m_bestColor.Get() == pResource)
     return;
 
@@ -348,7 +348,7 @@ void ResourceDetector::RegisterExposure(ID3D12Resource *pResource) {
       desc.Format != DXGI_FORMAT_R16_TYPELESS)
     return;
 
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::shared_mutex> lock(m_mutex);
   if (m_exposureResource.Get() == pResource)
     return;
   // Prefer 1x1 R32_FLOAT (most common exposure format)
@@ -390,7 +390,7 @@ void ResourceDetector::RegisterMotionVectorFromView(ID3D12Resource *pResource,
       return;
     }
   }
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::shared_mutex> lock(m_mutex);
   if (viewFormat != DXGI_FORMAT_UNKNOWN) {
     m_motionFormatOverrides[pResource] = viewFormat;
   }
@@ -407,14 +407,14 @@ void ResourceDetector::RegisterMotionVectorFromView(ID3D12Resource *pResource,
 
 DXGI_FORMAT
 ResourceDetector::GetDepthFormatOverride(ID3D12Resource *pResource) {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::shared_lock<std::shared_mutex> lock(m_mutex);
   auto it = m_depthFormatOverrides.find(pResource);
   return it != m_depthFormatOverrides.end() ? it->second : DXGI_FORMAT_UNKNOWN;
 }
 
 DXGI_FORMAT
 ResourceDetector::GetMotionFormatOverride(ID3D12Resource *pResource) {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::shared_lock<std::shared_mutex> lock(m_mutex);
   auto it = m_motionFormatOverrides.find(pResource);
   return it != m_motionFormatOverrides.end() ? it->second : DXGI_FORMAT_UNKNOWN;
 }
@@ -486,7 +486,7 @@ void ResourceDetector::RegisterResource(ID3D12Resource *pResource,
     return;
   }
 
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::shared_mutex> lock(m_mutex);
 
   static uint32_t s_acceptLog = 0;
   if (s_acceptLog++ % 120 == 0) {
@@ -843,17 +843,17 @@ float ResourceDetector::ScoreColor(const D3D12_RESOURCE_DESC &desc) {
 }
 
 ID3D12Resource *ResourceDetector::GetBestMotionVectorCandidate() {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::shared_lock<std::shared_mutex> lock(m_mutex);
   return m_bestMotion.Get();
 }
 
 ID3D12Resource *ResourceDetector::GetBestDepthCandidate() {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::shared_lock<std::shared_mutex> lock(m_mutex);
   return m_bestDepth.Get();
 }
 
 ID3D12Resource *ResourceDetector::GetBestColorCandidate() {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::shared_lock<std::shared_mutex> lock(m_mutex);
 
   // Heuristic: If we have a Motion Vector, prefer a Color buffer with matching
   // resolution. This solves issues where the game upscales (Color=4K) but MVs
@@ -903,12 +903,12 @@ ID3D12Resource *ResourceDetector::GetBestColorCandidate() {
 }
 
 uint64_t ResourceDetector::GetFrameCount() {
-  // Atomic load
-  return m_frameCount.load();
+  // Lock-free read — acquire ensures we see at least the most recent increment
+  return m_frameCount.load(std::memory_order_acquire);
 }
 
 std::string ResourceDetector::GetDebugInfo() {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::shared_lock<std::shared_mutex> lock(m_mutex);
   std::stringstream ss;
   ss << "=== RESOURCE DETECTOR DEBUG ===\r\n";
   ss << "Frame: " << m_frameCount << "\r\n\r\n";
