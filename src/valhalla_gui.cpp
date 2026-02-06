@@ -336,12 +336,11 @@ void ValhallaRenderer::PopClip() {
 
 void ValhallaRenderer::DrawVignette(float screenW, float screenH,
                                     float r, float g, float b,
-                                    float intensity, float radius, float softness) {
+                                    float intensity, float radius, float /*softness*/) {
   float cx = screenW * 0.5f;
   float cy = screenH * 0.5f;
   float maxR = std::sqrt(cx * cx + cy * cy);
   float innerR = maxR * radius;
-  float outerR = maxR * std::clamp(radius + (1.0f - radius) * softness, radius + 0.001f, 1.0f);
 
   D2D1_GRADIENT_STOP stops[2] = {};
   stops[0] = { innerR / maxR, D2D1::ColorF(r, g, b, 0.0f) };

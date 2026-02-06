@@ -554,7 +554,7 @@ void EnsureD3D12VTableHooks(ID3D12Device *pDevice) {
   });
 }
 
-void WrapCreatedD3D12Device(REFIID riid, void **ppDevice, bool takeOwnership) {
+void WrapCreatedD3D12Device(REFIID /*riid*/, void **ppDevice, bool /*takeOwnership*/) {
   if (!ppDevice || !*ppDevice)
     return;
   Microsoft::WRL::ComPtr<ID3D12Device> pRealDevice;

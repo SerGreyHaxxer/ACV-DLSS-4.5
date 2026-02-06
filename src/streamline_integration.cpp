@@ -168,7 +168,7 @@ void StreamlineIntegration::EvaluateDLSS(ID3D12GraphicsCommandList *pCmdList) {
   slEvaluateFeature(sl::kFeatureDLSS, *m_frameToken, inputs, 1, pCmdList);
 }
 
-void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain *pSwapChain) {
+void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain * /*pSwapChain*/) {
   if (!m_initialized || !m_dlssgLoaded || !m_pCommandQueue || !m_frameToken)
     return;
   if (!EnsureCommandList())
@@ -197,7 +197,7 @@ void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain *pSwapChain) {
   }
 }
 
-void StreamlineIntegration::EvaluateDeepDVC(IDXGISwapChain *pSwapChain) {
+void StreamlineIntegration::EvaluateDeepDVC(IDXGISwapChain * /*pSwapChain*/) {
   if (!m_initialized || !m_deepDvcLoaded || !m_pCommandQueue || !m_frameToken)
     return;
   if (!EnsureCommandList())
@@ -231,6 +231,7 @@ void StreamlineIntegration::UpdateOptions() {
     return;
   sl::DLSSOptions dlssOpt{};
   dlssOpt.mode = m_dlssMode;
+#pragma warning(suppress : 4996) // sharpness is deprecated in DLSS 4.5 SDK but still functional
   dlssOpt.sharpness = m_sharpness;
   m_viewport = sl::ViewportHandle(0);
 
@@ -355,12 +356,12 @@ void StreamlineIntegration::TagResources() {
                                    sl::ResourceLifecycle::eValidUntilPresent));
   }
 
-  // Tag all resources in one call
-  sl::Result result = slSetTag(m_viewport, tags.data(),
-                               static_cast<uint32_t>(tags.size()), nullptr);
+  // Tag all resources in one call (frame-based tagging)
+  sl::Result result = slSetTagForFrame(*m_frameToken, m_viewport, tags.data(),
+                                       static_cast<uint32_t>(tags.size()), nullptr);
 
   if (result != sl::Result::eOk && doLog) {
-    LOG_WARN("[DLSSG] slSetTag failed with error {}", static_cast<int>(result));
+    LOG_WARN("[DLSSG] slSetTagForFrame failed with error {}", static_cast<int>(result));
   }
 }
 
@@ -408,7 +409,7 @@ void StreamlineIntegration::UpdateControls() {
   ImGuiOverlay::Get().UpdateControls();
 }
 
-void StreamlineIntegration::ToggleDebugMode(bool enabled) {
+void StreamlineIntegration::ToggleDebugMode(bool /*enabled*/) {
   // No-op or log
 }
 

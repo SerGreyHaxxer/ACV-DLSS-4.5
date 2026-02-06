@@ -368,7 +368,7 @@ void ImGuiOverlay::ComputePanelTransform(float progress, float screenW, float sc
                                           float& outX, float& outY, float& outAlpha, float& outScale) const {
   auto& cust = ConfigManager::Get().Data().customization;
   auto animType = static_cast<AnimType>(cust.animationType);
-  float eased = ComputeAnimProgress(progress, progress > 0.5f);
+  float eased = ComputeAnimProgress(progress, m_panelSlide.opening);
 
   float targetX = m_panelX;
   float targetY = m_panelY;
@@ -1161,8 +1161,8 @@ void ImGuiOverlay::BuildMainPanel() {
 
   // ---- GENERAL ----
   {
-    bool open = m_sectionOpen[VGuiHash("general_section")];
-    if (!m_sectionOpen.count(VGuiHash("general_section"))) open = true; // default open
+    auto genIt = m_sectionOpen.find(VGuiHash("general_section"));
+    bool open = (genIt != m_sectionOpen.end()) ? genIt->second : true; // default open
     SectionHeader("General", &open);
     m_sectionOpen[VGuiHash("general_section")] = open;
     if (open) {
@@ -1452,26 +1452,31 @@ void ImGuiOverlay::BuildMainPanel() {
 
       // Metrics
       if (g_metricsCache.gpuOk.load(std::memory_order_relaxed)) {
-        LabelValue("GPU Utilization", std::format("{}%", g_metricsCache.gpuPercent.load(std::memory_order_relaxed)).c_str());
+        std::string gpuStr = std::format("{}%", g_metricsCache.gpuPercent.load(std::memory_order_relaxed));
+        LabelValue("GPU Utilization", gpuStr.c_str());
       } else {
         LabelValue("GPU Utilization", "N/A");
       }
       if (g_metricsCache.vramOk.load(std::memory_order_relaxed)) {
         uint32_t used = g_metricsCache.vramUsed.load(std::memory_order_relaxed);
         uint32_t budget = g_metricsCache.vramBudget.load(std::memory_order_relaxed);
-        LabelValue("VRAM", std::format("{} / {} MB", (std::min)(used, budget), budget).c_str());
+        std::string vramStr = std::format("{} / {} MB", (std::min)(used, budget), budget);
+        LabelValue("VRAM", vramStr.c_str());
       } else {
         LabelValue("VRAM", "N/A");
       }
       float fgActual = sli.GetFgActualMultiplier();
-      LabelValue("FG Actual", fgActual > 1.01f ? std::format("{:.2f}x", fgActual).c_str() : "Off");
+      std::string fgStr = fgActual > 1.01f ? std::format("{:.2f}x", fgActual) : std::string("Off");
+      LabelValue("FG Actual", fgStr.c_str());
 
       NorseSeparator();
 
       // Camera info
-      LabelValue("Camera", std::format("{} (J {:.3f}, {:.3f})",
-                 m_cachedCamera ? "OK" : "Missing", m_cachedJitterX, m_cachedJitterY).c_str());
-      LabelValue("Camera Delta", std::format("{:.3f}", sli.GetLastCameraDelta()).c_str());
+      std::string camStr = std::format("{} (J {:.3f}, {:.3f})",
+                 m_cachedCamera ? "OK" : "Missing", m_cachedJitterX, m_cachedJitterY);
+      LabelValue("Camera", camStr.c_str());
+      std::string camDeltaStr = std::format("{:.3f}", sli.GetLastCameraDelta());
+      LabelValue("Camera Delta", camDeltaStr.c_str());
 
       Spacing();
       if (Button("Reset to Defaults")) {
@@ -1547,8 +1552,8 @@ void ImGuiOverlay::BuildCustomization() {
 
   // ---- Animation Sub-Section ----
   {
-    bool subOpen = m_sectionOpen[VGuiHash("cust_anim")];
-    if (!m_sectionOpen.count(VGuiHash("cust_anim"))) subOpen = true;
+    auto animIt = m_sectionOpen.find(VGuiHash("cust_anim"));
+    bool subOpen = (animIt != m_sectionOpen.end()) ? animIt->second : true;
     SectionHeader("  Animation", &subOpen);
     m_sectionOpen[VGuiHash("cust_anim")] = subOpen;
     if (subOpen) {
@@ -1566,8 +1571,8 @@ void ImGuiOverlay::BuildCustomization() {
 
   // ---- Panel Appearance Sub-Section ----
   {
-    bool subOpen = m_sectionOpen[VGuiHash("cust_panel")];
-    if (!m_sectionOpen.count(VGuiHash("cust_panel"))) subOpen = true;
+    auto panelIt = m_sectionOpen.find(VGuiHash("cust_panel"));
+    bool subOpen = (panelIt != m_sectionOpen.end()) ? panelIt->second : true;
     SectionHeader("  Panel Appearance", &subOpen);
     m_sectionOpen[VGuiHash("cust_panel")] = subOpen;
     if (subOpen) {
@@ -2057,6 +2062,8 @@ void ImGuiOverlay::Render() {
     m_height = desc.BufferDesc.Height;
     m_renderer.Shutdown();
     m_renderer.Initialize(m_device, m_queue, m_swapChain, m_backBufferCount);
+    // Re-query index — it may have changed after Shutdown/Initialize
+    backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
     if (!m_renderer.BeginFrame(backBufferIndex)) {
       ConfigManager::Get().SaveIfDirty();
       return;

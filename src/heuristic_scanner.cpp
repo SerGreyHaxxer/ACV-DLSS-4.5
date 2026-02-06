@@ -202,7 +202,7 @@ bool HeuristicScanner::CreateBuffers(ID3D12Device* pDevice) {
     return true;
 }
 
-bool HeuristicScanner::AnalyzeTexture(ID3D12GraphicsCommandList* pCmdList, ID3D12Resource* pResource, ScanResult& outResult) {
+bool HeuristicScanner::AnalyzeTexture(ID3D12GraphicsCommandList* pCmdList, ID3D12Resource* pResource, ScanResult& /*outResult*/) {
     if (!m_initialized || !pCmdList || !pResource) return false;
 
     // Cycle to next frame resources

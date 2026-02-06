@@ -38,7 +38,7 @@ public:
       spdlog::info("==============================================");
 
       return true;
-    } catch (const spdlog::spdlog_ex &ex) {
+    } catch (const spdlog::spdlog_ex &) {
       return false;
     }
   }
