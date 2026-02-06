@@ -101,20 +101,16 @@ void ResourceDetector::UpdateHeuristics(ID3D12CommandQueue *pQueue) {
   if (m_frameCount % 120 != 0)
     return;
 
-  ID3D12Device *pDevice = nullptr;
+  Microsoft::WRL::ComPtr<ID3D12Device> pDevice;
   pQueue->GetDevice(IID_PPV_ARGS(&pDevice));
   if (!pDevice)
     return;
 
-  if (!HeuristicScanner::Get().Initialize(pDevice)) {
-    pDevice->Release();
+  if (!HeuristicScanner::Get().Initialize(pDevice.Get()))
     return;
-  }
 
-  if (!InitCommandList(pDevice)) {
-    pDevice->Release();
+  if (!InitCommandList(pDevice.Get()))
     return;
-  }
 
   // Identify candidate to check
   ResourceCandidate *bestCandidate = nullptr;
@@ -133,10 +129,8 @@ void ResourceDetector::UpdateHeuristics(ID3D12CommandQueue *pQueue) {
     }
   }
 
-  if (!bestCandidate) {
-    pDevice->Release();
+  if (!bestCandidate)
     return;
-  }
 
   // Run Analysis — wait for GPU to finish previous submission first
   if (m_fence && m_fenceVal > 1) {
@@ -161,8 +155,7 @@ void ResourceDetector::UpdateHeuristics(ID3D12CommandQueue *pQueue) {
   } else {
     m_cmdList->Close();
   }
-
-  pDevice->Release();
+  // pDevice released automatically by ComPtr
 }
 
 void ResourceDetector::NewFrame() {

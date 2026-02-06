@@ -189,9 +189,7 @@ HookedExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
       ResourceDetector::Get().NewFrame();
       StreamlineIntegration::Get().SetCommandQueue(pThis);
 
-      // Trigger async heuristic analysis for motion vector validation
-      ResourceDetector::Get().UpdateHeuristics(pThis);
-
+      // Tag detected resources to Streamline
       ID3D12Resource *pColor = ResourceDetector::Get().GetBestColorCandidate();
       ID3D12Resource *pDepth = ResourceDetector::Get().GetBestDepthCandidate();
       ID3D12Resource *pMVs =
@@ -203,6 +201,11 @@ HookedExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
         StreamlineIntegration::Get().TagDepthBuffer(pDepth);
       if (pMVs)
         StreamlineIntegration::Get().TagMotionVectors(pMVs);
+
+      // Camera data: use jitter from pattern scan only (no invasive matrix scanning)
+      float jitterX = 0.0f, jitterY = 0.0f;
+      TryGetPatternJitter(jitterX, jitterY);
+      StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
     }
   } catch (...) {
     LOG_ERROR("[HOOK] Exception in HookedExecuteCommandLists");
@@ -447,31 +450,19 @@ HRESULT STDMETHODCALLTYPE Hooked_CreatePlacedResource(
   return hr;
 }
 
-void EnsureCommandListHooks(ID3D12GraphicsCommandList *pList) {
-  if (s_cmdListHooked.exchange(true))
-    return;
-  void **vt = GetVTable(pList);
-    (void)HookManager::Get().CreateHook(
-        GetVTableEntry<void*, vtable::CommandList>(vt, vtable::CommandList::Close),
-        reinterpret_cast<void*>(HookedClose), &g_OriginalClose);
-    (void)HookManager::Get().CreateHook(
-        GetVTableEntry<void*, vtable::CommandList>(vt, vtable::CommandList::ResourceBarrier),
-        reinterpret_cast<void*>(HookedResourceBarrier), &g_OriginalResourceBarrier);
-    (void)HookManager::Get().CreateHook(
-        GetVTableEntry<void*, vtable::CommandList>(vt, vtable::CommandList::SetComputeRootConstantBufferView),
-        reinterpret_cast<void*>(HookedSetComputeRootCbv), &g_OriginalSetComputeRootCbv);
-    (void)HookManager::Get().CreateHook(
-        GetVTableEntry<void*, vtable::CommandList>(vt, vtable::CommandList::SetGraphicsRootConstantBufferView),
-        reinterpret_cast<void*>(HookedSetGraphicsRootCbv), &g_OriginalSetGraphicsRootCbv);
-    // ClearDepthStencilView — highest-confidence depth identification
-    (void)HookManager::Get().CreateHook(
-        GetVTableEntry<void*, vtable::CommandList>(vt, vtable::CommandList::ClearDepthStencilView),
-        reinterpret_cast<void*>(HookedClearDepthStencilView), &g_OriginalClearDSV);
-    // ClearRenderTargetView — highest-confidence color identification
-    (void)HookManager::Get().CreateHook(
-        GetVTableEntry<void*, vtable::CommandList>(vt, vtable::CommandList::ClearRenderTargetView),
-        reinterpret_cast<void*>(HookedClearRenderTargetView), &g_OriginalClearRTV);
-    LOG_INFO("[HOOK] Global D3D12 CommandList hooks installed (Close, Barrier, CBV, ClearDSV, ClearRTV)");
+void EnsureCommandListHooks(ID3D12GraphicsCommandList * /*pList*/) {
+  // ====================================================================
+  // STEALTHY MODE: CommandList hooks REMOVED to avoid anti-cheat detection
+  // and crashes caused by hot-path hooks (Close, ResourceBarrier, CBV).
+  //
+  // Previously hooked: Close, ResourceBarrier, SetGraphics/ComputeRootCBV,
+  //                    ClearDSV, ClearRTV — all extremely hot paths that
+  //                    triggered access violations in game code.
+  //
+  // Camera data now comes from jitter pattern scan only.
+  // DLSS evaluation moved to Present thread via Streamline's internal cmd list.
+  // Resource detection relies on Device-level hooks (RTV/DSV creation).
+  // ====================================================================
 }
 
 HRESULT STDMETHODCALLTYPE Hooked_CreateCommandQueue(
@@ -532,33 +523,22 @@ void EnsureD3D12VTableHooks(ID3D12Device *pDevice) {
     return;
   if (s_deviceHooked.exchange(true))
     return;
+    // ====================================================================
+    // STEALTHY MODE: Minimal hook set — only what DLSS 4.5 absolutely needs.
+    // Removed: CreateCommandList, CreatePlacedResource, CreateSRV, CreateUAV
+    // Kept: CreateCommandQueue (SL needs queue), CreateCommittedResource
+    //       (resource detection), CreateRTV/DSV (strongest detection signals)
+    // ====================================================================
     void **vt = GetVTable(pDevice);
     (void)HookManager::Get().CreateHook(
         GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateCommandQueue),
         reinterpret_cast<void*>(Hooked_CreateCommandQueue),
         &g_OriginalCreateCommandQueue);
     (void)HookManager::Get().CreateHook(
-        GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateCommandList),
-        reinterpret_cast<void*>(HookedCreateCommandList),
-        &g_OriginalCreateCommandList);
-    (void)HookManager::Get().CreateHook(
         GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateCommittedResource),
         reinterpret_cast<void*>(Hooked_CreateCommittedResource),
         &g_OriginalCreateCommittedResource);
-    // CreatePlacedResource — many engines use pool allocation
-    (void)HookManager::Get().CreateHook(
-        GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreatePlacedResource),
-        reinterpret_cast<void*>(Hooked_CreatePlacedResource),
-        &g_OriginalCreatePlacedResource);
-    // View creation hooks — feed descriptor tracker for format resolution
-    (void)HookManager::Get().CreateHook(
-        GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateShaderResourceView),
-        reinterpret_cast<void*>(HookedCreateShaderResourceView),
-        &g_OriginalCreateSRV);
-    (void)HookManager::Get().CreateHook(
-        GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateUnorderedAccessView),
-        reinterpret_cast<void*>(HookedCreateUnorderedAccessView),
-        &g_OriginalCreateUAV);
+    // RTV/DSV creation — low-frequency, strongest resource identification signals
     (void)HookManager::Get().CreateHook(
         GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateRenderTargetView),
         reinterpret_cast<void*>(HookedCreateRenderTargetView),
@@ -567,8 +547,7 @@ void EnsureD3D12VTableHooks(ID3D12Device *pDevice) {
         GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateDepthStencilView),
         reinterpret_cast<void*>(HookedCreateDepthStencilView),
         &g_OriginalCreateDSV);
-    LOG_INFO("[HOOK] Global D3D12 Device hooks installed (Queue, CmdList, "
-             "CommittedRes, PlacedRes, SRV, UAV, RTV, DSV)");
+    LOG_INFO("[HOOK] Stealth D3D12 Device hooks installed (Queue, CommittedRes, RTV, DSV)");
 }
 
 void WrapCreatedD3D12Device(REFIID /*riid*/, void **ppDevice, bool /*takeOwnership*/) {

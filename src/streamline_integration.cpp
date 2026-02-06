@@ -169,6 +169,38 @@ void StreamlineIntegration::EvaluateDLSS(ID3D12GraphicsCommandList *pCmdList) {
   slEvaluateFeature(sl::kFeatureDLSS, *m_frameToken, inputs, 1, pCmdList);
 }
 
+void StreamlineIntegration::EvaluateDLSSFromPresent() {
+  if (!m_initialized || !m_pCommandQueue || !m_frameToken)
+    return;
+  if (!EnsureCommandList())
+    return;
+
+  if (m_optionsDirty)
+    UpdateOptions();
+
+  // Wait for previous GPU work to finish before resetting the allocator
+  WaitForGpu();
+
+  HRESULT hr = m_pCommandAllocator->Reset();
+  if (FAILED(hr)) { LOG_WARN("[DLSS] Command allocator reset failed"); return; }
+  hr = m_pCommandList->Reset(m_pCommandAllocator.Get(), nullptr);
+  if (FAILED(hr)) { LOG_WARN("[DLSS] Command list reset failed"); return; }
+
+  m_viewport = sl::ViewportHandle(0);
+  const sl::BaseStructure *inputs[] = {&m_viewport};
+  slEvaluateFeature(sl::kFeatureDLSS, *m_frameToken, inputs, 1,
+                    m_pCommandList.Get());
+  m_pCommandList->Close();
+  ID3D12CommandList *lists[] = {m_pCommandList.Get()};
+  m_pCommandQueue->ExecuteCommandLists(1, lists);
+
+  // Signal fence so next call knows when GPU is done
+  if (m_gpuFence) {
+    m_gpuFenceValue++;
+    m_pCommandQueue->Signal(m_gpuFence.Get(), m_gpuFenceValue);
+  }
+}
+
 void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain * /*pSwapChain*/) {
   if (!m_initialized || !m_dlssgLoaded || !m_pCommandQueue || !m_frameToken)
     return;

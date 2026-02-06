@@ -4,9 +4,7 @@
 #include <locale>
 #include <codecvt>
 
-#pragma comment(lib, "d3d11.lib")
-#pragma comment(lib, "d2d1.lib")
-#pragma comment(lib, "dwrite.lib")
+// Linking handled by CMakeLists.txt — no #pragma comment(lib) needed
 
 using Microsoft::WRL::ComPtr;
 

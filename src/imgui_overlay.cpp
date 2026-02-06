@@ -1049,7 +1049,7 @@ void ImGuiOverlay::BuildMainPanel() {
   float screenH = static_cast<float>(m_height);
   float panelW = std::clamp(cust.panelWidth, 360.0f, 720.0f);
   float panelH = screenH;
-  float cr = std::clamp(cust.cornerRadius, 0.0f, 20.0f);
+  // cornerRadius is available via cust.cornerRadius if ever needed for sub-panels
   float panelOpacity = std::clamp(cust.panelOpacity, 0.3f, 1.0f);
   float fontScl = std::clamp(cust.fontScale, 0.75f, 1.5f);
 

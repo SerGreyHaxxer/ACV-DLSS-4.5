@@ -156,6 +156,7 @@ void OnPresentThread(IDXGISwapChain *pSwapChain) {
   g_unifiedFrameCount.fetch_add(1, std::memory_order_relaxed);
 
   StreamlineIntegration::Get().NewFrame(pSwapChain);
+  StreamlineIntegration::Get().EvaluateDLSSFromPresent();
   StreamlineIntegration::Get().EvaluateFrameGen(pSwapChain);
   StreamlineIntegration::Get().EvaluateDeepDVC(pSwapChain);
 

@@ -45,6 +45,7 @@ public:
                      float jitterX, float jitterY);
 
   void EvaluateDLSS(ID3D12GraphicsCommandList *pCmdList);
+  void EvaluateDLSSFromPresent(); // Uses internal cmd list — no external hook needed
   void EvaluateFrameGen(IDXGISwapChain *pSwapChain);
   void EvaluateDeepDVC(IDXGISwapChain *pSwapChain);
 

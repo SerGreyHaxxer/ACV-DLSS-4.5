@@ -48,6 +48,6 @@ constexpr std::string_view to_string(ScanError e) {
 using HookResult = std::expected<void, MH_STATUS>;
 
 template<typename T>
-using ScanResult = std::expected<T, ScanError>;
+using PatternScanResult = std::expected<T, ScanError>;
 
 using ProxyResult = std::expected<void, ProxyError>;

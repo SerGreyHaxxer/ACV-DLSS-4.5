@@ -38,7 +38,7 @@ std::vector<int> PatternScanner::ParsePattern(const std::string &pattern) {
   return bytes;
 }
 
-ScanResult<uintptr_t> PatternScanner::Scan(const std::string &moduleName,
+PatternScanResult<uintptr_t> PatternScanner::Scan(const std::string &moduleName,
                                            const std::string &pattern) {
   // 1. Check Cache
   size_t patternHash = std::hash<std::string>{}(pattern);
@@ -112,7 +112,7 @@ ScanResult<uintptr_t> PatternScanner::Scan(const std::string &moduleName,
   return result;
 }
 
-ScanResult<uintptr_t> PatternScanner::Scan(uintptr_t start, size_t length,
+PatternScanResult<uintptr_t> PatternScanner::Scan(uintptr_t start, size_t length,
                                            const std::string &pattern) {
   std::vector<int> patternBytes = ParsePattern(pattern);
   size_t patternLength = patternBytes.size();
