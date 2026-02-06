@@ -77,6 +77,17 @@ extern PFN_Present g_OriginalPresent;
 extern PFN_Present1 g_OriginalPresent1;
 extern PFN_ResizeBuffers g_OriginalResizeBuffers;
 
+// Function pointer types for new hooks
+typedef HRESULT(STDMETHODCALLTYPE *PFN_CreatePlacedResource)(
+    ID3D12Device *, ID3D12Heap *, UINT64, const D3D12_RESOURCE_DESC *,
+    D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE *, REFIID, void **);
+typedef void(STDMETHODCALLTYPE *PFN_ClearDepthStencilView)(
+    ID3D12GraphicsCommandList *, D3D12_CPU_DESCRIPTOR_HANDLE,
+    D3D12_CLEAR_FLAGS, FLOAT, UINT8, UINT, const D3D12_RECT *);
+typedef void(STDMETHODCALLTYPE *PFN_ClearRenderTargetView)(
+    ID3D12GraphicsCommandList *, D3D12_CPU_DESCRIPTOR_HANDLE, const FLOAT[4],
+    UINT, const D3D12_RECT *);
+
 void WrapCreatedD3D12Device(REFIID riid, void **ppDevice,
                             bool takeOwnership = true);
 void WrapCommandQueue(void **ppCommandQueue, bool takeOwnership = true);

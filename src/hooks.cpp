@@ -10,6 +10,7 @@
 #include <winternl.h>
 
 #include "d3d12_wrappers.h"
+#include "descriptor_tracker.h"
 #include "dlss4_config.h"
 #include "hooks.h"
 #include "imgui_overlay.h"
@@ -17,6 +18,7 @@
 #include "logger.h"
 #include "pattern_scanner.h"
 #include "resource_detector.h"
+#include "sampler_interceptor.h"
 #include "streamline_integration.h"
 #include "vtable_utils.h"
 
@@ -156,6 +158,15 @@ PFN_ResourceBarrier g_OriginalResourceBarrier = nullptr;
 PFN_SetGraphicsRootConstantBufferView g_OriginalSetGraphicsRootCbv = nullptr;
 PFN_SetComputeRootConstantBufferView g_OriginalSetComputeRootCbv = nullptr;
 
+// New hook function pointers
+PFN_CreatePlacedResource g_OriginalCreatePlacedResource = nullptr;
+PFN_CreateShaderResourceView g_OriginalCreateSRV = nullptr;
+PFN_CreateUnorderedAccessView g_OriginalCreateUAV = nullptr;
+PFN_CreateRenderTargetView g_OriginalCreateRTV = nullptr;
+PFN_CreateDepthStencilView g_OriginalCreateDSV = nullptr;
+PFN_ClearDepthStencilView g_OriginalClearDSV = nullptr;
+PFN_ClearRenderTargetView g_OriginalClearRTV = nullptr;
+
 void STDMETHODCALLTYPE
 HookedExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
                           ID3D12CommandList *const *ppCommandLists) noexcept {
@@ -171,6 +182,9 @@ HookedExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
     if (desc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
       ResourceDetector::Get().NewFrame();
       StreamlineIntegration::Get().SetCommandQueue(pThis);
+
+      // Trigger async heuristic analysis for motion vector validation
+      ResourceDetector::Get().UpdateHeuristics(pThis);
 
       ID3D12Resource *pColor = ResourceDetector::Get().GetBestColorCandidate();
       ID3D12Resource *pDepth = ResourceDetector::Get().GetBestDepthCandidate();
@@ -195,15 +209,23 @@ void STDMETHODCALLTYPE
 HookedResourceBarrier(ID3D12GraphicsCommandList *pThis, UINT NumBarriers,
                       const D3D12_RESOURCE_BARRIER *pBarriers) noexcept {
   try {
-    if (pBarriers) {
-      static uint64_t s_lastScanFrame = 0;
-      uint64_t currentFrame = StreamlineIntegration::Get().GetFrameCount();
-      if (currentFrame != s_lastScanFrame) {
-        s_lastScanFrame = currentFrame;
-        for (UINT i = 0; i < NumBarriers && i < 16; i++) {
-          if (pBarriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION) {
-            ResourceDetector::Get().RegisterResource(
-                pBarriers[i].Transition.pResource, true);
+    if (pBarriers && NumBarriers > 0) {
+      // Scan ALL barrier calls per frame, not just the first one.
+      // Rate-limit: scan up to kBarrierScanMax barriers per call.
+      UINT scanCount = (std::min)(NumBarriers,
+                                  static_cast<UINT>(resource_config::kBarrierScanMax));
+      for (UINT i = 0; i < scanCount; i++) {
+        if (pBarriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION) {
+          ID3D12Resource *pRes = pBarriers[i].Transition.pResource;
+          if (pRes) {
+            ResourceDetector::Get().RegisterResource(pRes, true);
+
+            // Barrier state transitions provide strong detection signals
+            D3D12_RESOURCE_STATES after = pBarriers[i].Transition.StateAfter;
+            if (after == D3D12_RESOURCE_STATE_DEPTH_WRITE ||
+                after == D3D12_RESOURCE_STATE_DEPTH_READ) {
+              ResourceDetector::Get().RegisterDepthFromView(pRes, DXGI_FORMAT_UNKNOWN);
+            }
           }
         }
       }
@@ -253,15 +275,156 @@ HRESULT STDMETHODCALLTYPE HookedClose(ID3D12GraphicsCommandList *pThis) noexcept
 void STDMETHODCALLTYPE HookedSetGraphicsRootCbv(
     ID3D12GraphicsCommandList *pThis, UINT RootParameterIndex,
     D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) noexcept {
-  try { TrackRootCbvAddress(BufferLocation); } catch (...) {}
+  try {
+    TrackRootCbvAddress(BufferLocation);
+  } catch (...) {
+    LOG_ERROR("[HOOK] Exception in HookedSetGraphicsRootCbv");
+  }
   g_OriginalSetGraphicsRootCbv(pThis, RootParameterIndex, BufferLocation);
 }
 
 void STDMETHODCALLTYPE HookedSetComputeRootCbv(
     ID3D12GraphicsCommandList *pThis, UINT RootParameterIndex,
     D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) noexcept {
-  try { TrackRootCbvAddress(BufferLocation); } catch (...) {}
+  try {
+    TrackRootCbvAddress(BufferLocation);
+  } catch (...) {
+    LOG_ERROR("[HOOK] Exception in HookedSetComputeRootCbv");
+  }
   g_OriginalSetComputeRootCbv(pThis, RootParameterIndex, BufferLocation);
+}
+
+// ============================================================================
+// CLEAR HOOKS — Highest-confidence resource identification
+// ============================================================================
+
+void STDMETHODCALLTYPE
+HookedClearDepthStencilView(ID3D12GraphicsCommandList *pThis,
+                            D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView,
+                            D3D12_CLEAR_FLAGS ClearFlags, FLOAT Depth,
+                            UINT8 Stencil, UINT NumRects,
+                            const D3D12_RECT *pRects) noexcept {
+  try {
+    // Resolve descriptor to resource via tracker
+    ID3D12Resource *pResource = nullptr;
+    DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
+    if (TryResolveDescriptorResource(DepthStencilView, &pResource, &fmt)) {
+      if (pResource) {
+        ResourceDetector::Get().RegisterDepthFromClear(pResource, Depth);
+      }
+    }
+  } catch (...) {
+    LOG_ERROR("[HOOK] Exception in HookedClearDepthStencilView");
+  }
+  g_OriginalClearDSV(pThis, DepthStencilView, ClearFlags, Depth, Stencil,
+                     NumRects, pRects);
+}
+
+void STDMETHODCALLTYPE
+HookedClearRenderTargetView(ID3D12GraphicsCommandList *pThis,
+                            D3D12_CPU_DESCRIPTOR_HANDLE RenderTargetView,
+                            const FLOAT ColorRGBA[4], UINT NumRects,
+                            const D3D12_RECT *pRects) noexcept {
+  try {
+    ID3D12Resource *pResource = nullptr;
+    DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
+    if (TryResolveDescriptorResource(RenderTargetView, &pResource, &fmt)) {
+      if (pResource) {
+        ResourceDetector::Get().RegisterColorFromClear(pResource);
+      }
+    }
+  } catch (...) {
+    LOG_ERROR("[HOOK] Exception in HookedClearRenderTargetView");
+  }
+  g_OriginalClearRTV(pThis, RenderTargetView, ColorRGBA, NumRects, pRects);
+}
+
+// ============================================================================
+// DEVICE VIEW-CREATION HOOKS — Feed descriptor tracker for format resolution
+// ============================================================================
+
+void STDMETHODCALLTYPE
+HookedCreateShaderResourceView(ID3D12Device *pThis, ID3D12Resource *pResource,
+                               const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc,
+                               D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) noexcept {
+  g_OriginalCreateSRV(pThis, pResource, pDesc, DestDescriptor);
+  try {
+    if (pResource) {
+      DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
+      TrackDescriptorResource(DestDescriptor, pResource, fmt);
+    }
+  } catch (...) {
+    LOG_ERROR("[HOOK] Exception in HookedCreateShaderResourceView");
+  }
+}
+
+void STDMETHODCALLTYPE
+HookedCreateUnorderedAccessView(ID3D12Device *pThis, ID3D12Resource *pResource,
+                                ID3D12Resource *pCounterResource,
+                                const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc,
+                                D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) noexcept {
+  g_OriginalCreateUAV(pThis, pResource, pCounterResource, pDesc, DestDescriptor);
+  try {
+    if (pResource) {
+      DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
+      TrackDescriptorResource(DestDescriptor, pResource, fmt);
+    }
+  } catch (...) {
+    LOG_ERROR("[HOOK] Exception in HookedCreateUnorderedAccessView");
+  }
+}
+
+void STDMETHODCALLTYPE
+HookedCreateRenderTargetView(ID3D12Device *pThis, ID3D12Resource *pResource,
+                             const D3D12_RENDER_TARGET_VIEW_DESC *pDesc,
+                             D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) noexcept {
+  g_OriginalCreateRTV(pThis, pResource, pDesc, DestDescriptor);
+  try {
+    if (pResource) {
+      DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
+      TrackDescriptorResource(DestDescriptor, pResource, fmt);
+      // RTV creation is a strong signal: register as color candidate
+      ResourceDetector::Get().RegisterResource(pResource, true);
+    }
+  } catch (...) {
+    LOG_ERROR("[HOOK] Exception in HookedCreateRenderTargetView");
+  }
+}
+
+void STDMETHODCALLTYPE
+HookedCreateDepthStencilView(ID3D12Device *pThis, ID3D12Resource *pResource,
+                             const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc,
+                             D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) noexcept {
+  g_OriginalCreateDSV(pThis, pResource, pDesc, DestDescriptor);
+  try {
+    if (pResource) {
+      DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
+      TrackDescriptorResource(DestDescriptor, pResource, fmt);
+      // DSV creation is a very strong signal: register as depth
+      ResourceDetector::Get().RegisterDepthFromView(pResource, fmt);
+    }
+  } catch (...) {
+    LOG_ERROR("[HOOK] Exception in HookedCreateDepthStencilView");
+  }
+}
+
+// ============================================================================
+// CreatePlacedResource HOOK — captures pool-allocated resources
+// ============================================================================
+
+HRESULT STDMETHODCALLTYPE Hooked_CreatePlacedResource(
+    ID3D12Device *pThis, ID3D12Heap *pHeap, UINT64 HeapOffset,
+    const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState,
+    const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riid,
+    void **ppvResource) noexcept {
+  HRESULT hr = g_OriginalCreatePlacedResource(
+      pThis, pHeap, HeapOffset, pDesc, InitialState, pOptimizedClearValue, riid,
+      ppvResource);
+  if (SUCCEEDED(hr) && ppvResource && *ppvResource) {
+    ResourceDetector::Get().RegisterResource(
+        static_cast<ID3D12Resource *>(*ppvResource));
+  }
+  return hr;
 }
 
 void EnsureCommandListHooks(ID3D12GraphicsCommandList *pList) {
@@ -280,7 +443,15 @@ void EnsureCommandListHooks(ID3D12GraphicsCommandList *pList) {
     (void)HookManager::Get().CreateHook(
         GetVTableEntry<void*, vtable::CommandList>(vt, vtable::CommandList::SetGraphicsRootConstantBufferView),
         reinterpret_cast<void*>(HookedSetGraphicsRootCbv), &g_OriginalSetGraphicsRootCbv);
-    LOG_INFO("[HOOK] Global D3D12 CommandList hooks installed");
+    // ClearDepthStencilView — highest-confidence depth identification
+    (void)HookManager::Get().CreateHook(
+        GetVTableEntry<void*, vtable::CommandList>(vt, vtable::CommandList::ClearDepthStencilView),
+        reinterpret_cast<void*>(HookedClearDepthStencilView), &g_OriginalClearDSV);
+    // ClearRenderTargetView — highest-confidence color identification
+    (void)HookManager::Get().CreateHook(
+        GetVTableEntry<void*, vtable::CommandList>(vt, vtable::CommandList::ClearRenderTargetView),
+        reinterpret_cast<void*>(HookedClearRenderTargetView), &g_OriginalClearRTV);
+    LOG_INFO("[HOOK] Global D3D12 CommandList hooks installed (Close, Barrier, CBV, ClearDSV, ClearRTV)");
   });
 }
 
@@ -356,7 +527,30 @@ void EnsureD3D12VTableHooks(ID3D12Device *pDevice) {
         GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateCommittedResource),
         reinterpret_cast<void*>(Hooked_CreateCommittedResource),
         &g_OriginalCreateCommittedResource);
-    LOG_INFO("[HOOK] Global D3D12 Device hooks installed");
+    // CreatePlacedResource — many engines use pool allocation
+    (void)HookManager::Get().CreateHook(
+        GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreatePlacedResource),
+        reinterpret_cast<void*>(Hooked_CreatePlacedResource),
+        &g_OriginalCreatePlacedResource);
+    // View creation hooks — feed descriptor tracker for format resolution
+    (void)HookManager::Get().CreateHook(
+        GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateShaderResourceView),
+        reinterpret_cast<void*>(HookedCreateShaderResourceView),
+        &g_OriginalCreateSRV);
+    (void)HookManager::Get().CreateHook(
+        GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateUnorderedAccessView),
+        reinterpret_cast<void*>(HookedCreateUnorderedAccessView),
+        &g_OriginalCreateUAV);
+    (void)HookManager::Get().CreateHook(
+        GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateRenderTargetView),
+        reinterpret_cast<void*>(HookedCreateRenderTargetView),
+        &g_OriginalCreateRTV);
+    (void)HookManager::Get().CreateHook(
+        GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateDepthStencilView),
+        reinterpret_cast<void*>(HookedCreateDepthStencilView),
+        &g_OriginalCreateDSV);
+    LOG_INFO("[HOOK] Global D3D12 Device hooks installed (Queue, CmdList, "
+             "CommittedRes, PlacedRes, SRV, UAV, RTV, DSV)");
   });
 }
 

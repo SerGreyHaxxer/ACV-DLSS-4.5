@@ -319,7 +319,7 @@ void StreamlineIntegration::TagResources() {
 
   // Build resource tags for all available resources
   std::vector<sl::ResourceTag> tags;
-  tags.reserve(4);
+  tags.reserve(5);
 
   m_viewport = sl::ViewportHandle(0);
 
@@ -346,6 +346,14 @@ void StreamlineIntegration::TagResources() {
   sl::Resource outputSL(sl::ResourceType::eTex2d, m_backBuffer.Get());
   tags.push_back(sl::ResourceTag(&outputSL, sl::kBufferTypeScalingOutputColor,
                                  sl::ResourceLifecycle::eValidUntilPresent));
+
+  // Exposure buffer (improves DLSS tonemapping stability)
+  ID3D12Resource *exposureRes = detector.GetExposureResource();
+  if (exposureRes) {
+    sl::Resource exposureSL(sl::ResourceType::eTex2d, exposureRes);
+    tags.push_back(sl::ResourceTag(&exposureSL, sl::kBufferTypeExposure,
+                                   sl::ResourceLifecycle::eValidUntilPresent));
+  }
 
   // Tag all resources in one call
   sl::Result result = slSetTag(m_viewport, tags.data(),

@@ -95,7 +95,7 @@ static void TimerThreadProc() {
     }
 
     // Timer thread handles ONLY: FPS calculation, config hot-reload, input polling.
-    // ImGui init and rendering are done on the Present/D3D12 submission thread.
+    // GUI init and rendering are done on the Present/D3D12 submission thread.
 
     static int hotReloadCounter = 0;
     if (++hotReloadCounter >= 100) {
@@ -126,7 +126,7 @@ void OnPresentThread(IDXGISwapChain *pSwapChain) {
   StreamlineIntegration::Get().EvaluateFrameGen(pSwapChain);
   StreamlineIntegration::Get().EvaluateDeepDVC(pSwapChain);
 
-  // ImGui rendering happens HERE on the GPU thread, not the timer thread
+  // Valhalla GUI rendering happens HERE on the GPU thread, not the timer thread
   ImGuiOverlay::Get().Render();
 
   StreamlineIntegration::Get().ReflexMarker(sl::PCLMarker::ePresentStart);

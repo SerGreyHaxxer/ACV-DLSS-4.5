@@ -1,16 +1,8 @@
 #include "resource_detector.h"
 #include "config_manager.h"
 #include "dlss4_config.h"
+#include "heuristic_scanner.h"
 #include "logger.h"
-#include <algorithm>
-#include <iomanip>
-#include <sstream>
-
-#include "config_manager.h"
-#include "dlss4_config.h"
-#include "heuristic_scanner.h" // Added
-#include "logger.h"
-#include "resource_detector.h"
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
@@ -335,21 +327,35 @@ void ResourceDetector::RegisterExposure(ID3D12Resource *pResource) {
   if (!pResource)
     return;
   D3D12_RESOURCE_DESC desc = pResource->GetDesc();
-  if (desc.Width != 1 || desc.Height != 1)
+  // Exposure textures are very small HDR textures (1x1 to 4x4)
+  if (desc.Width > 4 || desc.Height > 4)
     return;
 
   // Only HDR formats for exposure
   if (desc.Format != DXGI_FORMAT_R32_FLOAT &&
       desc.Format != DXGI_FORMAT_R16_FLOAT &&
-      desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT)
+      desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT &&
+      desc.Format != DXGI_FORMAT_R32G32B32A32_FLOAT &&
+      desc.Format != DXGI_FORMAT_R11G11B10_FLOAT &&
+      desc.Format != DXGI_FORMAT_R16G16_FLOAT &&
+      desc.Format != DXGI_FORMAT_R32_TYPELESS &&
+      desc.Format != DXGI_FORMAT_R16_TYPELESS)
     return;
 
   std::lock_guard<std::mutex> lock(m_mutex);
   if (m_exposureResource.Get() == pResource)
     return;
+  // Prefer 1x1 R32_FLOAT (most common exposure format)
+  if (m_exposureResource) {
+    D3D12_RESOURCE_DESC curDesc = m_exposureResource->GetDesc();
+    if (curDesc.Width == 1 && curDesc.Height == 1 &&
+        (desc.Width > 1 || desc.Height > 1))
+      return;  // Keep existing 1x1 over larger
+  }
   m_exposureResource = pResource;
-  LOG_INFO("[Scanner] Exposure Resource Identified: 1x1 Fmt:{} Ptr:{:p}",
-           static_cast<int>(desc.Format), static_cast<void*>(pResource));
+  LOG_INFO("[Scanner] Exposure Resource Identified: {}x{} Fmt:{} Ptr:{:p}",
+           desc.Width, desc.Height, static_cast<int>(desc.Format),
+           static_cast<void*>(pResource));
 }
 
 void ResourceDetector::RegisterMotionVectorFromView(ID3D12Resource *pResource,
@@ -439,9 +445,9 @@ void ResourceDetector::RegisterResource(ID3D12Resource *pResource,
 
   D3D12_RESOURCE_DESC desc = pResource->GetDesc();
 
-  // Check for 1x1 Exposure textures
-  if (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && desc.Width == 1 &&
-      desc.Height == 1) {
+  // Check for small Exposure textures (up to 4x4)
+  if (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+      desc.Width <= 4 && desc.Height <= 4) {
     RegisterExposure(pResource);
     return;
   }
@@ -640,38 +646,38 @@ float ResourceDetector::ScoreMotionVector(const D3D12_RESOURCE_DESC &desc) {
 
   // Motion vectors are usually R16G16 or R32G32
   // AnvilNext engine (AC Valhalla) may use R16G16B16A16_SNORM or packed formats
-  if (desc.Format == DXGI_FORMAT_R16G16_FLOAT)
-    score += 0.8f;
-  else if (desc.Format == DXGI_FORMAT_R16G16_UNORM)
-    score += 0.6f;
-  else if (desc.Format == DXGI_FORMAT_R16G16_SNORM)
-    score += 0.7f; // Increased for AnvilNext
-  else if (desc.Format == DXGI_FORMAT_R16G16_SINT)
-    score += 0.5f;
-  else if (desc.Format == DXGI_FORMAT_R16G16_UINT)
-    score += 0.5f;
-  else if (desc.Format == DXGI_FORMAT_R32G32_FLOAT)
-    score += 0.7f; // Increased
-  else if (desc.Format == DXGI_FORMAT_R32G32_SINT)
-    score += 0.4f;
-  else if (desc.Format == DXGI_FORMAT_R32G32_UINT)
-    score += 0.4f;
-  else if (desc.Format == DXGI_FORMAT_R16G16_TYPELESS)
-    score += 0.6f;
-  else if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT)
-    score += 0.5f;
-  else if (desc.Format == DXGI_FORMAT_R16G16B16A16_SNORM)
-    score += 0.65f; // AnvilNext packed MVs
-  else if (desc.Format == DXGI_FORMAT_R11G11B10_FLOAT)
-    score += 0.4f; // Rare but seen in some engines
-  else if (desc.Format == DXGI_FORMAT_R32G32_TYPELESS)
-    score += 0.5f; // Added typeless variant
-  else
+  switch (desc.Format) {
+  // Primary MV formats (highest confidence)
+  case DXGI_FORMAT_R16G16_FLOAT:       score += 0.8f; break;
+  case DXGI_FORMAT_R16G16_SNORM:       score += 0.7f; break;
+  case DXGI_FORMAT_R32G32_FLOAT:       score += 0.7f; break;
+  case DXGI_FORMAT_R16G16_UNORM:       score += 0.6f; break;
+  case DXGI_FORMAT_R16G16_TYPELESS:    score += 0.6f; break;
+  case DXGI_FORMAT_R32G32_TYPELESS:    score += 0.55f; break;
+  // Secondary MV formats
+  case DXGI_FORMAT_R16G16B16A16_SNORM: score += 0.65f; break;  // AnvilNext packed MVs
+  case DXGI_FORMAT_R16G16B16A16_FLOAT: score += 0.5f; break;   // Some engines pack MV+extras
+  case DXGI_FORMAT_R16G16_SINT:        score += 0.5f; break;
+  case DXGI_FORMAT_R16G16_UINT:        score += 0.5f; break;
+  case DXGI_FORMAT_R32G32_SINT:        score += 0.4f; break;
+  case DXGI_FORMAT_R32G32_UINT:        score += 0.4f; break;
+  case DXGI_FORMAT_R11G11B10_FLOAT:    score += 0.4f; break;   // Rare but seen
+  // Additional formats for broader engine support
+  case DXGI_FORMAT_R8G8_SNORM:         score += 0.45f; break;  // Low-precision MVs
+  case DXGI_FORMAT_R8G8_UNORM:         score += 0.35f; break;
+  case DXGI_FORMAT_R32G32B32A32_FLOAT: score += 0.4f; break;   // Full-precision MV+depth
+  case DXGI_FORMAT_R16G16B16A16_UINT:  score += 0.35f; break;  // Packed integer MVs
+  case DXGI_FORMAT_R16G16B16A16_SINT:  score += 0.35f; break;
+  case DXGI_FORMAT_R16G16B16A16_UNORM: score += 0.4f; break;
+  case DXGI_FORMAT_R16G16B16A16_TYPELESS: score += 0.45f; break;
+  case DXGI_FORMAT_R32G32B32A32_TYPELESS: score += 0.35f; break;
+  default:
     return 0.0f; // Not a likely MV format
+  }
 
   // Flags: MVs are typically generated via compute (UAV) in modern engines
   if (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
-    score += 0.3f; // Increased from 0.2
+    score += 0.3f;
   else
     score -= 0.1f;
 
@@ -710,33 +716,33 @@ float ResourceDetector::ScoreDepth(const D3D12_RESOURCE_DESC &desc) {
     return 0.0f;
 
   // Standard depth formats
-  if (desc.Format == DXGI_FORMAT_D32_FLOAT)
-    score += 0.9f;
-  else if (desc.Format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT)
-    score += 0.85f;
-  else if (desc.Format == DXGI_FORMAT_R32_FLOAT)
-    score += 0.7f; // Read-only depth copy
-  else if (desc.Format == DXGI_FORMAT_D24_UNORM_S8_UINT)
-    score += 0.6f;
-  else if (desc.Format == DXGI_FORMAT_D16_UNORM)
-    score += 0.5f; // Added
+  switch (desc.Format) {
+  case DXGI_FORMAT_D32_FLOAT:              score += 0.9f; break;
+  case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:   score += 0.85f; break;
+  case DXGI_FORMAT_R32_FLOAT:              score += 0.7f; break;  // Read-only depth copy
+  case DXGI_FORMAT_D24_UNORM_S8_UINT:      score += 0.6f; break;
+  case DXGI_FORMAT_D16_UNORM:              score += 0.5f; break;
   // Typeless variants (common in modern engines)
-  else if (desc.Format == DXGI_FORMAT_R32_TYPELESS)
-    score += 0.75f; // Increased
-  else if (desc.Format == DXGI_FORMAT_R32G8X24_TYPELESS)
-    score += 0.7f; // D32+S8
-  else if (desc.Format == DXGI_FORMAT_R24G8_TYPELESS)
-    score += 0.6f;
-  else if (desc.Format == DXGI_FORMAT_R24_UNORM_X8_TYPELESS)
-    score += 0.55f;
-  else if (desc.Format == DXGI_FORMAT_R16_TYPELESS)
-    score += 0.5f; // Added for D16
-  else
+  case DXGI_FORMAT_R32_TYPELESS:           score += 0.75f; break;
+  case DXGI_FORMAT_R32G8X24_TYPELESS:      score += 0.7f; break;  // D32+S8
+  case DXGI_FORMAT_R24G8_TYPELESS:         score += 0.6f; break;
+  case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:  score += 0.55f; break;
+  case DXGI_FORMAT_R16_TYPELESS:           score += 0.5f; break;  // D16
+  case DXGI_FORMAT_R16_UNORM:              score += 0.45f; break;  // D16 read-only
+  // SRV-compatible depth formats (engines that copy depth to SRV)
+  case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS: score += 0.65f; break;
+  case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT:  score += 0.5f; break;
+  case DXGI_FORMAT_X24_TYPELESS_G8_UINT:     score += 0.4f; break;
+  default:
     return 0.0f;
+  }
 
   // Depth-stencil flag is a strong indicator
   if (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
-    score += 0.25f; // Increased
+    score += 0.3f;
+  // Deny-SRV flag often accompanies depth-only resources
+  if (desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE)
+    score += 0.1f;
   if (desc.SampleDesc.Count > 1)
     score -= resource_config::kMsaaPenalty;
   if (desc.MipLevels > 1)
@@ -767,25 +773,36 @@ float ResourceDetector::ScoreColor(const D3D12_RESOURCE_DESC &desc) {
   if (desc.Width < 64 || desc.Height < 64)
     return 0.0f;
 
+  switch (desc.Format) {
+  // HDR Float formats (highest priority for modern rendering)
+  case DXGI_FORMAT_R16G16B16A16_FLOAT:     score += 0.7f; break;
+  case DXGI_FORMAT_R11G11B10_FLOAT:        score += 0.65f; break;  // Common HDR RT
+  case DXGI_FORMAT_R10G10B10A2_UNORM:      score += 0.6f; break;   // HDR10
+  case DXGI_FORMAT_R32G32B32A32_FLOAT:     score += 0.55f; break;  // Full-precision HDR
   // Standard Backbuffer Formats
-  if (desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
-      desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
-    score += 0.5f;
-  else if (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
-           desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)
-    score += 0.5f; // Added BGRA (Format 87/91)
-  else if (desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM)
-    score += 0.6f; // HDR
-  else if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT)
-    score += 0.7f; // HDR Float
-  else if (desc.Format == DXGI_FORMAT_R11G11B10_FLOAT)
-    score += 0.6f; // Common RT format
-  else
+  case DXGI_FORMAT_R8G8B8A8_UNORM:         score += 0.5f; break;
+  case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:    score += 0.5f; break;
+  case DXGI_FORMAT_B8G8R8A8_UNORM:         score += 0.5f; break;
+  case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:    score += 0.5f; break;
+  // Additional formats for broader engine support
+  case DXGI_FORMAT_R16G16B16A16_UNORM:     score += 0.55f; break;
+  case DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM: score += 0.5f; break;
+  // Typeless variants (engines create typeless then cast to SRV/RTV)
+  case DXGI_FORMAT_R8G8B8A8_TYPELESS:      score += 0.4f; break;
+  case DXGI_FORMAT_B8G8R8A8_TYPELESS:      score += 0.4f; break;
+  case DXGI_FORMAT_R16G16B16A16_TYPELESS:  score += 0.45f; break;
+  case DXGI_FORMAT_R10G10B10A2_TYPELESS:   score += 0.4f; break;
+  case DXGI_FORMAT_R32G32B32A32_TYPELESS:  score += 0.35f; break;
+  default:
     return 0.0f;
+  }
 
   // Must be Render Target or match typical RT resolution/format
   if (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) {
     score += 0.3f;
+  } else if (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) {
+    // Some engines use UAV for post-processing output
+    score += 0.15f;
   } else {
     // If it's a known RT format and large, give it a chance
     if (desc.Width > 1280)

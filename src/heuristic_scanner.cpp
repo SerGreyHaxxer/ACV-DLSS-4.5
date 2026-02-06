@@ -236,6 +236,12 @@ bool HeuristicScanner::AnalyzeTexture(ID3D12GraphicsCommandList* pCmdList, ID3D1
     else if (srvDesc.Format == DXGI_FORMAT_R32_TYPELESS) srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
     else if (srvDesc.Format == DXGI_FORMAT_R24G8_TYPELESS) srvDesc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
     else if (srvDesc.Format == DXGI_FORMAT_R32G8X24_TYPELESS) srvDesc.Format = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+    else if (srvDesc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS) srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    else if (srvDesc.Format == DXGI_FORMAT_R32G32B32A32_TYPELESS) srvDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    else if (srvDesc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS) srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    else if (srvDesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS) srvDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    else if (srvDesc.Format == DXGI_FORMAT_R16_TYPELESS) srvDesc.Format = DXGI_FORMAT_R16_FLOAT;
+    else if (srvDesc.Format == DXGI_FORMAT_R10G10B10A2_TYPELESS) srvDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
 
     pDevice->CreateShaderResourceView(pResource, &srvDesc, cpuHandle);
     
@@ -348,14 +354,17 @@ bool HeuristicScanner::GetReadbackResult(ScanResult& outResult) {
 
     // Heuristic 3: Valid Range for Motion Vectors
     // MVs are usually -1.0 to 1.0 (normalized) or screen space (width/height).
-    // If we see huge numbers like 10000.0, it's likely depth or garbage.
-    // If we see mostly 0..1, it might be UVs.
+    // Screen-space MVs can have values up to ±render_resolution.
     
     // Normalized check (-2.0 to 2.0 to be safe)
     bool isNormalized = (minX >= -2.0f && maxX <= 2.0f && minY >= -2.0f && maxY <= 2.0f);
     
-    // Screen space check (usually much larger) - not handled yet, assuming normalized for Streamline
-    outResult.validRange = isNormalized;
+    // Screen-space check: values bounded by typical resolutions (±8192 covers 8K)
+    bool isScreenSpace = !isNormalized &&
+        (minX >= -8192.0f && maxX <= 8192.0f && minY >= -8192.0f && maxY <= 8192.0f);
+    
+    // Either normalized or screen-space is valid for DLSS
+    outResult.validRange = isNormalized || isScreenSpace;
 
     return true;
 }

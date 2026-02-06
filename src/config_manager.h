@@ -71,6 +71,42 @@ struct ModConfig {
     float vignetteColorB = 0.93f;
   } ui;
 
+  struct Customization {
+    // Panel animation
+    int animationType = 0;         // 0=SlideLeft,1=SlideRight,2=SlideTop,3=SlideBottom,4=Fade,5=Scale,6=Bounce,7=Elastic
+    float animSpeed = 1.0f;        // 0.25x - 3.0x multiplier
+    // Panel appearance
+    float panelOpacity = 0.94f;    // 0.3 - 1.0
+    float panelWidth = 520.0f;     // 360 - 720
+    float cornerRadius = 6.0f;    // 0 - 20
+    bool panelShadow = true;
+    // Panel position (drag)
+    float panelX = -1.0f;         // -1 = default (left edge)
+    float panelY = -1.0f;         // -1 = default (top)
+    bool snapToEdges = true;
+    float snapDistance = 20.0f;
+    // FPS counter
+    int fpsPosition = 0;           // 0=TopRight,1=TopLeft,2=BottomRight,3=BottomLeft
+    int fpsStyle = 0;              // 0=Standard,1=Minimal,2=Detailed
+    float fpsOpacity = 0.85f;
+    float fpsScale = 1.0f;
+    // Accent color
+    float accentR = 0.831f;
+    float accentG = 0.686f;
+    float accentB = 0.216f;
+    // Effects
+    bool backgroundDim = true;
+    float backgroundDimAmount = 0.3f;
+    bool widgetGlow = true;
+    bool statusPulse = true;
+    bool smoothFPS = true;
+    // Layout
+    int layoutMode = 1;            // 0=Compact, 1=Normal, 2=Expanded
+    float fontScale = 1.0f;        // 0.75 - 1.5
+    // Mini mode
+    bool miniMode = false;
+  } customization;
+
   struct System {
     int logVerbosity = 1;
     bool debugMode = false;

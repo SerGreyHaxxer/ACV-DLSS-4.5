@@ -12,9 +12,15 @@
 namespace vtable {
 
 enum class Device : size_t {
-  CreateCommandQueue     = 8,
-  CreateCommandList      = 9,
-  CreateCommittedResource = 27,
+  CreateCommandQueue       = 8,
+  CreateCommandList        = 9,
+  CreateShaderResourceView   = 18,
+  CreateUnorderedAccessView  = 19,
+  CreateRenderTargetView     = 20,
+  CreateDepthStencilView     = 21,
+  CreateSampler              = 22,
+  CreateCommittedResource    = 27,
+  CreatePlacedResource       = 28,
 };
 
 enum class CommandList : size_t {
@@ -22,6 +28,8 @@ enum class CommandList : size_t {
   ResourceBarrier                    = 26,
   SetComputeRootConstantBufferView   = 31,
   SetGraphicsRootConstantBufferView  = 32,
+  ClearDepthStencilView              = 47,
+  ClearRenderTargetView              = 48,
 };
 
 enum class CommandQueue : size_t {

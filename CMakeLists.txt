@@ -13,7 +13,6 @@ endif()
 find_package(minhook CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
-find_package(imgui CONFIG REQUIRED)
 find_package(tomlplusplus CONFIG REQUIRED)
 
 # Source files — explicit list (GLOB doesn't trigger reconfigure on add/remove)
@@ -28,15 +27,13 @@ set(SRC_FILES
     src/heuristic_scanner.cpp
     src/hooks.cpp
     src/imgui_overlay.cpp
+    src/valhalla_gui.cpp
     src/input_handler.cpp
     src/pattern_scanner.cpp
     src/proxy.cpp
     src/resource_detector.cpp
     src/sampler_interceptor.cpp
     src/streamline_integration.cpp
-    # ImGui backend source files (not header-only, must be compiled)
-    external/imgui/backends/imgui_impl_dx12.cpp
-    external/imgui/backends/imgui_impl_win32.cpp
 )
 
 # Includes — target-scoped to avoid polluting consumers
@@ -46,7 +43,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     src
     local_headers
     external
-    external/imgui
     external/nvapi/nvapi-main
     external/streamline/lib
 )
@@ -62,9 +58,11 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     minhook::minhook
     spdlog::spdlog
     nlohmann_json::nlohmann_json
-    imgui::imgui
     tomlplusplus::tomlplusplus
     d3d12
+    d3d11
+    d2d1
+    dwrite
     dxgi
     nvapi64
     sl.interposer

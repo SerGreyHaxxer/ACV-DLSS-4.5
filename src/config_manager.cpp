@@ -142,6 +142,33 @@ void ConfigManager::Load() {
     m_config.ui.vignetteColorB =
         tbl["UI"]["vignette_color_b"].value_or(m_config.ui.vignetteColorB);
 
+    // Customization
+    m_config.customization.animationType = tbl["Customization"]["anim_type"].value_or(m_config.customization.animationType);
+    m_config.customization.animSpeed = tbl["Customization"]["anim_speed"].value_or(m_config.customization.animSpeed);
+    m_config.customization.panelOpacity = tbl["Customization"]["panel_opacity"].value_or(m_config.customization.panelOpacity);
+    m_config.customization.panelWidth = tbl["Customization"]["panel_width"].value_or(m_config.customization.panelWidth);
+    m_config.customization.cornerRadius = tbl["Customization"]["corner_radius"].value_or(m_config.customization.cornerRadius);
+    m_config.customization.panelShadow = tbl["Customization"]["panel_shadow"].value_or(m_config.customization.panelShadow);
+    m_config.customization.panelX = tbl["Customization"]["panel_x"].value_or(m_config.customization.panelX);
+    m_config.customization.panelY = tbl["Customization"]["panel_y"].value_or(m_config.customization.panelY);
+    m_config.customization.snapToEdges = tbl["Customization"]["snap_to_edges"].value_or(m_config.customization.snapToEdges);
+    m_config.customization.snapDistance = tbl["Customization"]["snap_distance"].value_or(m_config.customization.snapDistance);
+    m_config.customization.fpsPosition = tbl["Customization"]["fps_position"].value_or(m_config.customization.fpsPosition);
+    m_config.customization.fpsStyle = tbl["Customization"]["fps_style"].value_or(m_config.customization.fpsStyle);
+    m_config.customization.fpsOpacity = tbl["Customization"]["fps_opacity"].value_or(m_config.customization.fpsOpacity);
+    m_config.customization.fpsScale = tbl["Customization"]["fps_scale"].value_or(m_config.customization.fpsScale);
+    m_config.customization.accentR = tbl["Customization"]["accent_r"].value_or(m_config.customization.accentR);
+    m_config.customization.accentG = tbl["Customization"]["accent_g"].value_or(m_config.customization.accentG);
+    m_config.customization.accentB = tbl["Customization"]["accent_b"].value_or(m_config.customization.accentB);
+    m_config.customization.backgroundDim = tbl["Customization"]["background_dim"].value_or(m_config.customization.backgroundDim);
+    m_config.customization.backgroundDimAmount = tbl["Customization"]["background_dim_amount"].value_or(m_config.customization.backgroundDimAmount);
+    m_config.customization.widgetGlow = tbl["Customization"]["widget_glow"].value_or(m_config.customization.widgetGlow);
+    m_config.customization.statusPulse = tbl["Customization"]["status_pulse"].value_or(m_config.customization.statusPulse);
+    m_config.customization.smoothFPS = tbl["Customization"]["smooth_fps"].value_or(m_config.customization.smoothFPS);
+    m_config.customization.layoutMode = tbl["Customization"]["layout_mode"].value_or(m_config.customization.layoutMode);
+    m_config.customization.fontScale = tbl["Customization"]["font_scale"].value_or(m_config.customization.fontScale);
+    m_config.customization.miniMode = tbl["Customization"]["mini_mode"].value_or(m_config.customization.miniMode);
+
     // System
     m_config.system.logVerbosity =
         tbl["System"]["log_verbosity"].value_or(m_config.system.logVerbosity);
@@ -208,6 +235,32 @@ void ConfigManager::Save() {
                      {"vignette_color_r", m_config.ui.vignetteColorR},
                      {"vignette_color_g", m_config.ui.vignetteColorG},
                      {"vignette_color_b", m_config.ui.vignetteColorB}}}},
+       {"Customization",
+        toml::table{{{"anim_type", m_config.customization.animationType},
+                     {"anim_speed", m_config.customization.animSpeed},
+                     {"panel_opacity", m_config.customization.panelOpacity},
+                     {"panel_width", m_config.customization.panelWidth},
+                     {"corner_radius", m_config.customization.cornerRadius},
+                     {"panel_shadow", m_config.customization.panelShadow},
+                     {"panel_x", m_config.customization.panelX},
+                     {"panel_y", m_config.customization.panelY},
+                     {"snap_to_edges", m_config.customization.snapToEdges},
+                     {"snap_distance", m_config.customization.snapDistance},
+                     {"fps_position", m_config.customization.fpsPosition},
+                     {"fps_style", m_config.customization.fpsStyle},
+                     {"fps_opacity", m_config.customization.fpsOpacity},
+                     {"fps_scale", m_config.customization.fpsScale},
+                     {"accent_r", m_config.customization.accentR},
+                     {"accent_g", m_config.customization.accentG},
+                     {"accent_b", m_config.customization.accentB},
+                     {"background_dim", m_config.customization.backgroundDim},
+                     {"background_dim_amount", m_config.customization.backgroundDimAmount},
+                     {"widget_glow", m_config.customization.widgetGlow},
+                     {"status_pulse", m_config.customization.statusPulse},
+                     {"smooth_fps", m_config.customization.smoothFPS},
+                     {"layout_mode", m_config.customization.layoutMode},
+                     {"font_scale", m_config.customization.fontScale},
+                     {"mini_mode", m_config.customization.miniMode}}}},
        {"System", toml::table{{{"log_verbosity", m_config.system.logVerbosity},
                                {"debug_mode", m_config.system.debugMode},
                                {"wizard_completed",

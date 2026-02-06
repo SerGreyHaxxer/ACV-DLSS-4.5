@@ -4,47 +4,19 @@
 #include "logger.h"
 #include "nvapi.h"
 #include "resource_detector.h"
+#include "sampler_interceptor.h"
 #include "streamline_integration.h"
 #include <algorithm>
 #include <cstring>
-#include <d3d12.h>
-#include <dxgi1_4.h>
 #include <format>
 #include <limits>
-#include <vector>
-#include <wrl/client.h>
+#include <cmath>
 
-#include "backends/imgui_impl_dx12.h"
-#include "backends/imgui_impl_win32.h"
-#include "imgui.h"
-
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd,
-                                                             UINT msg,
-                                                             WPARAM wParam,
-                                                             LPARAM lParam);
-
-static void ImGuiOverlay_SrvAlloc(ImGui_ImplDX12_InitInfo *info,
-                                  D3D12_CPU_DESCRIPTOR_HANDLE *out_cpu,
-                                  D3D12_GPU_DESCRIPTOR_HANDLE *out_gpu) {
-  ImGuiOverlay::Get().AllocateSrv(info, out_cpu, out_gpu);
-}
-
-static void ImGuiOverlay_SrvFree(ImGui_ImplDX12_InitInfo *info,
-                                 D3D12_CPU_DESCRIPTOR_HANDLE cpu,
-                                 D3D12_GPU_DESCRIPTOR_HANDLE gpu) {
-  ImGuiOverlay::Get().FreeSrv(info, cpu, gpu);
-}
-
-static void WaitForFence(ID3D12Fence *fence, HANDLE eventHandle, UINT64 value) {
-  if (!fence || !eventHandle)
-    return;
-  if (fence->GetCompletedValue() < value) {
-    fence->SetEventOnCompletion(value, eventHandle);
-    WaitForSingleObject(eventHandle, INFINITE);
-  }
-}
-
+// ============================================================================
+// NvAPI Metrics (reused from original — independent of GUI library)
+// ============================================================================
 namespace {
+
 uint64_t GetTimeMs() {
   static LARGE_INTEGER freq = []() {
     LARGE_INTEGER value{};
@@ -54,6 +26,11 @@ uint64_t GetTimeMs() {
   LARGE_INTEGER counter{};
   QueryPerformanceCounter(&counter);
   return static_cast<uint64_t>((counter.QuadPart * 1000ULL) / freq.QuadPart);
+}
+
+float GetTimeSec() {
+  static uint64_t startMs = GetTimeMs();
+  return static_cast<float>(GetTimeMs() - startMs) / 1000.0f;
 }
 
 struct NvApiMetrics {
@@ -69,78 +46,57 @@ bool InitNvApi() {
   if (g_nvapiMetrics.initialized)
     return g_nvapiMetrics.hasGpu;
   g_nvapiMetrics.initialized = true;
-  if (NvAPI_Initialize() != NVAPI_OK)
-    return false;
+  if (NvAPI_Initialize() != NVAPI_OK) return false;
   NvU32 gpuCount = 0;
   NvPhysicalGpuHandle handles[NVAPI_MAX_PHYSICAL_GPUS] = {};
-  if (NvAPI_EnumPhysicalGPUs(handles, &gpuCount) != NVAPI_OK || gpuCount == 0)
-    return false;
+  if (NvAPI_EnumPhysicalGPUs(handles, &gpuCount) != NVAPI_OK || gpuCount == 0) return false;
   g_nvapiMetrics.gpu = handles[0];
   NvAPI_ShortString name{};
-  if (NvAPI_GPU_GetFullName(g_nvapiMetrics.gpu, name) == NVAPI_OK) {
+  if (NvAPI_GPU_GetFullName(g_nvapiMetrics.gpu, name) == NVAPI_OK)
     strncpy_s(g_nvapiMetrics.gpuName, name, _TRUNCATE);
-  }
   g_nvapiMetrics.hasGpu = true;
   return true;
 }
 
-void EnsureDxgiName(ID3D12Device *device) {
-  if (g_nvapiMetrics.dxgiNameReady || !device)
-    return;
+void EnsureDxgiName(ID3D12Device* device) {
+  if (g_nvapiMetrics.dxgiNameReady || !device) return;
   Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
-  if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgiDevice))))
-    return;
+  if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) return;
   Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
-  if (FAILED(dxgiDevice->GetAdapter(&adapter)))
-    return;
+  if (FAILED(dxgiDevice->GetAdapter(&adapter))) return;
   DXGI_ADAPTER_DESC desc{};
-  if (FAILED(adapter->GetDesc(&desc)))
-    return;
+  if (FAILED(adapter->GetDesc(&desc))) return;
   WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, g_nvapiMetrics.dxgiName,
                       sizeof(g_nvapiMetrics.dxgiName), nullptr, nullptr);
   g_nvapiMetrics.dxgiNameReady = true;
 }
 
-bool QueryGpuUtilization(uint32_t &outPercent) {
+bool QueryGpuUtilization(uint32_t& outPercent) {
   static uint64_t s_lastInitAttempt = 0;
   uint64_t now = GetTimeMs();
-  if (!g_nvapiMetrics.initialized && now - s_lastInitAttempt < 5000) {
-    return false;
-  }
-  if (!g_nvapiMetrics.initialized) {
-    s_lastInitAttempt = now;
-  }
-  if (!InitNvApi())
-    return false;
+  if (!g_nvapiMetrics.initialized && now - s_lastInitAttempt < 5000) return false;
+  if (!g_nvapiMetrics.initialized) s_lastInitAttempt = now;
+  if (!InitNvApi()) return false;
   NV_GPU_DYNAMIC_PSTATES_INFO_EX info{};
   info.version = NV_GPU_DYNAMIC_PSTATES_INFO_EX_VER;
-  if (NvAPI_GPU_GetDynamicPstatesInfoEx(g_nvapiMetrics.gpu, &info) != NVAPI_OK)
-    return false;
-  if (!info.utilization[0].bIsPresent)
-    return false;
+  if (NvAPI_GPU_GetDynamicPstatesInfoEx(g_nvapiMetrics.gpu, &info) != NVAPI_OK) return false;
+  if (!info.utilization[0].bIsPresent) return false;
   outPercent = info.utilization[0].percentage;
   return true;
 }
 
-bool QueryVramUsageMB(ID3D12Device *device, uint32_t &outUsedMB,
-                      uint32_t &outBudgetMB) {
-  if (!device)
-    return false;
+bool QueryVramUsageMB(ID3D12Device* device, uint32_t& outUsedMB, uint32_t& outBudgetMB) {
+  if (!device) return false;
   Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
-  if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgiDevice))))
-    return false;
+  if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) return false;
   Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
-  if (FAILED(dxgiDevice->GetAdapter(&adapter)))
-    return false;
+  if (FAILED(dxgiDevice->GetAdapter(&adapter))) return false;
   Microsoft::WRL::ComPtr<IDXGIAdapter3> adapter3;
-  if (FAILED(adapter.As(&adapter3)))
-    return false;
-  DXGI_QUERY_VIDEO_MEMORY_INFO info{};
-  if (FAILED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
-                                            &info)))
-    return false;
-  outUsedMB = static_cast<uint32_t>(info.CurrentUsage / (1024 * 1024));
-  outBudgetMB = static_cast<uint32_t>(info.Budget / (1024 * 1024));
+  if (FAILED(adapter.As(&adapter3))) return false;
+  DXGI_QUERY_VIDEO_MEMORY_INFO minfo{};
+  if (FAILED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &minfo))) return false;
+  outUsedMB = static_cast<uint32_t>(minfo.CurrentUsage / (1024 * 1024));
+  outBudgetMB = static_cast<uint32_t>(minfo.Budget / (1024 * 1024));
   return true;
 }
 
@@ -153,337 +109,159 @@ struct MetricsCache {
   std::atomic<uint32_t> vramBudget{0};
 } g_metricsCache;
 
-void UpdateMetrics(ID3D12Device *device) {
+void UpdateMetrics(ID3D12Device* device) {
   uint64_t now = GetTimeMs();
-  uint64_t lastUpdate =
-      g_metricsCache.lastUpdateMs.load(std::memory_order_relaxed);
-  if (now - lastUpdate < 500)
-    return;
+  uint64_t lastUpdate = g_metricsCache.lastUpdateMs.load(std::memory_order_relaxed);
+  if (now - lastUpdate < 500) return;
   g_metricsCache.lastUpdateMs.store(now, std::memory_order_relaxed);
   uint32_t gpuPercent = 0;
   bool gpuOk = QueryGpuUtilization(gpuPercent);
   g_metricsCache.gpuPercent.store(gpuPercent, std::memory_order_relaxed);
   g_metricsCache.gpuOk.store(gpuOk, std::memory_order_relaxed);
-  uint32_t vramUsed = 0;
-  uint32_t vramBudget = 0;
+  uint32_t vramUsed = 0, vramBudget = 0;
   bool vramOk = QueryVramUsageMB(device, vramUsed, vramBudget);
   g_metricsCache.vramUsed.store(vramUsed, std::memory_order_relaxed);
   g_metricsCache.vramBudget.store(vramBudget, std::memory_order_relaxed);
   g_metricsCache.vramOk.store(vramOk, std::memory_order_relaxed);
 }
+
 } // namespace
 
-ImGuiOverlay &ImGuiOverlay::Get() {
+// ============================================================================
+// Singleton
+// ============================================================================
+
+ImGuiOverlay& ImGuiOverlay::Get() {
   static ImGuiOverlay instance;
   return instance;
 }
 
-void ImGuiOverlay::Initialize(IDXGISwapChain *swapChain) {
-  if (m_initialized || !swapChain)
-    return;
+// ============================================================================
+// Initialize / Shutdown
+// ============================================================================
+
+void ImGuiOverlay::Initialize(IDXGISwapChain* swapChain) {
+  if (m_initialized || !swapChain) return;
   m_shuttingDown.store(false, std::memory_order_relaxed);
-  if (FAILED(swapChain->QueryInterface(__uuidof(IDXGISwapChain3),
-                                       (void **)&m_swapChain)) ||
-      !m_swapChain)
+
+  if (FAILED(swapChain->QueryInterface(__uuidof(IDXGISwapChain3), (void**)&m_swapChain)) || !m_swapChain)
     return;
 
   DXGI_SWAP_CHAIN_DESC desc{};
-  if (FAILED(m_swapChain->GetDesc(&desc)))
-    return;
-  if (desc.BufferCount == 0 || desc.BufferCount > 16)
-    return;
+  if (FAILED(m_swapChain->GetDesc(&desc))) return;
+  if (desc.BufferCount == 0 || desc.BufferCount > 16) return;
   m_backBufferCount = desc.BufferCount;
   m_hwnd = desc.OutputWindow;
+  m_width = desc.BufferDesc.Width;
+  m_height = desc.BufferDesc.Height;
 
-  if (FAILED(
-          m_swapChain->GetDevice(__uuidof(ID3D12Device), (void **)&m_device)))
-    return;
+  if (FAILED(m_swapChain->GetDevice(__uuidof(ID3D12Device), (void**)&m_device))) return;
   m_queue = StreamlineIntegration::Get().GetCommandQueue();
-  m_fenceValue = 0;
-  m_vignetteState = D3D12_RESOURCE_STATE_COPY_DEST;
-
-  if (!EnsureDeviceResources())
+  if (!m_queue) {
+    LOG_WARN("[ValhallaOverlay] Command queue not available yet.");
     return;
-
-  IMGUI_CHECKVERSION();
-  ImGui::CreateContext();
-  ApplyStyle();
-  ImGui_ImplWin32_Init(m_hwnd);
-  if (m_hwnd && !m_prevWndProc) {
-    m_prevWndProc = (WNDPROC)SetWindowLongPtrW(m_hwnd, GWLP_WNDPROC,
-                                               (LONG_PTR)OverlayWndProc);
   }
-  ImGui_ImplDX12_InitInfo initInfo{};
-  initInfo.Device = m_device;
-  initInfo.CommandQueue = m_queue;
-  initInfo.NumFramesInFlight = static_cast<int>(m_backBufferCount);
-  initInfo.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-  initInfo.SrvDescriptorHeap = m_srvHeap;
-  initInfo.SrvDescriptorAllocFn = ImGuiOverlay_SrvAlloc;
-  initInfo.SrvDescriptorFreeFn = ImGuiOverlay_SrvFree;
-  ImGui_ImplDX12_Init(&initInfo);
 
+  // Initialize custom D2D renderer
+  if (!m_renderer.Initialize(m_device, m_queue, m_swapChain, m_backBufferCount)) {
+    LOG_ERROR("[ValhallaOverlay] Failed to initialize D2D renderer");
+    return;
+  }
+
+  // Install WndProc hook for mouse/scroll input
+  if (m_hwnd && !m_prevWndProc) {
+    m_prevWndProc = (WNDPROC)SetWindowLongPtrW(m_hwnd, GWLP_WNDPROC, (LONG_PTR)OverlayWndProc);
+  }
+
+  // Initialize animation state
+  m_panelSlide.current = 0.0f;
+  m_panelSlide.target = 0.0f;
+  m_panelAlpha.current = 0.0f;
+  m_panelAlpha.target = 0.0f;
+  m_time = GetTimeSec();
+  m_firstFrame = true;
+
+  // Start metrics polling thread
   m_metricsThreadRunning.store(true, std::memory_order_relaxed);
   m_metricsThread = std::thread([this]() {
-    ID3D12Device *device = m_device;
-    if (device)
-      device->AddRef();
+    ID3D12Device* device = m_device;
+    if (device) device->AddRef();
     while (m_metricsThreadRunning.load(std::memory_order_relaxed)) {
-      if (!device)
-        break;
+      if (!device) break;
       UpdateMetrics(device);
       EnsureDxgiName(device);
       Sleep(100);
     }
-    if (device)
-      device->Release();
+    if (device) device->Release();
   });
 
   m_initialized = true;
   UpdateControls();
+  LOG_INFO("[ValhallaOverlay] Custom Valhalla GUI initialized");
 }
 
 void ImGuiOverlay::Shutdown() {
-  if (!m_initialized)
-    return;
+  if (!m_initialized) return;
   m_shuttingDown.store(true, std::memory_order_relaxed);
+
   if (m_cursorUnlocked) {
     ClipCursor(&m_prevClip);
     ShowCursor(FALSE);
     m_cursorUnlocked = false;
   }
-  if (m_fence) {
-    WaitForFence(m_fence, m_fenceEvent, m_fenceValue);
-  }
+
   if (m_metricsThreadRunning.exchange(false, std::memory_order_relaxed)) {
-    if (m_metricsThread.joinable()) {
-      m_metricsThread.join();
-    }
+    if (m_metricsThread.joinable()) m_metricsThread.join();
   }
-  ImGui_ImplDX12_Shutdown();
-  ImGui_ImplWin32_Shutdown();
-  ImGui::DestroyContext();
+
+  m_renderer.Shutdown();
+
   if (m_hwnd && m_prevWndProc) {
     SetWindowLongPtrW(m_hwnd, GWLP_WNDPROC, (LONG_PTR)m_prevWndProc);
     m_prevWndProc = nullptr;
   }
-  ReleaseDeviceResources();
-  if (m_device) {
-    m_device->Release();
-    m_device = nullptr;
-  }
-  if (m_swapChain) {
-    m_swapChain->Release();
-    m_swapChain = nullptr;
-  }
+
+  if (m_device) { m_device->Release(); m_device = nullptr; }
+  if (m_swapChain) { m_swapChain->Release(); m_swapChain = nullptr; }
   m_initialized = false;
+  LOG_INFO("[ValhallaOverlay] Shutdown complete");
 }
 
-LRESULT CALLBACK ImGuiOverlay::OverlayWndProc(HWND hwnd, UINT msg,
-                                              WPARAM wParam, LPARAM lParam) {
-  ImGuiOverlay &overlay = ImGuiOverlay::Get();
-  if (ImGui::GetCurrentContext() &&
-      (overlay.m_visible || overlay.m_showSetupWizard) &&
-      ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam)) {
-    return 1;
+// ============================================================================
+// WndProc hook — captures mouse wheel scroll
+// ============================================================================
+
+LRESULT CALLBACK ImGuiOverlay::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+  ImGuiOverlay& overlay = ImGuiOverlay::Get();
+
+  // Capture scroll wheel when overlay is active
+  if ((overlay.m_visible || overlay.m_showSetupWizard) && msg == WM_MOUSEWHEEL) {
+    short delta = GET_WHEEL_DELTA_WPARAM(wParam);
+    overlay.m_scrollAccum += static_cast<float>(delta) / static_cast<float>(WHEEL_DELTA) * 40.0f;
+    return 0; // consume the message
   }
-  if (overlay.m_prevWndProc) {
+
+  // Block mouse input from reaching the game when overlay is visible
+  if (overlay.m_visible || overlay.m_showSetupWizard) {
+    switch (msg) {
+      case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_RBUTTONDOWN: case WM_RBUTTONUP:
+      case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MOUSEMOVE:
+        return 0; // consume
+    }
+  }
+
+  if (overlay.m_prevWndProc)
     return CallWindowProcW(overlay.m_prevWndProc, hwnd, msg, wParam, lParam);
-  }
   return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-bool ImGuiOverlay::EnsureDeviceResources() {
-  if (!m_device)
-    return false;
-
-  if (!m_queue) {
-    LOG_WARN("ImGuiOverlay: Command queue not available yet.");
-    return false;
-  }
-
-  m_rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(
-      D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-  m_srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(
-      D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-  D3D12_DESCRIPTOR_HEAP_DESC srvDesc{};
-  srvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-  srvDesc.NumDescriptors = 128;
-  srvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-  if (FAILED(
-          m_device->CreateDescriptorHeap(&srvDesc, IID_PPV_ARGS(&m_srvHeap))))
-    return false;
-
-  D3D12_DESCRIPTOR_HEAP_DESC rtvDesc{};
-  rtvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-  rtvDesc.NumDescriptors = m_backBufferCount;
-  rtvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-  if (FAILED(
-          m_device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&m_rtvHeap))))
-    return false;
-
-  m_commandAllocators.resize(m_backBufferCount);
-  m_commandLists.resize(m_backBufferCount);
-  m_frameFenceValues.assign(m_backBufferCount, 0);
-  for (UINT i = 0; i < m_backBufferCount; ++i) {
-    if (FAILED(m_device->CreateCommandAllocator(
-            D3D12_COMMAND_LIST_TYPE_DIRECT,
-            IID_PPV_ARGS(&m_commandAllocators[i]))))
-      return false;
-    if (FAILED(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                           m_commandAllocators[i], nullptr,
-                                           IID_PPV_ARGS(&m_commandLists[i]))))
-      return false;
-    m_commandLists[i]->Close();
-  }
-
-  if (FAILED(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
-                                   IID_PPV_ARGS(&m_fence))))
-    return false;
-  m_fenceEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
-  if (!m_fenceEvent)
-    return false;
-
-  m_srvDescriptorCount = srvDesc.NumDescriptors;
-  m_srvDescriptorNext = 0;
-  m_srvFreeList.clear();
-  RecreateRenderTargets();
-  return true;
-}
-
-void ImGuiOverlay::ReleaseDeviceResources() {
-  ReleaseRenderTargets();
-  if (m_vignetteTexture) {
-    m_vignetteTexture->Release();
-    m_vignetteTexture = nullptr;
-  }
-  m_vignetteState = D3D12_RESOURCE_STATE_COPY_DEST;
-  m_vignetteSrv = {};
-  m_vignetteSrvGpu = {};
-  m_pendingUploads.clear();
-  for (auto *list : m_commandLists) {
-    if (list)
-      list->Release();
-  }
-  m_commandLists.clear();
-  for (auto *alloc : m_commandAllocators) {
-    if (alloc)
-      alloc->Release();
-  }
-  m_commandAllocators.clear();
-  m_frameFenceValues.clear();
-  if (m_fence) {
-    m_fence->Release();
-    m_fence = nullptr;
-  }
-  if (m_fenceEvent) {
-    CloseHandle(m_fenceEvent);
-    m_fenceEvent = nullptr;
-  }
-  if (m_rtvHeap) {
-    m_rtvHeap->Release();
-    m_rtvHeap = nullptr;
-  }
-  if (m_srvHeap) {
-    m_srvHeap->Release();
-    m_srvHeap = nullptr;
-  }
-  m_srvFreeList.clear();
-  m_srvDescriptorNext = 0;
-}
-
-void ImGuiOverlay::AllocateSrv(ImGui_ImplDX12_InitInfo *info,
-                               D3D12_CPU_DESCRIPTOR_HANDLE *out_cpu,
-                               D3D12_GPU_DESCRIPTOR_HANDLE *out_gpu) {
-  (void)info;
-  if (!m_srvHeap) {
-    out_cpu->ptr = 0;
-    out_gpu->ptr = 0;
-    return;
-  }
-  UINT index = 0;
-  if (!m_srvFreeList.empty()) {
-    index = m_srvFreeList.back();
-    m_srvFreeList.pop_back();
-  } else {
-    if (m_srvDescriptorNext >= m_srvDescriptorCount) {
-      out_cpu->ptr = 0;
-      out_gpu->ptr = 0;
-      return;
-    }
-    index = m_srvDescriptorNext++;
-  }
-  D3D12_CPU_DESCRIPTOR_HANDLE cpu =
-      m_srvHeap->GetCPUDescriptorHandleForHeapStart();
-  D3D12_GPU_DESCRIPTOR_HANDLE gpu =
-      m_srvHeap->GetGPUDescriptorHandleForHeapStart();
-  cpu.ptr += index * m_srvDescriptorSize;
-  gpu.ptr += index * m_srvDescriptorSize;
-  *out_cpu = cpu;
-  *out_gpu = gpu;
-  (void)cpu;
-  (void)gpu;
-}
-
-void ImGuiOverlay::FreeSrv(ImGui_ImplDX12_InitInfo *info,
-                           D3D12_CPU_DESCRIPTOR_HANDLE cpu,
-                           D3D12_GPU_DESCRIPTOR_HANDLE gpu) {
-  (void)info;
-  (void)gpu;
-  if (!m_srvHeap || cpu.ptr == 0)
-    return;
-  auto base = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
-  if (cpu.ptr < base.ptr)
-    return;
-  UINT index = static_cast<UINT>((cpu.ptr - base.ptr) / m_srvDescriptorSize);
-  if (index < m_srvDescriptorCount) {
-    m_srvFreeList.push_back(index);
-  }
-}
-void ImGuiOverlay::RecreateRenderTargets() {
-  ReleaseRenderTargets();
-  if (!m_swapChain || !m_rtvHeap)
-    return;
-  if (m_fence && !m_frameFenceValues.empty()) {
-    for (UINT i = 0; i < m_backBufferCount; ++i) {
-      if (m_frameFenceValues[i] > 0) {
-        WaitForFence(m_fence, m_fenceEvent, m_frameFenceValues[i]);
-      }
-    }
-  }
-  m_rtvHandles.assign(m_backBufferCount, {});
-  m_backBuffers = new ID3D12Resource *[m_backBufferCount]();
-  D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
-      m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
-  for (UINT i = 0; i < m_backBufferCount; ++i) {
-    if (SUCCEEDED(m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_backBuffers[i])))) {
-      m_rtvHandles[i] = rtvHandle;
-      m_device->CreateRenderTargetView(m_backBuffers[i], nullptr, rtvHandle);
-      rtvHandle.ptr += m_rtvDescriptorSize;
-    }
-  }
-}
-
-void ImGuiOverlay::ReleaseRenderTargets() {
-  if (m_backBuffers) {
-    for (UINT i = 0; i < m_backBufferCount; ++i) {
-      if (m_backBuffers[i])
-        m_backBuffers[i]->Release();
-    }
-    delete[] m_backBuffers;
-    m_backBuffers = nullptr;
-  }
-}
+// ============================================================================
+// Public state methods
+// ============================================================================
 
 void ImGuiOverlay::OnResize(UINT width, UINT height) {
-  m_width = width;
-  m_height = height;
-  if (m_initialized) {
-    WaitForFence(m_fence, m_fenceEvent, m_fenceValue);
-    RecreateRenderTargets();
-    m_needRebuildTextures = true;
-  }
+  m_width = width; m_height = height;
+  if (m_initialized) m_renderer.OnResize();
 }
 
 void ImGuiOverlay::SetFPS(float gameFps, float totalFps) {
@@ -492,18 +270,29 @@ void ImGuiOverlay::SetFPS(float gameFps, float totalFps) {
   m_fpsHistoryIndex = (m_fpsHistoryIndex + 1) % kFpsHistorySize;
 }
 
-void ImGuiOverlay::SetCameraStatus(bool hasCamera, float jitterX,
-                                   float jitterY) {
+void ImGuiOverlay::SetCameraStatus(bool hasCamera, float jitterX, float jitterY) {
   m_cachedCamera = hasCamera;
   m_cachedJitterX = jitterX;
   m_cachedJitterY = jitterY;
 }
 
 void ImGuiOverlay::ToggleVisibility() {
+  auto& cust = ConfigManager::Get().Data().customization;
   m_visible = !m_visible;
   ConfigManager::Get().Data().ui.visible = m_visible;
   ConfigManager::Get().MarkDirty();
-  UpdateInputState();
+
+  float speedMul = std::clamp(cust.animSpeed, 0.25f, 3.0f);
+  float openDur = vtheme::kAnimOpenDuration / speedMul;
+  float closeDur = vtheme::kAnimCloseDuration / speedMul;
+
+  if (m_visible) {
+    m_panelSlide.SetTarget(1.0f, openDur, true);
+    m_panelAlpha.SetTarget(1.0f, openDur, true);
+  } else {
+    m_panelSlide.SetTarget(0.0f, closeDur, false);
+    m_panelAlpha.SetTarget(0.0f, closeDur, false);
+  }
 }
 
 void ImGuiOverlay::ToggleFPS() {
@@ -516,29 +305,207 @@ void ImGuiOverlay::ToggleVignette() {
   m_showVignette = !m_showVignette;
   ConfigManager::Get().Data().ui.showVignette = m_showVignette;
   ConfigManager::Get().MarkDirty();
-  m_needRebuildTextures = true;
 }
 
-void ImGuiOverlay::UpdateInputState() {
-  if (!m_hwnd)
-    return;
-  ImGuiIO &io = ImGui::GetIO();
+void ImGuiOverlay::ToggleDebugMode(bool enabled) { m_showDebug = enabled; }
+
+void ImGuiOverlay::CaptureNextHotkey(int* target) { m_pendingHotkeyTarget = target; }
+
+void ImGuiOverlay::UpdateControls() {
+  ModConfig& cfg = ConfigManager::Get().Data();
+  m_showFPS = cfg.ui.showFPS;
+  m_showVignette = cfg.ui.showVignette;
+  m_showDebug = cfg.system.debugMode;
+  m_visible = cfg.ui.visible;
+  m_showSetupWizard = cfg.system.setupWizardForceShow || !cfg.system.setupWizardCompleted;
+
+  // Set initial animation state
+  m_panelSlide.current = m_visible ? 1.0f : 0.0f;
+  m_panelSlide.target = m_panelSlide.current;
+  m_panelAlpha.current = m_visible ? 1.0f : 0.0f;
+  m_panelAlpha.target = m_panelAlpha.current;
+
+  // Load accent color
+  auto& cust = cfg.customization;
+  m_accent = vtheme::rgba(cust.accentR, cust.accentG, cust.accentB, 1.0f);
+  m_accentBright = vtheme::rgba(
+    std::clamp(cust.accentR * 1.3f, 0.0f, 1.0f),
+    std::clamp(cust.accentG * 1.3f, 0.0f, 1.0f),
+    std::clamp(cust.accentB * 1.3f, 0.0f, 1.0f), 1.0f);
+  m_accentDim = vtheme::rgba(cust.accentR * 0.65f, cust.accentG * 0.65f, cust.accentB * 0.65f, 0.6f);
+
+  // Load panel position if saved
+  if (cust.panelX >= 0.0f) m_panelX = cust.panelX;
+  if (cust.panelY >= 0.0f) m_panelY = cust.panelY;
+}
+
+// ============================================================================
+// Animation helpers — compute transform based on animation type
+// ============================================================================
+
+float ImGuiOverlay::ComputeAnimProgress(float rawProgress, bool opening) const {
+  auto animType = static_cast<AnimType>(ConfigManager::Get().Data().customization.animationType);
+  float t = std::clamp(rawProgress, 0.0f, 1.0f);
+  switch (animType) {
+    case AnimType::SlideLeft: case AnimType::SlideRight:
+    case AnimType::SlideTop: case AnimType::SlideBottom:
+      return opening ? vanim::EaseOutCubic(t) : vanim::EaseInCubic(t);
+    case AnimType::Fade:
+      return opening ? vanim::EaseOutQuint(t) : vanim::EaseInCubic(t);
+    case AnimType::Scale:
+      return opening ? vanim::EaseOutBack(t) : vanim::EaseInCubic(t);
+    case AnimType::Bounce:
+      return opening ? vanim::EaseBounce(t) : vanim::EaseInCubic(t);
+    case AnimType::Elastic:
+      return opening ? vanim::EaseElastic(t) : vanim::EaseInCubic(t);
+    default:
+      return opening ? vanim::EaseOutCubic(t) : vanim::EaseInCubic(t);
+  }
+}
+
+void ImGuiOverlay::ComputePanelTransform(float progress, float screenW, float screenH,
+                                          float panelW, float panelH,
+                                          float& outX, float& outY, float& outAlpha, float& outScale) const {
+  auto& cust = ConfigManager::Get().Data().customization;
+  auto animType = static_cast<AnimType>(cust.animationType);
+  float eased = ComputeAnimProgress(progress, progress > 0.5f);
+
+  float targetX = m_panelX;
+  float targetY = m_panelY;
+  outAlpha = eased;
+  outScale = 1.0f;
+
+  switch (animType) {
+    case AnimType::SlideLeft:
+      outX = vanim::Lerp(targetX - panelW - 40.0f, targetX, eased);
+      outY = targetY;
+      break;
+    case AnimType::SlideRight:
+      outX = vanim::Lerp(screenW + 40.0f, targetX, eased);
+      outY = targetY;
+      break;
+    case AnimType::SlideTop:
+      outX = targetX;
+      outY = vanim::Lerp(-panelH - 40.0f, targetY, eased);
+      break;
+    case AnimType::SlideBottom:
+      outX = targetX;
+      outY = vanim::Lerp(screenH + 40.0f, targetY, eased);
+      break;
+    case AnimType::Fade:
+      outX = targetX;
+      outY = targetY;
+      break;
+    case AnimType::Scale:
+      outX = targetX;
+      outY = targetY;
+      outScale = vanim::Lerp(0.85f, 1.0f, eased);
+      break;
+    case AnimType::Bounce:
+      outX = vanim::Lerp(targetX - panelW - 40.0f, targetX, eased);
+      outY = targetY;
+      break;
+    case AnimType::Elastic:
+      outX = vanim::Lerp(targetX - panelW - 40.0f, targetX, eased);
+      outY = targetY;
+      break;
+    default:
+      outX = vanim::Lerp(targetX - panelW, targetX, eased);
+      outY = targetY;
+      break;
+  }
+}
+
+void ImGuiOverlay::SnapPanel(float screenW, float screenH) {
+  auto& cust = ConfigManager::Get().Data().customization;
+  if (!cust.snapToEdges) return;
+  float snap = cust.snapDistance;
+  float panelW = cust.panelWidth;
+
+  if (m_panelX < snap) m_panelX = 0;
+  if (m_panelY < snap) m_panelY = 0;
+  if (m_panelX + panelW > screenW - snap) m_panelX = screenW - panelW;
+  if (m_panelY > screenH - snap) m_panelY = screenH - 100.0f;
+}
+
+// ============================================================================
+// New rendering features
+// ============================================================================
+
+void ImGuiOverlay::BuildBackgroundDim() {
+  auto& cust = ConfigManager::Get().Data().customization;
+  if (!cust.backgroundDim) return;
+  float progress = m_panelAlpha.current;
+  if (progress < 0.01f) return;
+  float dimAlpha = cust.backgroundDimAmount * progress;
+  m_renderer.FillRect(0, 0, static_cast<float>(m_width), static_cast<float>(m_height),
+                      vtheme::hex(0x000000, dimAlpha));
+}
+
+void ImGuiOverlay::BuildPanelShadow(float x, float y, float w, float h, float alpha) {
+  if (!ConfigManager::Get().Data().customization.panelShadow) return;
+  // Multi-layer shadow for depth
+  for (int i = 3; i >= 0; --i) {
+    float offset = static_cast<float>(i + 1) * 4.0f;
+    float shadowAlpha = 0.08f * alpha * (4 - i);
+    m_renderer.FillRoundedRect(x + offset, y + offset, w, h, 8.0f, vtheme::hex(0x000000, shadowAlpha));
+  }
+}
+
+void ImGuiOverlay::BuildMiniMode() {
+  auto& cust = ConfigManager::Get().Data().customization;
+  if (!cust.miniMode || m_visible) return;
+
+  // Small floating bar with mod name + FPS
+  float barW = 160.0f, barH = 32.0f;
+  float barX = 12.0f, barY = 12.0f;
+
+  m_renderer.FillRoundedRect(barX, barY, barW, barH, 16.0f, vtheme::hex(0x0A0B14, 0.8f));
+  m_renderer.OutlineRoundedRect(barX, barY, barW, barH, 16.0f, m_accentDim, 1.0f);
+  m_renderer.DrawDiamond(barX + 16, barY + barH * 0.5f, 4.0f, m_accent);
+  m_renderer.DrawTextA("DLSS 4.5", barX + 28, barY, 80.0f, barH, m_accent, 12.0f, ValhallaRenderer::TextAlign::Left, true);
+
+  std::string fpsStr = std::format("{:.0f}", m_smoothFPS);
+  m_renderer.DrawTextA(fpsStr.c_str(), barX + 100, barY, 50.0f, barH, vtheme::kTextPrimary, 14.0f, ValhallaRenderer::TextAlign::Right, true);
+
+  // Click to open
+  if (PointInRect(m_input.mouseX, m_input.mouseY, barX, barY, barW, barH) && m_input.mouseClicked) {
+    ToggleVisibility();
+  }
+}
+
+// ============================================================================
+// Widget helpers
+// ============================================================================
+
+bool ImGuiOverlay::PointInRect(float px, float py, float rx, float ry, float rw, float rh) const {
+  return px >= rx && px < rx + rw && py >= ry && py < ry + rh;
+}
+
+void ImGuiOverlay::BeginWidgetFrame() {
+  // Poll mouse
+  POINT cursorPos{};
+  GetCursorPos(&cursorPos);
+  if (m_hwnd) ScreenToClient(m_hwnd, &cursorPos);
+  m_input.mouseX = static_cast<float>(cursorPos.x);
+  m_input.mouseY = static_cast<float>(cursorPos.y);
+  bool mouseNow = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+  m_input.mouseClicked = mouseNow && !m_mouseDownPrev;
+  m_input.mouseReleased = !mouseNow && m_mouseDownPrev;
+  m_input.mouseDown = mouseNow;
+  m_mouseDownPrev = mouseNow;
+  m_input.scrollDelta = m_scrollAccum;
+  m_scrollAccum = 0;
+
+  // Manage cursor visibility
   if (m_visible || m_showSetupWizard) {
-    io.MouseDrawCursor = true;
     if (!m_cursorUnlocked) {
       GetClipCursor(&m_prevClip);
       ClipCursor(nullptr);
       ShowCursor(TRUE);
       m_cursorUnlocked = true;
     }
-    POINT pt{};
-    GetCursorPos(&pt);
-    ScreenToClient(m_hwnd, &pt);
-    io.MousePos = ImVec2(static_cast<float>(pt.x), static_cast<float>(pt.y));
-    io.MouseDown[0] = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    io.MouseDown[1] = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
   } else {
-    io.MouseDrawCursor = false;
     if (m_cursorUnlocked) {
       ClipCursor(&m_prevClip);
       ShowCursor(FALSE);
@@ -547,1018 +514,1573 @@ void ImGuiOverlay::UpdateInputState() {
   }
 }
 
-void ImGuiOverlay::ToggleDebugMode(bool enabled) { m_showDebug = enabled; }
+// ============================================================================
+// WIDGETS — Immediate-mode GUI widgets drawn with the D2D renderer
+// ============================================================================
 
-void ImGuiOverlay::CaptureNextHotkey(int *target) {
-  m_pendingHotkeyTarget = target;
+void ImGuiOverlay::NorseSeparator() {
+  float y = m_cursorY + 6.0f;
+  float lineY = y + 4.0f;
+  float midX = m_cursorX + m_contentWidth * 0.5f;
+
+  // Accent line with diamond center (uses dynamic accent)
+  m_renderer.DrawLine(m_cursorX + 10.0f, lineY, midX - 10.0f, lineY, m_accentDim, 1.0f);
+  m_renderer.DrawDiamond(midX, lineY, 4.0f, m_accent);
+  m_renderer.DrawLine(midX + 10.0f, lineY, m_cursorX + m_contentWidth - 10.0f, lineY, m_accentDim, 1.0f);
+
+  m_cursorY += 16.0f;
 }
 
-void ImGuiOverlay::UpdateControls() {
-  ModConfig &cfg = ConfigManager::Get().Data();
-  m_showFPS = cfg.ui.showFPS;
-  m_showVignette = cfg.ui.showVignette;
-  m_showDebug = cfg.system.debugMode;
-  m_visible = cfg.ui.visible;
-  m_showSetupWizard = cfg.system.setupWizardForceShow || !cfg.system.setupWizardCompleted;
-  if (m_initialized)
-    UpdateInputState();
+void ImGuiOverlay::SectionHeader(const char* label, bool* open) {
+  uint32_t id = VGuiHash(label);
+  float x = m_cursorX;
+  float y = m_cursorY;
+  float w = m_contentWidth;
+  float h = vtheme::kSectionHeight;
+
+  // Hover animation
+  float& hoverT = m_hoverAnim[id];
+  bool hovered = PointInRect(m_input.mouseX, m_input.mouseY, x, y, w, h);
+  hoverT += (hovered ? 1.0f : -1.0f) * (m_time - m_lastFrameTime) / vtheme::kAnimHoverDuration;
+  hoverT = std::clamp(hoverT, 0.0f, 1.0f);
+
+  // Background
+  D2D1_COLOR_F bg = vtheme::kBgSection;
+  bg.r = vanim::Lerp(bg.r, vtheme::kBgHover.r, hoverT);
+  bg.g = vanim::Lerp(bg.g, vtheme::kBgHover.g, hoverT);
+  bg.b = vanim::Lerp(bg.b, vtheme::kBgHover.b, hoverT);
+  m_renderer.FillRoundedRect(x, y, w, h, 4.0f, bg);
+
+  // Accent line at left (dynamic color)
+  float accentW = vanim::Lerp(3.0f, 5.0f, hoverT);
+  m_renderer.FillRect(x, y + 4.0f, accentW, h - 8.0f, m_accent);
+
+  // Widget glow effect on hover
+  if (ConfigManager::Get().Data().customization.widgetGlow && hoverT > 0.01f) {
+    D2D1_COLOR_F glow = m_accent;
+    glow.a = hoverT * 0.08f;
+    m_renderer.FillRoundedRect(x, y, w, h, 4.0f, glow);
+  }
+
+  // Diamond indicator
+  float diamondSize = *open ? 4.0f : 3.5f;
+  float diamondX = x + 18.0f;
+  m_renderer.DrawDiamond(diamondX, y + h * 0.5f, diamondSize, m_accent);
+
+  // Label text
+  m_renderer.DrawTextA(label, x + 32.0f, y, w - 40.0f, h, m_accent, vtheme::kFontSection, ValhallaRenderer::TextAlign::Left, true);
+
+  // Click to toggle
+  if (hovered && m_input.mouseClicked) {
+    *open = !(*open);
+  }
+
+  m_cursorY += h + 2.0f;
 }
 
-void ImGuiOverlay::ApplyStyle() {
-  ImGuiStyle &style = ImGui::GetStyle();
-  style.WindowRounding = 6.0f;
-  style.FrameRounding = 4.0f;
-  style.ScrollbarRounding = 6.0f;
-  ImVec4 *colors = style.Colors;
-  colors[ImGuiCol_WindowBg] = ImVec4(0.12f, 0.12f, 0.12f, 0.92f);
-  colors[ImGuiCol_TitleBg] = ImVec4(0.05f, 0.06f, 0.07f, 1.00f);
-  colors[ImGuiCol_TitleBgActive] = ImVec4(0.10f, 0.12f, 0.14f, 1.00f);
-  colors[ImGuiCol_Header] = ImVec4(0.15f, 0.18f, 0.20f, 1.00f);
-  colors[ImGuiCol_HeaderHovered] = ImVec4(0.22f, 0.24f, 0.26f, 1.00f);
-  colors[ImGuiCol_Button] = ImVec4(0.20f, 0.22f, 0.24f, 1.00f);
-  colors[ImGuiCol_ButtonHovered] = ImVec4(0.26f, 0.28f, 0.30f, 1.00f);
-  colors[ImGuiCol_ButtonActive] = ImVec4(0.30f, 0.32f, 0.34f, 1.00f);
-  colors[ImGuiCol_CheckMark] = ImVec4(0.83f, 0.69f, 0.25f, 1.00f);
-  colors[ImGuiCol_SliderGrab] = ImVec4(0.83f, 0.69f, 0.25f, 1.00f);
-  colors[ImGuiCol_SliderGrabActive] = ImVec4(0.92f, 0.78f, 0.30f, 1.00f);
+void ImGuiOverlay::Label(const char* text, const D2D1_COLOR_F& color) {
+  m_renderer.DrawTextA(text, m_cursorX + 4.0f, m_cursorY, m_contentWidth - 8.0f, vtheme::kWidgetHeight, color, vtheme::kFontBody);
+  m_cursorY += vtheme::kWidgetHeight;
 }
 
-void ImGuiOverlay::BuildMainMenu() {
-  ModConfig &cfg = ConfigManager::Get().Data();
-  StreamlineIntegration &sli = StreamlineIntegration::Get();
+void ImGuiOverlay::LabelValue(const char* label, const char* value) {
+  float halfW = m_contentWidth * 0.5f;
+  m_renderer.DrawTextA(label, m_cursorX + 4.0f, m_cursorY, halfW - 8.0f, vtheme::kWidgetHeight, vtheme::kTextSecondary, vtheme::kFontBody);
+  m_renderer.DrawTextA(value, m_cursorX + halfW, m_cursorY, halfW - 4.0f, vtheme::kWidgetHeight, vtheme::kTextPrimary, vtheme::kFontBody, ValhallaRenderer::TextAlign::Right);
+  m_cursorY += vtheme::kWidgetHeight;
+}
 
-  ImGui::SetNextWindowSize(ImVec2(480, 760), ImGuiCond_FirstUseEver);
-  ImGui::Begin("DLSS 4.5 Control Panel", &m_visible,
-               ImGuiWindowFlags_NoCollapse);
-  if (ImGui::Button("Run Setup Wizard")) {
+void ImGuiOverlay::StatusDot(const char* label, const D2D1_COLOR_F& color) {
+  float dotR = 5.0f;
+  float cx = m_cursorX + dotR + 4.0f;
+  float cy = m_cursorY + vtheme::kWidgetHeight * 0.5f;
+
+  // Pulse animation for status dots
+  float pulseScale = 1.0f;
+  float pulseGlowAlpha = 0.3f;
+  if (ConfigManager::Get().Data().customization.statusPulse) {
+    pulseScale = 1.0f + std::sin(m_statusPulsePhase) * 0.15f;
+    pulseGlowAlpha = 0.2f + std::sin(m_statusPulsePhase) * 0.15f;
+  }
+
+  m_renderer.DrawCircle(cx, cy, dotR * pulseScale, color);
+  // Glow effect (pulsing)
+  D2D1_COLOR_F glow = color;
+  glow.a = pulseGlowAlpha;
+  m_renderer.DrawCircle(cx, cy, (dotR + 3.0f) * pulseScale, glow);
+  m_renderer.DrawTextA(label, m_cursorX + dotR * 2 + 12.0f, m_cursorY, 120.0f, vtheme::kWidgetHeight, vtheme::kTextPrimary, vtheme::kFontSmall);
+}
+
+void ImGuiOverlay::Spacing(float height) {
+  m_cursorY += height;
+}
+
+void ImGuiOverlay::SameLineButton() {
+  m_sameLine = true;
+  m_sameLineX = m_lastButtonEndX + 6.0f;
+}
+
+bool ImGuiOverlay::Button(const char* label, float w) {
+  uint32_t id = VGuiHash(label);
+  float h = vtheme::kWidgetHeight;
+  float x = m_cursorX;
+  float y = m_cursorY;
+
+  if (m_sameLine) {
+    // Place on same line as previous button
+    auto ts = m_renderer.MeasureTextA(label, vtheme::kFontBody, false);
+    if (w <= 0.0f) w = ts.width + 24.0f;
+    x = m_sameLineX;
+    y = m_lastButtonY;
+    m_sameLine = false;
+  } else {
+    if (w <= 0.0f) w = m_contentWidth;
+  }
+
+  // Hover / active animation
+  float& hoverT = m_hoverAnim[id];
+  bool hovered = PointInRect(m_input.mouseX, m_input.mouseY, x, y, w, h);
+  hoverT += (hovered ? 1.0f : -1.0f) * (m_time - m_lastFrameTime) / vtheme::kAnimHoverDuration;
+  hoverT = std::clamp(hoverT, 0.0f, 1.0f);
+
+  bool pressed = hovered && m_input.mouseDown;
+  bool clicked = hovered && m_input.mouseClicked;
+
+  // Draw button
+  float cr = ConfigManager::Get().Data().customization.cornerRadius;
+  D2D1_COLOR_F bg = vtheme::kBgWidget;
+  if (pressed) bg = vtheme::kBgActive;
+  else { bg.r = vanim::Lerp(bg.r, vtheme::kBgHover.r, hoverT); bg.g = vanim::Lerp(bg.g, vtheme::kBgHover.g, hoverT); bg.b = vanim::Lerp(bg.b, vtheme::kBgHover.b, hoverT); }
+  m_renderer.FillRoundedRect(x, y, w, h, cr * 0.66f, bg);
+
+  // Accent border + glow on hover
+  if (hoverT > 0.01f) {
+    D2D1_COLOR_F border = m_accentDim;
+    border.a = hoverT * 0.6f;
+    m_renderer.OutlineRoundedRect(x, y, w, h, cr * 0.66f, border, 1.0f);
+    if (ConfigManager::Get().Data().customization.widgetGlow) {
+      D2D1_COLOR_F glow = m_accent;
+      glow.a = hoverT * 0.06f;
+      m_renderer.FillRoundedRect(x - 2, y - 2, w + 4, h + 4, cr * 0.66f + 2, glow);
+    }
+  }
+
+  m_renderer.DrawTextA(label, x, y, w, h, vtheme::kTextPrimary, vtheme::kFontBody, ValhallaRenderer::TextAlign::Center);
+
+  // Record this button's position for SameLineButton
+  m_lastButtonEndX = x + w;
+  m_lastButtonY = y;
+
+  // Only advance cursor Y if this is the last button on the line
+  // (will be overwritten if SameLineButton is called next)
+  m_cursorY = y + h + vtheme::kSpacing;
+  return clicked;
+}
+
+bool ImGuiOverlay::Checkbox(const char* label, bool* value, bool enabled) {
+  uint32_t id = VGuiHash(label);
+  float x = m_cursorX;
+  float y = m_cursorY;
+  float boxSize = vtheme::kCheckboxSize;
+  float rowH = vtheme::kWidgetHeight;
+
+  bool hovered = enabled && PointInRect(m_input.mouseX, m_input.mouseY, x, y, m_contentWidth, rowH);
+  bool clicked = hovered && m_input.mouseClicked;
+
+  float& hoverT = m_hoverAnim[id];
+  hoverT += (hovered ? 1.0f : -1.0f) * (m_time - m_lastFrameTime) / vtheme::kAnimHoverDuration;
+  hoverT = std::clamp(hoverT, 0.0f, 1.0f);
+
+  // Checkbox box
+  float boxX = x + 4.0f;
+  float boxY = y + (rowH - boxSize) * 0.5f;
+  D2D1_COLOR_F boxBg = *value ? m_accent : vtheme::kBgWidget;
+  if (!enabled) { boxBg.a *= 0.4f; }
+  m_renderer.FillRoundedRect(boxX, boxY, boxSize, boxSize, 3.0f, boxBg);
+
+  if (*value) {
+    // Checkmark — draw two lines forming a check
+    float cx = boxX + boxSize * 0.5f;
+    float cy = boxY + boxSize * 0.5f;
+    m_renderer.DrawLine(cx - 5.0f, cy, cx - 1.0f, cy + 4.0f, vtheme::kBgDeep, 2.0f);
+    m_renderer.DrawLine(cx - 1.0f, cy + 4.0f, cx + 5.0f, cy - 3.0f, vtheme::kBgDeep, 2.0f);
+  }
+
+  // Hover outline + glow
+  if (hoverT > 0.01f) {
+    D2D1_COLOR_F border = m_accentBright;
+    border.a = hoverT * 0.5f;
+    m_renderer.OutlineRoundedRect(boxX, boxY, boxSize, boxSize, 3.0f, border, 1.0f);
+    if (ConfigManager::Get().Data().customization.widgetGlow) {
+      D2D1_COLOR_F glow = m_accent;
+      glow.a = hoverT * 0.06f;
+      m_renderer.FillRoundedRect(boxX - 2, boxY - 2, boxSize + 4, boxSize + 4, 4.0f, glow);
+    }
+  }
+
+  // Label
+  D2D1_COLOR_F textColor = enabled ? vtheme::kTextPrimary : vtheme::kTextSecondary;
+  m_renderer.DrawTextA(label, x + boxSize + 12.0f, y, m_contentWidth - boxSize - 16.0f, rowH, textColor, vtheme::kFontBody);
+
+  m_cursorY += rowH + vtheme::kSpacing;
+
+  if (clicked && enabled) {
+    *value = !(*value);
+    return true;
+  }
+  return false;
+}
+
+bool ImGuiOverlay::SliderFloat(const char* label, float* value, float vmin, float vmax, const char* fmt, bool enabled) {
+  uint32_t id = VGuiHash(label);
+  float x = m_cursorX;
+  float y = m_cursorY;
+  float w = m_contentWidth;
+  float rowH = vtheme::kWidgetHeight;
+
+  // Label row
+  std::string valStr = std::vformat(fmt, std::make_format_args(*value));
+  D2D1_COLOR_F textColor = enabled ? vtheme::kTextPrimary : vtheme::kTextSecondary;
+  m_renderer.DrawTextA(label, x + 4.0f, y, w * 0.65f, rowH, textColor, vtheme::kFontBody);
+  m_renderer.DrawTextA(valStr.c_str(), x + w * 0.65f, y, w * 0.35f - 4.0f, rowH, enabled ? m_accent : vtheme::kTextSecondary, vtheme::kFontBody, ValhallaRenderer::TextAlign::Right);
+  y += rowH;
+
+  // Track
+  float trackH = 6.0f;
+  float trackX = x + 8.0f;
+  float trackW = w - 16.0f;
+  float trackY = y + (12.0f - trackH) * 0.5f;
+
+  float t = (vmax > vmin) ? std::clamp((*value - vmin) / (vmax - vmin), 0.0f, 1.0f) : 0.0f;
+  float grabX = trackX + t * trackW;
+
+  // Draw track background
+  m_renderer.FillRoundedRect(trackX, trackY, trackW, trackH, 3.0f, enabled ? vtheme::kSliderTrack : vtheme::hex(0x1A1B2A, 0.5f));
+  // Draw filled portion (dynamic accent)
+  if (t > 0.001f) {
+    m_renderer.FillRoundedRect(trackX, trackY, t * trackW, trackH, 3.0f, enabled ? m_accent : vtheme::hex(0x8B7530, 0.3f));
+  }
+
+  // Grab handle
+  float grabW = vtheme::kSliderGrabW;
+  float grabH = 16.0f;
+  float grabY = trackY + trackH * 0.5f - grabH * 0.5f;
+  bool grabHovered = enabled && PointInRect(m_input.mouseX, m_input.mouseY, grabX - grabW, grabY - 2.0f, grabW * 2, grabH + 4.0f);
+  bool trackHovered = enabled && PointInRect(m_input.mouseX, m_input.mouseY, trackX - 4.0f, trackY - 8.0f, trackW + 8.0f, trackH + 16.0f);
+
+  // Click on track to jump
+  if (trackHovered && m_input.mouseClicked && enabled) {
+    m_activeId = id;
+  }
+
+  // Dragging
+  bool changed = false;
+  if (m_activeId == id) {
+    if (m_input.mouseDown) {
+      float newT = std::clamp((m_input.mouseX - trackX) / trackW, 0.0f, 1.0f);
+      float newVal = vmin + newT * (vmax - vmin);
+      if (std::abs(newVal - *value) > 0.0001f) {
+        *value = newVal;
+        changed = true;
+      }
+    } else {
+      m_activeId = 0;
+    }
+  }
+
+  // Draw grab (dynamic accent)
+  D2D1_COLOR_F grabColor = (m_activeId == id) ? m_accentBright : (grabHovered ? m_accentBright : m_accent);
+  if (!enabled) grabColor = vtheme::hex(0x5A5B6D, 1.0f);
+  m_renderer.FillRoundedRect(grabX - grabW * 0.5f, grabY, grabW, grabH, 3.0f, grabColor);
+
+  m_cursorY = y + 18.0f;
+  return changed;
+}
+
+bool ImGuiOverlay::Combo(const char* label, int* selectedIndex, const char* const* items, int itemCount, bool enabled) {
+  uint32_t id = VGuiHash(label);
+  float x = m_cursorX;
+  float y = m_cursorY;
+  float w = m_contentWidth;
+  float h = vtheme::kComboHeight;
+
+  // Label above
+  D2D1_COLOR_F textColor = enabled ? vtheme::kTextPrimary : vtheme::kTextSecondary;
+  m_renderer.DrawTextA(label, x + 4.0f, y, w, h * 0.8f, textColor, vtheme::kFontSmall);
+  y += h * 0.7f;
+
+  // Combo header
+  bool isOpen = (m_openComboId == id);
+  bool headerHovered = enabled && PointInRect(m_input.mouseX, m_input.mouseY, x, y, w, h);
+
+  float& hoverT = m_hoverAnim[id];
+  hoverT += (headerHovered ? 1.0f : -1.0f) * (m_time - m_lastFrameTime) / vtheme::kAnimHoverDuration;
+  hoverT = std::clamp(hoverT, 0.0f, 1.0f);
+
+  D2D1_COLOR_F bg = vtheme::kBgWidget;
+  bg.r = vanim::Lerp(bg.r, vtheme::kBgHover.r, hoverT);
+  bg.g = vanim::Lerp(bg.g, vtheme::kBgHover.g, hoverT);
+  bg.b = vanim::Lerp(bg.b, vtheme::kBgHover.b, hoverT);
+  if (!enabled) bg.a *= 0.5f;
+  m_renderer.FillRoundedRect(x, y, w, h, 4.0f, bg);
+  m_renderer.OutlineRoundedRect(x, y, w, h, 4.0f, m_accentDim, 1.0f);
+
+  // Current selection text
+  const char* currentText = (*selectedIndex >= 0 && *selectedIndex < itemCount) ? items[*selectedIndex] : "---";
+  m_renderer.DrawTextA(currentText, x + 8.0f, y, w - 32.0f, h, enabled ? vtheme::kTextPrimary : vtheme::kTextSecondary, vtheme::kFontBody);
+
+  // Dropdown arrow (dynamic accent)
+  float arrowX = x + w - 20.0f;
+  float arrowY = y + h * 0.5f;
+  if (isOpen) {
+    m_renderer.DrawDiamond(arrowX, arrowY - 2.0f, 4.0f, m_accent);
+  } else {
+    m_renderer.DrawDiamond(arrowX, arrowY + 2.0f, 4.0f, m_accentDim);
+  }
+
+  // Toggle dropdown on click
+  if (headerHovered && m_input.mouseClicked && enabled) {
+    m_openComboId = isOpen ? 0 : id;
+    isOpen = !isOpen;
+  }
+
+  float advanceY = h + 4.0f;
+  bool changed = false;
+
+  // Dropdown items
+  if (isOpen && enabled) {
+    float itemY = y + h + 2.0f;
+    for (int i = 0; i < itemCount; ++i) {
+      float ih = h - 2.0f;
+      bool itemHov = PointInRect(m_input.mouseX, m_input.mouseY, x, itemY, w, ih);
+      D2D1_COLOR_F itemBg = (i == *selectedIndex) ? vtheme::kBgActive : (itemHov ? vtheme::kBgHover : vtheme::kBgWidget);
+      m_renderer.FillRect(x, itemY, w, ih, itemBg);
+      D2D1_COLOR_F itemText = (i == *selectedIndex) ? m_accent : vtheme::kTextPrimary;
+      m_renderer.DrawTextA(items[i], x + 8.0f, itemY, w - 16.0f, ih, itemText, vtheme::kFontBody);
+
+      if (itemHov && m_input.mouseClicked) {
+        *selectedIndex = i;
+        m_openComboId = 0;
+        changed = true;
+      }
+      itemY += ih + 1.0f;
+    }
+    advanceY += static_cast<float>(itemCount) * (h - 1.0f) + 4.0f;
+  }
+
+  m_cursorY = y + advanceY;
+  return changed;
+}
+
+bool ImGuiOverlay::ColorEdit3(const char* label, float* r, float* g, float* b) {
+  uint32_t id = VGuiHash(label);
+  float x = m_cursorX;
+  float y = m_cursorY;
+  float w = m_contentWidth;
+  float h = vtheme::kWidgetHeight;
+  bool isOpen = (m_openColorId == id);
+
+  // Color preview + label
+  float previewSize = 20.0f;
+  float previewX = x + 4.0f;
+  float previewY = y + (h - previewSize) * 0.5f;
+  m_renderer.FillRoundedRect(previewX, previewY, previewSize, previewSize, 3.0f, vtheme::rgba(*r, *g, *b, 1.0f));
+  m_renderer.OutlineRoundedRect(previewX, previewY, previewSize, previewSize, 3.0f, vtheme::kGoldDim, 1.0f);
+  m_renderer.DrawTextA(label, x + previewSize + 12.0f, y, w - previewSize - 16.0f, h, vtheme::kTextPrimary, vtheme::kFontBody);
+
+  bool headerHovered = PointInRect(m_input.mouseX, m_input.mouseY, x, y, w, h);
+  if (headerHovered && m_input.mouseClicked) {
+    m_openColorId = isOpen ? 0 : id;
+    isOpen = !isOpen;
+  }
+
+  m_cursorY += h + 2.0f;
+  bool changed = false;
+
+  if (isOpen) {
+    // RGB sliders
+    float tempR = *r, tempG = *g, tempB = *b;
+    if (SliderFloat("  Red", &tempR, 0.0f, 1.0f, "%.2f")) { *r = tempR; changed = true; }
+    if (SliderFloat("  Green", &tempG, 0.0f, 1.0f, "%.2f")) { *g = tempG; changed = true; }
+    if (SliderFloat("  Blue", &tempB, 0.0f, 1.0f, "%.2f")) { *b = tempB; changed = true; }
+  }
+
+  return changed;
+}
+
+void ImGuiOverlay::PlotLines(const char* label, const float* values, int count, int offset,
+                             float vmin, float vmax, float graphH) {
+  float x = m_cursorX + 4.0f;
+  float y = m_cursorY;
+  float w = m_contentWidth - 8.0f;
+
+  // Label
+  m_renderer.DrawTextA(label, x, y, w, 18.0f, vtheme::kTextSecondary, vtheme::kFontSmall);
+  y += 18.0f;
+
+  // Graph background
+  m_renderer.FillRoundedRect(x, y, w, graphH, 4.0f, vtheme::kBgWidget);
+
+  // Draw lines
+  float range = vmax - vmin;
+  if (range < 0.001f) range = 1.0f;
+  float stepX = w / static_cast<float>(count > 1 ? count - 1 : 1);
+
+  for (int i = 1; i < count; ++i) {
+    int idx0 = (offset + i - 1) % count;
+    int idx1 = (offset + i) % count;
+    float t0 = std::clamp((values[idx0] - vmin) / range, 0.0f, 1.0f);
+    float t1 = std::clamp((values[idx1] - vmin) / range, 0.0f, 1.0f);
+    float x0 = x + static_cast<float>(i - 1) * stepX;
+    float x1 = x + static_cast<float>(i) * stepX;
+    float y0 = y + graphH - t0 * graphH;
+    float y1 = y + graphH - t1 * graphH;
+    m_renderer.DrawLine(x0, y0, x1, y1, m_accent, 1.5f);
+  }
+
+  m_cursorY = y + graphH + vtheme::kSpacing;
+}
+
+// ============================================================================
+// Main panel content
+// ============================================================================
+
+void ImGuiOverlay::BuildMainPanel() {
+  ModConfig& cfg = ConfigManager::Get().Data();
+  auto& cust = cfg.customization;
+  StreamlineIntegration& sli = StreamlineIntegration::Get();
+
+  float screenW = static_cast<float>(m_width);
+  float screenH = static_cast<float>(m_height);
+  float panelW = std::clamp(cust.panelWidth, 360.0f, 720.0f);
+  float panelH = screenH;
+  float cr = std::clamp(cust.cornerRadius, 0.0f, 20.0f);
+  float panelOpacity = std::clamp(cust.panelOpacity, 0.3f, 1.0f);
+  float fontScl = std::clamp(cust.fontScale, 0.75f, 1.5f);
+
+  // --- Animation-driven position, alpha, scale ---
+  float panelDrawX = m_panelX, panelDrawY = m_panelY;
+  float alpha = m_panelAlpha.current;
+  float scale = 1.0f;
+  ComputePanelTransform(m_panelSlide.current, screenW, screenH, panelW, panelH,
+                        panelDrawX, panelDrawY, alpha, scale);
+  m_panelScale = scale;
+
+  if (alpha < 0.01f) return; // fully hidden
+
+  // --- Update accent colors dynamically ---
+  m_accent = vtheme::rgba(cust.accentR, cust.accentG, cust.accentB, 1.0f);
+  m_accentBright = vtheme::rgba(
+    std::clamp(cust.accentR * 1.3f, 0.0f, 1.0f),
+    std::clamp(cust.accentG * 1.3f, 0.0f, 1.0f),
+    std::clamp(cust.accentB * 1.3f, 0.0f, 1.0f), 1.0f);
+  m_accentDim = vtheme::rgba(cust.accentR * 0.65f, cust.accentG * 0.65f, cust.accentB * 0.65f, 0.6f);
+
+  // --- Panel shadow (multi-layer) ---
+  BuildPanelShadow(panelDrawX, panelDrawY, panelW, panelH, alpha);
+
+  // --- Panel background with gradient ---
+  D2D1_COLOR_F bgTop = vtheme::kBgPanel;
+  D2D1_COLOR_F bgBottom = vtheme::kBgDeep;
+  bgTop.a *= alpha * panelOpacity;
+  bgBottom.a *= alpha * panelOpacity;
+  m_renderer.FillGradientV(panelDrawX, panelDrawY, panelW, panelH, bgTop, bgBottom);
+
+  // Edge accent lines (left + right)
+  D2D1_COLOR_F edgeColor = m_accentDim;
+  edgeColor.a = 0.4f * alpha;
+  m_renderer.DrawLine(panelDrawX + panelW - 1, panelDrawY, panelDrawX + panelW - 1, panelDrawY + panelH, edgeColor, 2.0f);
+  m_renderer.DrawLine(panelDrawX, panelDrawY, panelDrawX, panelDrawY + panelH, edgeColor, 1.0f);
+
+  // --- Title bar ---
+  float titleH = vtheme::kTitleBarHeight;
+  D2D1_COLOR_F titleBg = vtheme::hex(0x0A0B14, 0.98f * alpha);
+  m_renderer.FillRoundedRect(panelDrawX, panelDrawY, panelW, titleH, cr, titleBg);
+
+  // Title decorations with dynamic accent
+  m_renderer.DrawDiamond(panelDrawX + 20.0f, panelDrawY + titleH * 0.5f, 5.0f, m_accent);
+  m_renderer.DrawTextA("TENSOR CURIE  |  DLSS 4.5", panelDrawX + 36.0f, panelDrawY, panelW - 80.0f, titleH, m_accent, vtheme::kFontTitle * fontScl, ValhallaRenderer::TextAlign::Left, true);
+
+  // --- Dragging on title bar ---
+  bool onTitleBar = PointInRect(m_input.mouseX, m_input.mouseY, panelDrawX, panelDrawY, panelW - 40.0f, titleH);
+  if (onTitleBar && m_input.mouseClicked && !m_dragging) {
+    m_dragging = true;
+    m_dragOffsetX = m_input.mouseX - m_panelX;
+    m_dragOffsetY = m_input.mouseY - m_panelY;
+  }
+  if (m_dragging) {
+    if (m_input.mouseDown) {
+      m_panelX = m_input.mouseX - m_dragOffsetX;
+      m_panelY = m_input.mouseY - m_dragOffsetY;
+      // Clamp to screen
+      m_panelX = std::clamp(m_panelX, -panelW + 60.0f, screenW - 60.0f);
+      m_panelY = std::clamp(m_panelY, 0.0f, screenH - titleH);
+      SnapPanel(screenW, screenH);
+      // Save position
+      cust.panelX = m_panelX;
+      cust.panelY = m_panelY;
+      ConfigManager::Get().MarkDirty();
+    } else {
+      m_dragging = false;
+    }
+  }
+
+  // Close button [X]
+  float closeX = panelDrawX + panelW - 36.0f;
+  float closeY = panelDrawY + 8.0f;
+  float closeS = 28.0f;
+  bool closeHovered = PointInRect(m_input.mouseX, m_input.mouseY, closeX, closeY, closeS, closeS);
+  D2D1_COLOR_F closeColor = closeHovered ? vtheme::kStatusBad : vtheme::kTextSecondary;
+  m_renderer.DrawLine(closeX + 8, closeY + 8, closeX + closeS - 8, closeY + closeS - 8, closeColor, 2.0f);
+  m_renderer.DrawLine(closeX + closeS - 8, closeY + 8, closeX + 8, closeY + closeS - 8, closeColor, 2.0f);
+  if (closeHovered && m_input.mouseClicked) {
+    ToggleVisibility();
+    return;
+  }
+
+  // Title bar separator with accent
+  m_renderer.DrawLine(panelDrawX + 12, panelDrawY + titleH, panelDrawX + panelW - 12, panelDrawY + titleH, m_accentDim, 1.0f);
+
+  // --- Status bar ---
+  float statusY = panelDrawY + titleH + 2.0f;
+  float statusH = vtheme::kStatusBarHeight;
+  float dotX = panelDrawX + vtheme::kPadding;
+
+  bool dlssOk = sli.IsDLSSSupported() && sli.GetDLSSModeIndex() > 0;
+  bool dlssWarn = sli.IsDLSSSupported() && sli.GetDLSSModeIndex() == 0;
+  bool fgDisabled = sli.IsFrameGenDisabledDueToInvalidParam();
+  bool fgOk = sli.IsFrameGenSupported() && !fgDisabled && sli.GetFrameGenMultiplier() >= 2 &&
+              !sli.IsSmartFGTemporarilyDisabled() && sli.GetFrameGenStatus() == sl::DLSSGStatus::eOk;
+  bool fgWarn = sli.IsFrameGenSupported() && !fgDisabled &&
+                (sli.GetFrameGenMultiplier() < 2 || sli.IsSmartFGTemporarilyDisabled());
+  bool camOk = sli.HasCameraData();
+  bool dvcOk = sli.IsDeepDVCSupported() && sli.IsDeepDVCEnabled();
+  bool dvcWarn = sli.IsDeepDVCSupported() && !sli.IsDeepDVCEnabled();
+  bool hdrOk = sli.IsHDRSupported() && sli.IsHDRActive();
+  bool hdrWarn = sli.IsHDRSupported() && !sli.IsHDRActive() && sli.IsHDREnabled();
+
+  // Backup cursor for status dots inline
+  m_cursorX = dotX;
+  m_cursorY = statusY;
+  m_contentWidth = 90.0f;
+  StatusDot("DLSS", dlssOk ? vtheme::kStatusOk : (dlssWarn ? vtheme::kStatusWarn : vtheme::kStatusBad));
+  m_cursorX = dotX + 85.0f; m_cursorY = statusY;
+  StatusDot("FG", fgOk ? vtheme::kStatusOk : (fgWarn ? vtheme::kStatusWarn : vtheme::kStatusBad));
+  m_cursorX = dotX + 155.0f; m_cursorY = statusY;
+  StatusDot("Camera", camOk ? vtheme::kStatusOk : vtheme::kStatusWarn);
+  m_cursorX = dotX + 250.0f; m_cursorY = statusY;
+  StatusDot("DVC", dvcOk ? vtheme::kStatusOk : (dvcWarn ? vtheme::kStatusWarn : vtheme::kStatusBad));
+  m_cursorX = dotX + 330.0f; m_cursorY = statusY;
+  StatusDot("HDR", hdrOk ? vtheme::kStatusOk : (hdrWarn ? vtheme::kStatusWarn : vtheme::kStatusBad));
+
+  // --- Scrollable content area ---
+  float contentStartY = panelDrawY + titleH + statusH + 8.0f;
+  float contentH = panelH - (titleH + statusH + 8.0f) - 8.0f;
+  m_visibleHeight = contentH;
+
+  m_renderer.PushClip(panelDrawX, contentStartY, panelW, contentH);
+
+  // Setup cursor for content
+  m_cursorX = panelDrawX + vtheme::kPadding;
+  m_cursorY = contentStartY - m_scrollOffset;
+  m_contentWidth = panelW - vtheme::kPadding * 2.0f - vtheme::kScrollbarW;
+  float contentStartCursorY = m_cursorY;
+
+  // Hotkey capture overlay
+  if (m_pendingHotkeyTarget) {
+    int key = -1;
+    if (GetAsyncKeyState(VK_ESCAPE) & 0x1) key = VK_ESCAPE;
+    else {
+      for (int scanKey = 0x08; scanKey <= 0xFE; ++scanKey) {
+        if (GetAsyncKeyState(scanKey) & 0x1) { key = scanKey; break; }
+      }
+    }
+    if (key != -1) {
+      if (key == VK_ESCAPE) { m_pendingHotkeyTarget = nullptr; }
+      else {
+        *m_pendingHotkeyTarget = key;
+        m_pendingHotkeyTarget = nullptr;
+        InputHandler::Get().UpdateHotkey("Toggle Menu", cfg.ui.menuHotkey);
+        InputHandler::Get().UpdateHotkey("Toggle FPS", cfg.ui.fpsHotkey);
+        InputHandler::Get().UpdateHotkey("Toggle Vignette", cfg.ui.vignetteHotkey);
+        ConfigManager::Get().MarkDirty();
+      }
+    }
+    Label(">> Press a key to rebind (Esc to cancel) <<", vtheme::kGoldBright);
+  }
+
+  // ---- WIZARD BUTTON ----
+  if (Button("Run Setup Wizard")) {
     m_showSetupWizard = true;
     cfg.system.setupWizardForceShow = true;
     ConfigManager::Get().MarkDirty();
   }
-  ImGui::Separator();
 
-  if (m_pendingHotkeyTarget) {
-    int key = -1;
-    if (GetAsyncKeyState(VK_ESCAPE) & 0x1) {
-      key = VK_ESCAPE;
-    } else {
-      for (int scanKey = 0x08; scanKey <= 0xFE; ++scanKey) {
-        if (GetAsyncKeyState(scanKey) & 0x1) {
-          key = scanKey;
-          break;
-        }
+  NorseSeparator();
+
+  // ---- PRESETS ----
+  {
+    bool presetOpen = m_sectionOpen[VGuiHash("presets_section")];
+    SectionHeader("Quick Presets", &presetOpen);
+    m_sectionOpen[VGuiHash("presets_section")] = presetOpen;
+    if (presetOpen) {
+      if (Button("Quality")) {
+        cfg.dlss.mode = 5; cfg.dlss.preset = 0; cfg.fg.multiplier = 2; cfg.dlss.sharpness = 0.2f;
+        cfg.dlss.lodBias = -1.0f; cfg.rr.enabled = true; cfg.dvc.enabled = false;
+        sli.SetDLSSModeIndex(cfg.dlss.mode); sli.SetDLSSPreset(cfg.dlss.preset);
+        sli.SetFrameGenMultiplier(cfg.fg.multiplier); sli.SetSharpness(cfg.dlss.sharpness);
+        sli.SetLODBias(cfg.dlss.lodBias); ApplySamplerLodBias(cfg.dlss.lodBias);
+        sli.SetReflexEnabled(cfg.rr.enabled); sli.SetRayReconstructionEnabled(cfg.rr.enabled);
+        sli.SetDeepDVCEnabled(cfg.dvc.enabled); ConfigManager::Get().MarkDirty();
       }
-    }
-    if (key != -1) {
-      if (key == VK_ESCAPE) {
-        m_pendingHotkeyTarget = nullptr;
-      } else {
-        *m_pendingHotkeyTarget = key;
-        m_pendingHotkeyTarget = nullptr;
-        ModConfig &data = ConfigManager::Get().Data();
-        InputHandler::Get().UpdateHotkey("Toggle Menu", data.ui.menuHotkey);
-        InputHandler::Get().UpdateHotkey("Toggle FPS", data.ui.fpsHotkey);
-        InputHandler::Get().UpdateHotkey("Toggle Vignette",
-                                         data.ui.vignetteHotkey);
+      SameLineButton();
+      if (Button("Balanced")) {
+        cfg.dlss.mode = 2; cfg.dlss.preset = 0; cfg.fg.multiplier = 3; cfg.dlss.sharpness = 0.35f;
+        cfg.dlss.lodBias = -1.0f; cfg.rr.enabled = true; cfg.dvc.enabled = false; cfg.dvc.adaptiveEnabled = false;
+        sli.SetDLSSModeIndex(cfg.dlss.mode); sli.SetDLSSPreset(cfg.dlss.preset);
+        sli.SetFrameGenMultiplier(cfg.fg.multiplier); sli.SetSharpness(cfg.dlss.sharpness);
+        sli.SetLODBias(cfg.dlss.lodBias); ApplySamplerLodBias(cfg.dlss.lodBias);
+        sli.SetReflexEnabled(cfg.rr.enabled); sli.SetRayReconstructionEnabled(cfg.rr.enabled);
+        sli.SetDeepDVCEnabled(cfg.dvc.enabled); sli.SetDeepDVCAdaptiveEnabled(cfg.dvc.adaptiveEnabled);
         ConfigManager::Get().MarkDirty();
       }
+      SameLineButton();
+      if (Button("Performance")) {
+        cfg.dlss.mode = 1; cfg.dlss.preset = 0; cfg.fg.multiplier = 4; cfg.dlss.sharpness = 0.5f;
+        cfg.dlss.lodBias = -1.2f; cfg.rr.enabled = true; cfg.dvc.enabled = false; cfg.dvc.adaptiveEnabled = false;
+        sli.SetDLSSModeIndex(cfg.dlss.mode); sli.SetDLSSPreset(cfg.dlss.preset);
+        sli.SetFrameGenMultiplier(cfg.fg.multiplier); sli.SetSharpness(cfg.dlss.sharpness);
+        sli.SetLODBias(cfg.dlss.lodBias); ApplySamplerLodBias(cfg.dlss.lodBias);
+        sli.SetReflexEnabled(cfg.rr.enabled); sli.SetRayReconstructionEnabled(cfg.rr.enabled);
+        sli.SetDeepDVCEnabled(cfg.dvc.enabled); sli.SetDeepDVCAdaptiveEnabled(cfg.dvc.adaptiveEnabled);
+        ConfigManager::Get().MarkDirty();
+      }
+      Spacing();
     }
   }
 
-  ImVec4 statusOk(0.12f, 0.82f, 0.25f, 1.0f);
-  ImVec4 statusWarn(0.95f, 0.78f, 0.18f, 1.0f);
-  ImVec4 statusBad(0.92f, 0.20f, 0.20f, 1.0f);
-
-  ImGui::TextColored(ImVec4(0.83f, 0.69f, 0.25f, 1.0f), "Status");
-  bool dlssOk = sli.IsDLSSSupported() && sli.GetDLSSModeIndex() > 0;
-  bool dlssWarn = sli.IsDLSSSupported() && sli.GetDLSSModeIndex() == 0;
-  ImGui::TextColored(dlssOk ? statusOk : (dlssWarn ? statusWarn : statusBad),
-                     "DLSS");
-  ImGui::SameLine(120.0f);
-  bool fgDisabled = sli.IsFrameGenDisabledDueToInvalidParam();
-  bool fgOk = sli.IsFrameGenSupported() && !fgDisabled &&
-              sli.GetFrameGenMultiplier() >= 2 &&
-              !sli.IsSmartFGTemporarilyDisabled() &&
-              sli.GetFrameGenStatus() == sl::DLSSGStatus::eOk;
-  bool fgWarn =
-      sli.IsFrameGenSupported() && !fgDisabled &&
-      (sli.GetFrameGenMultiplier() < 2 || sli.IsSmartFGTemporarilyDisabled() ||
-       sli.GetFrameGenStatus() != sl::DLSSGStatus::eOk);
-  ImGui::TextColored(fgOk ? statusOk : (fgWarn ? statusWarn : statusBad),
-                     "Frame Gen");
-  ImGui::SameLine(260.0f);
-  bool camOk = sli.HasCameraData();
-  ImGui::TextColored(camOk ? statusOk : statusWarn, "Camera");
-  ImGui::SameLine(360.0f);
-  bool dvcOk = sli.IsDeepDVCSupported() && sli.IsDeepDVCEnabled();
-  bool dvcWarn = sli.IsDeepDVCSupported() && !sli.IsDeepDVCEnabled();
-  ImGui::TextColored(dvcOk ? statusOk : (dvcWarn ? statusWarn : statusBad),
-                     "DeepDVC");
-  ImGui::SameLine(340.0f);
-  bool hdrOk = sli.IsHDRSupported() && sli.IsHDRActive();
-  bool hdrWarn =
-      sli.IsHDRSupported() && !sli.IsHDRActive() && sli.IsHDREnabled();
-  ImGui::TextColored(hdrOk ? statusOk : (hdrWarn ? statusWarn : statusBad),
-                     "HDR");
-  ImGui::Separator();
-
-  ImGui::TextColored(ImVec4(0.83f, 0.69f, 0.25f, 1.0f), "General");
-  const char *dlssModes[] = {"Off",         "Max Performance", "Balanced",
-                             "Max Quality", "Ultra Quality",   "DLAA"};
-  int dlssMode = sli.GetDLSSModeIndex();
-  ImGui::BeginDisabled(!sli.IsDLSSSupported());
-  if (ImGui::Combo("DLSS Quality Mode", &dlssMode, dlssModes,
-                   IM_ARRAYSIZE(dlssModes))) {
-    sli.SetDLSSModeIndex(dlssMode);
-    cfg.dlss.mode = dlssMode;
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::EndDisabled();
-
-  const char *presets[] = {"Default",  "Preset A", "Preset B", "Preset C",
-                           "Preset D", "Preset E", "Preset F", "Preset G"};
-  int preset = sli.GetDLSSPresetIndex();
-  if (ImGui::Combo("DLSS Preset", &preset, presets, IM_ARRAYSIZE(presets))) {
-    sli.SetDLSSPreset(preset);
-    cfg.dlss.preset = preset;
-    ConfigManager::Get().MarkDirty();
+  // ---- GENERAL ----
+  {
+    bool open = m_sectionOpen[VGuiHash("general_section")];
+    if (!m_sectionOpen.count(VGuiHash("general_section"))) open = true; // default open
+    SectionHeader("General", &open);
+    m_sectionOpen[VGuiHash("general_section")] = open;
+    if (open) {
+      const char* dlssModes[] = {"Off", "Max Performance", "Balanced", "Max Quality", "Ultra Quality", "DLAA"};
+      int dlssMode = sli.GetDLSSModeIndex();
+      if (Combo("DLSS Quality Mode", &dlssMode, dlssModes, 6, sli.IsDLSSSupported())) {
+        sli.SetDLSSModeIndex(dlssMode); cfg.dlss.mode = dlssMode; ConfigManager::Get().MarkDirty();
+      }
+      const char* presets[] = {"Default", "Preset A", "Preset B", "Preset C", "Preset D", "Preset E", "Preset F", "Preset G"};
+      int preset = sli.GetDLSSPresetIndex();
+      if (Combo("DLSS Preset", &preset, presets, 8)) {
+        sli.SetDLSSPreset(preset); cfg.dlss.preset = preset; ConfigManager::Get().MarkDirty();
+      }
+      Spacing();
+    }
   }
 
-  if (ImGui::Button("Quality Preset")) {
-    cfg.dlss.mode = 5;
-    cfg.dlss.preset = 0;
-    cfg.fg.multiplier = 2;
-    cfg.dlss.sharpness = 0.2f;
-    cfg.dlss.lodBias = -1.0f;
-    cfg.rr.enabled = true;
-    cfg.rr.enabled = true;
-    cfg.dvc.enabled = false;
-    sli.SetDLSSModeIndex(cfg.dlss.mode);
-    sli.SetDLSSPreset(cfg.dlss.preset);
-    sli.SetFrameGenMultiplier(cfg.fg.multiplier);
-    sli.SetSharpness(cfg.dlss.sharpness);
-    sli.SetLODBias(cfg.dlss.lodBias);
-    ApplySamplerLodBias(cfg.dlss.lodBias);
-    sli.SetReflexEnabled(cfg.rr.enabled);
-    sli.SetRayReconstructionEnabled(cfg.rr.enabled);
-    sli.SetDeepDVCEnabled(cfg.dvc.enabled);
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Balanced Preset")) {
-    cfg.dlss.mode = 2;
-    cfg.dlss.preset = 0;
-    cfg.fg.multiplier = 3;
-    cfg.dlss.sharpness = 0.35f;
-    cfg.dlss.lodBias = -1.0f;
-    cfg.rr.enabled = true;
-    cfg.rr.enabled = true;
-    cfg.dvc.enabled = false;
-    cfg.dvc.adaptiveEnabled = false;
-    sli.SetDLSSModeIndex(cfg.dlss.mode);
-    sli.SetDLSSPreset(cfg.dlss.preset);
-    sli.SetFrameGenMultiplier(cfg.fg.multiplier);
-    sli.SetSharpness(cfg.dlss.sharpness);
-    sli.SetLODBias(cfg.dlss.lodBias);
-    ApplySamplerLodBias(cfg.dlss.lodBias);
-    sli.SetReflexEnabled(cfg.rr.enabled);
-    sli.SetRayReconstructionEnabled(cfg.rr.enabled);
-    sli.SetDeepDVCEnabled(cfg.dvc.enabled);
-    sli.SetDeepDVCAdaptiveEnabled(cfg.dvc.adaptiveEnabled);
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Performance Preset")) {
-    cfg.dlss.mode = 1;
-    cfg.dlss.preset = 0;
-    cfg.fg.multiplier = 4;
-    cfg.dlss.sharpness = 0.5f;
-    cfg.dlss.lodBias = -1.2f;
-    cfg.rr.enabled = true;
-    cfg.rr.enabled = false;
-    cfg.dvc.enabled = false;
-    cfg.dvc.adaptiveEnabled = false;
-    sli.SetDLSSModeIndex(cfg.dlss.mode);
-    sli.SetDLSSPreset(cfg.dlss.preset);
-    sli.SetFrameGenMultiplier(cfg.fg.multiplier);
-    sli.SetSharpness(cfg.dlss.sharpness);
-    sli.SetLODBias(cfg.dlss.lodBias);
-    ApplySamplerLodBias(cfg.dlss.lodBias);
-    sli.SetReflexEnabled(cfg.rr.enabled);
-    sli.SetRayReconstructionEnabled(cfg.rr.enabled);
-    sli.SetDeepDVCEnabled(cfg.dvc.enabled);
-    sli.SetDeepDVCAdaptiveEnabled(cfg.dvc.adaptiveEnabled);
-    ConfigManager::Get().MarkDirty();
+  // ---- RAY RECONSTRUCTION ----
+  {
+    bool open = m_sectionOpen[VGuiHash("rr_section")];
+    SectionHeader("Ray Reconstruction", &open);
+    m_sectionOpen[VGuiHash("rr_section")] = open;
+    if (open) {
+      bool rrEnabled = cfg.rr.enabled;
+      if (Checkbox("Enable DLSS Ray Reconstruction", &rrEnabled, sli.IsRayReconstructionSupported())) {
+        cfg.rr.enabled = rrEnabled; sli.SetRayReconstructionEnabled(rrEnabled); ConfigManager::Get().MarkDirty();
+      }
+      bool rrActive = sli.IsRayReconstructionSupported() && cfg.rr.enabled;
+      const char* rrPresets[] = {"Default", "Preset D", "Preset E", "Preset F", "Preset G", "Preset H", "Preset I", "Preset J", "Preset K", "Preset L", "Preset M", "Preset N", "Preset O"};
+      int rrPreset = cfg.rr.preset;
+      if (Combo("RR Preset", &rrPreset, rrPresets, 13, rrActive)) {
+        cfg.rr.preset = rrPreset; sli.SetRRPreset(rrPreset); ConfigManager::Get().MarkDirty();
+      }
+      float rrStr = cfg.rr.denoiserStrength;
+      if (SliderFloat("RR Denoiser Strength", &rrStr, 0.0f, 1.0f, "%.2f", rrActive)) {
+        cfg.rr.denoiserStrength = rrStr; sli.SetRRDenoiserStrength(rrStr); ConfigManager::Get().MarkDirty();
+      }
+      Spacing();
+    }
   }
 
-  ImGui::Separator();
-  ImGui::TextColored(ImVec4(0.83f, 0.69f, 0.25f, 1.0f), "Ray Reconstruction");
-  bool rrEnabled = cfg.rr.enabled;
-  ImGui::BeginDisabled(!sli.IsRayReconstructionSupported());
-  if (ImGui::Checkbox("Enable DLSS Ray Reconstruction", &rrEnabled)) {
-    cfg.rr.enabled = rrEnabled;
-    sli.SetRayReconstructionEnabled(rrEnabled);
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::EndDisabled();
-  ImGui::BeginDisabled(!sli.IsRayReconstructionSupported() ||
-                       !cfg.rr.enabled);
-  const char *rrPresets[] = {"Default",  "Preset D", "Preset E", "Preset F",
-                             "Preset G", "Preset H", "Preset I", "Preset J",
-                             "Preset K", "Preset L", "Preset M", "Preset N",
-                             "Preset O"};
-  int rrPreset = cfg.rr.preset;
-  if (ImGui::Combo("RR Preset", &rrPreset, rrPresets,
-                   IM_ARRAYSIZE(rrPresets))) {
-    cfg.rr.preset = rrPreset;
-    sli.SetRRPreset(rrPreset);
-    ConfigManager::Get().MarkDirty();
-  }
-  float rrStrength = cfg.rr.denoiserStrength;
-  if (ImGui::SliderFloat("RR Denoiser Strength", &rrStrength, 0.0f, 1.0f,
-                         "%.2f")) {
-    cfg.rr.denoiserStrength = rrStrength;
-    sli.SetRRDenoiserStrength(rrStrength);
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::EndDisabled();
-
-  ImGui::Separator();
-  ImGui::TextColored(ImVec4(0.83f, 0.69f, 0.25f, 1.0f),
-                     "DeepDVC (RTX Dynamic Vibrance)");
-  bool deepDvcEnabled = cfg.dvc.enabled;
-  ImGui::BeginDisabled(!sli.IsDeepDVCSupported());
-  if (ImGui::Checkbox("Enable DeepDVC", &deepDvcEnabled)) {
-    cfg.dvc.enabled = deepDvcEnabled;
-    sli.SetDeepDVCEnabled(deepDvcEnabled);
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::EndDisabled();
-  ImGui::BeginDisabled(!sli.IsDeepDVCSupported() || !cfg.dvc.enabled);
-  float deepDvcIntensity = cfg.dvc.intensity;
-  if (ImGui::SliderFloat("DeepDVC Intensity", &deepDvcIntensity, 0.0f, 1.0f,
-                         "%.2f")) {
-    cfg.dvc.intensity = deepDvcIntensity;
-    sli.SetDeepDVCIntensity(deepDvcIntensity);
-    ConfigManager::Get().MarkDirty();
-  }
-  float deepDvcSaturation = cfg.dvc.saturation;
-  if (ImGui::SliderFloat("DeepDVC Saturation Boost", &deepDvcSaturation, 0.0f,
-                         1.0f, "%.2f")) {
-    cfg.dvc.saturation = deepDvcSaturation;
-    sli.SetDeepDVCSaturation(deepDvcSaturation);
-    ConfigManager::Get().MarkDirty();
-  }
-  bool deepDvcAdaptive = cfg.dvc.adaptiveEnabled;
-  if (ImGui::Checkbox("Adaptive Vibrance", &deepDvcAdaptive)) {
-    cfg.dvc.adaptiveEnabled = deepDvcAdaptive;
-    sli.SetDeepDVCAdaptiveEnabled(deepDvcAdaptive);
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::BeginDisabled(!cfg.dvc.adaptiveEnabled);
-  float deepDvcAdaptiveStrength = cfg.dvc.adaptiveStrength;
-  if (ImGui::SliderFloat("Adaptive Strength", &deepDvcAdaptiveStrength, 0.0f,
-                         1.0f, "%.2f")) {
-    cfg.dvc.adaptiveStrength = deepDvcAdaptiveStrength;
-    sli.SetDeepDVCAdaptiveStrength(deepDvcAdaptiveStrength);
-    ConfigManager::Get().MarkDirty();
-  }
-  float deepDvcAdaptiveMin = cfg.dvc.adaptiveMin;
-  if (ImGui::SliderFloat("Adaptive Min", &deepDvcAdaptiveMin, 0.0f, 1.0f,
-                         "%.2f")) {
-    cfg.dvc.adaptiveMin = deepDvcAdaptiveMin;
-    if (cfg.dvc.adaptiveMin > cfg.dvc.adaptiveMax)
-      cfg.dvc.adaptiveMax = cfg.dvc.adaptiveMin;
-    sli.SetDeepDVCAdaptiveMin(deepDvcAdaptiveMin);
-    ConfigManager::Get().MarkDirty();
-  }
-  float deepDvcAdaptiveMax = cfg.dvc.adaptiveMax;
-  if (ImGui::SliderFloat("Adaptive Max", &deepDvcAdaptiveMax, 0.0f, 1.0f,
-                         "%.2f")) {
-    cfg.dvc.adaptiveMax = deepDvcAdaptiveMax;
-    if (cfg.dvc.adaptiveMin > cfg.dvc.adaptiveMax)
-      cfg.dvc.adaptiveMin = cfg.dvc.adaptiveMax;
-    sli.SetDeepDVCAdaptiveMax(deepDvcAdaptiveMax);
-    ConfigManager::Get().MarkDirty();
-  }
-  float deepDvcAdaptiveSmoothing = cfg.dvc.adaptiveSmoothing;
-  if (ImGui::SliderFloat("Adaptive Smoothing", &deepDvcAdaptiveSmoothing, 0.01f,
-                         1.0f, "%.2f")) {
-    cfg.dvc.adaptiveSmoothing = deepDvcAdaptiveSmoothing;
-    sli.SetDeepDVCAdaptiveSmoothing(deepDvcAdaptiveSmoothing);
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::EndDisabled();
-  ImGui::EndDisabled();
-
-  const char *fgModes[] = {"Off",         "2x (DLSS-G)", "3x (DLSS-G)",
-                           "4x (DLSS-G)", "5x (DLSS-G)", "6x (DLSS-G)",
-                           "7x (DLSS-G)", "8x (DLSS-G)"};
-  int fgMult = sli.GetFrameGenMultiplier();
-  int fgIndex = fgMult >= 2 && fgMult <= 8 ? (fgMult - 1) : 0;
-  ImGui::BeginDisabled(!sli.IsFrameGenSupported());
-  if (ImGui::Combo("Frame Generation", &fgIndex, fgModes,
-                   IM_ARRAYSIZE(fgModes))) {
-    int mult = fgIndex > 0 ? (fgIndex + 1) : 0;
-    sli.SetFrameGenMultiplier(mult);
-    cfg.fg.multiplier = mult;
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::EndDisabled();
-
-  ImGui::Separator();
-  ImGui::TextColored(ImVec4(0.83f, 0.69f, 0.25f, 1.0f),
-                     "Smart Frame Generation");
-  bool smartFgEnabled = cfg.fg.smartEnabled;
-  if (ImGui::Checkbox("Enable Smart FG", &smartFgEnabled)) {
-    cfg.fg.smartEnabled = smartFgEnabled;
-    sli.SetSmartFGEnabled(smartFgEnabled);
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::BeginDisabled(!cfg.fg.smartEnabled);
-  bool smartAuto = cfg.fg.autoDisable;
-  if (ImGui::Checkbox("Auto-disable when FPS is high", &smartAuto)) {
-    cfg.fg.autoDisable = smartAuto;
-    sli.SetSmartFGAutoDisable(smartAuto);
-    ConfigManager::Get().MarkDirty();
-  }
-  float smartThreshold = cfg.fg.autoDisableFps;
-  if (ImGui::SliderFloat("Auto-disable FPS Threshold", &smartThreshold, 30.0f,
-                         300.0f, "%.0f")) {
-    cfg.fg.autoDisableFps = smartThreshold;
-    sli.SetSmartFGAutoDisableThreshold(smartThreshold);
-    ConfigManager::Get().MarkDirty();
-  }
-  bool smartScene = cfg.fg.sceneChangeEnabled;
-  if (ImGui::Checkbox("Scene-change detection", &smartScene)) {
-    cfg.fg.sceneChangeEnabled = smartScene;
-    sli.SetSmartFGSceneChangeEnabled(smartScene);
-    ConfigManager::Get().MarkDirty();
-  }
-  float smartSceneThresh = cfg.fg.sceneChangeThreshold;
-  if (ImGui::SliderFloat("Scene-change sensitivity", &smartSceneThresh, 0.05f,
-                         1.0f, "%.2f")) {
-    cfg.fg.sceneChangeThreshold = smartSceneThresh;
-    sli.SetSmartFGSceneChangeThreshold(smartSceneThresh);
-    ConfigManager::Get().MarkDirty();
-  }
-  float smartQuality = cfg.fg.interpolationQuality;
-  if (ImGui::SliderFloat("FG Interpolation Quality", &smartQuality, 0.0f, 1.0f,
-                         "%.2f")) {
-    cfg.fg.interpolationQuality = smartQuality;
-    sli.SetSmartFGInterpolationQuality(smartQuality);
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::EndDisabled();
-
-  ImGui::Separator();
-  ImGui::TextColored(ImVec4(0.83f, 0.69f, 0.25f, 1.0f), "Quality");
-  float sharpness = cfg.dlss.sharpness;
-  if (ImGui::SliderFloat("Sharpness", &sharpness, 0.0f, 1.0f, "%.2f")) {
-    cfg.dlss.sharpness = sharpness;
-    sli.SetSharpness(sharpness);
-    ConfigManager::Get().MarkDirty();
-  }
-  float lodBias = cfg.dlss.lodBias;
-  if (ImGui::SliderFloat("Texture Detail (LOD Bias)", &lodBias, -2.0f, 0.0f,
-                         "%.2f")) {
-    cfg.dlss.lodBias = lodBias;
-    sli.SetLODBias(lodBias);
-    ApplySamplerLodBias(lodBias);
-    ConfigManager::Get().MarkDirty();
-  }
-  bool mvecAuto = cfg.mvec.autoScale;
-  if (ImGui::Checkbox("Auto Motion Vector Scale", &mvecAuto)) {
-    cfg.mvec.autoScale = mvecAuto;
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::BeginDisabled(cfg.mvec.autoScale);
-  float mvecScaleX = cfg.mvec.scaleX;
-  if (ImGui::SliderFloat("MV Scale X", &mvecScaleX, 0.5f, 3.0f, "%.2f")) {
-    cfg.mvec.scaleX = mvecScaleX;
-    sli.SetMVecScale(mvecScaleX, cfg.mvec.scaleY);
-    ConfigManager::Get().MarkDirty();
-  }
-  float mvecScaleY = cfg.mvec.scaleY;
-  if (ImGui::SliderFloat("MV Scale Y", &mvecScaleY, 0.5f, 3.0f, "%.2f")) {
-    cfg.mvec.scaleY = mvecScaleY;
-    sli.SetMVecScale(cfg.mvec.scaleX, mvecScaleY);
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::EndDisabled();
-
-  ImGui::Separator();
-  ImGui::TextColored(ImVec4(0.83f, 0.69f, 0.25f, 1.0f), "HDR");
-  bool hdrEnabled = cfg.hdr.enabled;
-  if (ImGui::Checkbox("Enable HDR", &hdrEnabled)) {
-    cfg.hdr.enabled = hdrEnabled;
-    sli.SetHDREnabled(hdrEnabled);
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::BeginDisabled(!cfg.hdr.enabled);
-  float peakNits = cfg.hdr.peakNits;
-  if (ImGui::SliderFloat("Peak Brightness (nits)", &peakNits, 100.0f, 10000.0f,
-                         "%.0f")) {
-    cfg.hdr.peakNits = peakNits;
-    if (cfg.hdr.paperWhiteNits > cfg.hdr.peakNits)
-      cfg.hdr.paperWhiteNits = cfg.hdr.peakNits;
-    sli.SetHDRPeakNits(cfg.hdr.peakNits);
-    sli.SetHDRPaperWhiteNits(cfg.hdr.paperWhiteNits);
-    ConfigManager::Get().MarkDirty();
-  }
-  float paperWhite = cfg.hdr.paperWhiteNits;
-  if (ImGui::SliderFloat("Paper White (nits)", &paperWhite, 50.0f,
-                         cfg.hdr.peakNits, "%.0f")) {
-    cfg.hdr.paperWhiteNits = paperWhite;
-    sli.SetHDRPaperWhiteNits(paperWhite);
-    ConfigManager::Get().MarkDirty();
-  }
-  const char *exposureModes[] = {"Manual", "Auto (Game)"};
-  int exposureMode = (cfg.hdr.exposure <= 0.0f) ? 1 : 0;
-  if (ImGui::Combo("Exposure Mode", &exposureMode, exposureModes,
-                   IM_ARRAYSIZE(exposureModes))) {
-    cfg.hdr.exposure =
-        (exposureMode == 1) ? 0.0f : (std::max)(cfg.hdr.exposure, 0.1f);
-    sli.SetHDRExposure(cfg.hdr.exposure);
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::BeginDisabled(cfg.hdr.exposure <= 0.0f);
-  float exposure = cfg.hdr.exposure;
-  if (ImGui::SliderFloat("Exposure", &exposure, 0.1f, 4.0f, "%.2f")) {
-    cfg.hdr.exposure = exposure;
-    sli.SetHDRExposure(exposure);
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::EndDisabled();
-  float gamma = cfg.hdr.gamma;
-  if (ImGui::SliderFloat("Gamma", &gamma, 1.6f, 2.6f, "%.2f")) {
-    cfg.hdr.gamma = gamma;
-    sli.SetHDRGamma(gamma);
-    ConfigManager::Get().MarkDirty();
-  }
-  float tonemap = cfg.hdr.tonemapCurve;
-  if (ImGui::SliderFloat("Tonemap Curve", &tonemap, -1.0f, 1.0f, "%.2f")) {
-    cfg.hdr.tonemapCurve = tonemap;
-    sli.SetHDRTonemapCurve(tonemap);
-    ConfigManager::Get().MarkDirty();
-  }
-  float saturation = cfg.hdr.saturation;
-  if (ImGui::SliderFloat("Saturation", &saturation, 0.0f, 2.0f, "%.2f")) {
-    cfg.hdr.saturation = saturation;
-    sli.SetHDRSaturation(saturation);
-    ConfigManager::Get().MarkDirty();
-  }
-  ImGui::EndDisabled();
-
-  ImGui::Separator();
-  ImGui::TextColored(ImVec4(0.83f, 0.69f, 0.25f, 1.0f), "Overlay");
-  const std::string fpsToggleLabel = std::format(
-      "Show FPS Overlay ({})", InputHandler::Get().GetKeyName(cfg.ui.fpsHotkey));
-  if (ImGui::Checkbox(fpsToggleLabel.c_str(), &m_showFPS)) {
-    cfg.ui.showFPS = m_showFPS;
-    ConfigManager::Get().MarkDirty();
-  }
-  const std::string vignetteToggleLabel = std::format(
-      "Show Vignette ({})", InputHandler::Get().GetKeyName(cfg.ui.vignetteHotkey));
-  if (ImGui::Checkbox(vignetteToggleLabel.c_str(), &m_showVignette)) {
-    cfg.ui.showVignette = m_showVignette;
-    ConfigManager::Get().MarkDirty();
-    m_needRebuildTextures = true;
-  }
-  if (ImGui::SliderFloat("Vignette Intensity", &cfg.ui.vignetteIntensity, 0.0f,
-                         1.0f, "%.2f")) {
-    ConfigManager::Get().MarkDirty();
-    m_needRebuildTextures = true;
-  }
-  if (ImGui::SliderFloat("Vignette Radius", &cfg.ui.vignetteRadius, 0.2f, 1.0f,
-                         "%.2f")) {
-    ConfigManager::Get().MarkDirty();
-    m_needRebuildTextures = true;
-  }
-  if (ImGui::SliderFloat("Vignette Softness", &cfg.ui.vignetteSoftness, 0.05f,
-                         1.0f, "%.2f")) {
-    ConfigManager::Get().MarkDirty();
-    m_needRebuildTextures = true;
-  }
-  ImGui::ColorEdit3("Vignette Color", &cfg.ui.vignetteColorR,
-                    ImGuiColorEditFlags_NoInputs);
-  if (ImGui::IsItemEdited()) {
-    ConfigManager::Get().MarkDirty();
-    m_needRebuildTextures = true;
+  // ---- DEEP DVC ----
+  {
+    bool open = m_sectionOpen[VGuiHash("dvc_section")];
+    SectionHeader("DeepDVC (RTX Dynamic Vibrance)", &open);
+    m_sectionOpen[VGuiHash("dvc_section")] = open;
+    if (open) {
+      bool dvcEn = cfg.dvc.enabled;
+      if (Checkbox("Enable DeepDVC", &dvcEn, sli.IsDeepDVCSupported())) {
+        cfg.dvc.enabled = dvcEn; sli.SetDeepDVCEnabled(dvcEn); ConfigManager::Get().MarkDirty();
+      }
+      bool dvcActive = sli.IsDeepDVCSupported() && cfg.dvc.enabled;
+      float dvI = cfg.dvc.intensity;
+      if (SliderFloat("DeepDVC Intensity", &dvI, 0.0f, 1.0f, "%.2f", dvcActive)) {
+        cfg.dvc.intensity = dvI; sli.SetDeepDVCIntensity(dvI); ConfigManager::Get().MarkDirty();
+      }
+      float dvS = cfg.dvc.saturation;
+      if (SliderFloat("DeepDVC Saturation Boost", &dvS, 0.0f, 1.0f, "%.2f", dvcActive)) {
+        cfg.dvc.saturation = dvS; sli.SetDeepDVCSaturation(dvS); ConfigManager::Get().MarkDirty();
+      }
+      bool dvAdapt = cfg.dvc.adaptiveEnabled;
+      if (Checkbox("Adaptive Vibrance", &dvAdapt, dvcActive)) {
+        cfg.dvc.adaptiveEnabled = dvAdapt; sli.SetDeepDVCAdaptiveEnabled(dvAdapt); ConfigManager::Get().MarkDirty();
+      }
+      bool adaptActive = dvcActive && cfg.dvc.adaptiveEnabled;
+      float dvAS = cfg.dvc.adaptiveStrength;
+      if (SliderFloat("Adaptive Strength", &dvAS, 0.0f, 1.0f, "%.2f", adaptActive)) {
+        cfg.dvc.adaptiveStrength = dvAS; sli.SetDeepDVCAdaptiveStrength(dvAS); ConfigManager::Get().MarkDirty();
+      }
+      float dvAMin = cfg.dvc.adaptiveMin;
+      if (SliderFloat("Adaptive Min", &dvAMin, 0.0f, 1.0f, "%.2f", adaptActive)) {
+        cfg.dvc.adaptiveMin = dvAMin; if (dvAMin > cfg.dvc.adaptiveMax) cfg.dvc.adaptiveMax = dvAMin;
+        sli.SetDeepDVCAdaptiveMin(dvAMin); ConfigManager::Get().MarkDirty();
+      }
+      float dvAMax = cfg.dvc.adaptiveMax;
+      if (SliderFloat("Adaptive Max", &dvAMax, 0.0f, 1.0f, "%.2f", adaptActive)) {
+        cfg.dvc.adaptiveMax = dvAMax; if (cfg.dvc.adaptiveMin > dvAMax) cfg.dvc.adaptiveMin = dvAMax;
+        sli.SetDeepDVCAdaptiveMax(dvAMax); ConfigManager::Get().MarkDirty();
+      }
+      float dvASm = cfg.dvc.adaptiveSmoothing;
+      if (SliderFloat("Adaptive Smoothing", &dvASm, 0.01f, 1.0f, "%.2f", adaptActive)) {
+        cfg.dvc.adaptiveSmoothing = dvASm; sli.SetDeepDVCAdaptiveSmoothing(dvASm); ConfigManager::Get().MarkDirty();
+      }
+      Spacing();
+    }
   }
 
-  ImGui::Separator();
-  ImGui::TextColored(ImVec4(0.83f, 0.69f, 0.25f, 1.0f), "Hotkeys");
-  ImGui::Text("Press a key to rebind (Esc to cancel).");
-  ImGui::SameLine();
-  if (ImGui::Button("Cancel") && m_pendingHotkeyTarget) {
-    m_pendingHotkeyTarget = nullptr;
-  }
-  const std::string menuLabel =
-      std::format("Menu: {}", InputHandler::Get().GetKeyName(cfg.ui.menuHotkey));
-  if (ImGui::Button(menuLabel.c_str())) {
-    CaptureNextHotkey(&cfg.ui.menuHotkey);
-  }
-  const std::string fpsLabelKey =
-      std::format("FPS: {}", InputHandler::Get().GetKeyName(cfg.ui.fpsHotkey));
-  if (ImGui::Button(fpsLabelKey.c_str())) {
-    CaptureNextHotkey(&cfg.ui.fpsHotkey);
-  }
-  const std::string vignetteLabelKey = std::format(
-      "Vignette: {}", InputHandler::Get().GetKeyName(cfg.ui.vignetteHotkey));
-  if (ImGui::Button(vignetteLabelKey.c_str())) {
-    CaptureNextHotkey(&cfg.ui.vignetteHotkey);
+  // ---- FRAME GENERATION ----
+  {
+    bool open = m_sectionOpen[VGuiHash("fg_section")];
+    SectionHeader("Frame Generation", &open);
+    m_sectionOpen[VGuiHash("fg_section")] = open;
+    if (open) {
+      const char* fgModes[] = {"Off", "2x (DLSS-G)", "3x (DLSS-G)", "4x (DLSS-G)", "5x (DLSS-G)", "6x (DLSS-G)", "7x (DLSS-G)", "8x (DLSS-G)"};
+      int fgMult = sli.GetFrameGenMultiplier();
+      int fgIndex = (fgMult >= 2 && fgMult <= 8) ? (fgMult - 1) : 0;
+      if (Combo("Frame Generation", &fgIndex, fgModes, 8, sli.IsFrameGenSupported())) {
+        int mult = fgIndex > 0 ? (fgIndex + 1) : 0;
+        sli.SetFrameGenMultiplier(mult); cfg.fg.multiplier = mult; ConfigManager::Get().MarkDirty();
+      }
+      Spacing();
+    }
   }
 
-  ImGui::Separator();
-  ImGui::TextColored(ImVec4(0.83f, 0.69f, 0.25f, 1.0f), "Performance");
-  float minFps = m_fpsHistory[0];
-  float maxFps = m_fpsHistory[0];
-  for (int i = 1; i < kFpsHistorySize; ++i) {
-    minFps = (std::min)(minFps, m_fpsHistory[i]);
-    maxFps = (std::max)(maxFps, m_fpsHistory[i]);
-  }
-  float graphMax = maxFps > 1.0f ? maxFps * 1.15f : 60.0f;
-  const std::string fpsLabel =
-      std::format("FPS Graph (min {:.0f} / max {:.0f})", minFps, maxFps);
-  ImGui::PlotLines("##fpsgraph", m_fpsHistory, kFpsHistorySize,
-                   m_fpsHistoryIndex, fpsLabel.c_str(), 0.0f, graphMax,
-                   ImVec2(0.0f, 80.0f));
-
-  ImGui::Separator();
-  ImGui::TextColored(ImVec4(0.83f, 0.69f, 0.25f, 1.0f), "Performance Metrics");
-  if (g_metricsCache.gpuOk.load(std::memory_order_relaxed)) {
-    ImGui::TextUnformatted(
-        std::format("GPU Utilization: {}%",
-                    g_metricsCache.gpuPercent.load(std::memory_order_relaxed))
-            .c_str());
-  } else {
-    ImGui::Text("GPU Utilization: N/A");
-  }
-  if (g_metricsCache.vramOk.load(std::memory_order_relaxed)) {
-    uint32_t used = g_metricsCache.vramUsed.load(std::memory_order_relaxed);
-    uint32_t budget = g_metricsCache.vramBudget.load(std::memory_order_relaxed);
-    uint32_t usedShown = used > budget ? budget : used;
-    ImGui::TextUnformatted(
-        std::format("VRAM: {} / {} MB", usedShown, budget).c_str());
-  } else {
-    ImGui::Text("VRAM: N/A");
-  }
-  const float fgActual = sli.GetFgActualMultiplier();
-  if (fgActual > 1.01f) {
-    ImGui::TextUnformatted(std::format("FG Actual: {:.2f}x", fgActual).c_str());
-  } else {
-    ImGui::Text("FG Actual: Off");
+  // ---- SMART FG ----
+  {
+    bool open = m_sectionOpen[VGuiHash("smartfg_section")];
+    SectionHeader("Smart Frame Generation", &open);
+    m_sectionOpen[VGuiHash("smartfg_section")] = open;
+    if (open) {
+      bool sfg = cfg.fg.smartEnabled;
+      if (Checkbox("Enable Smart FG", &sfg)) {
+        cfg.fg.smartEnabled = sfg; sli.SetSmartFGEnabled(sfg); ConfigManager::Get().MarkDirty();
+      }
+      bool sfgActive = cfg.fg.smartEnabled;
+      bool sfgAuto = cfg.fg.autoDisable;
+      if (Checkbox("Auto-disable when FPS is high", &sfgAuto, sfgActive)) {
+        cfg.fg.autoDisable = sfgAuto; sli.SetSmartFGAutoDisable(sfgAuto); ConfigManager::Get().MarkDirty();
+      }
+      float sfgT = cfg.fg.autoDisableFps;
+      if (SliderFloat("Auto-disable FPS Threshold", &sfgT, 30.0f, 300.0f, "%.0f", sfgActive)) {
+        cfg.fg.autoDisableFps = sfgT; sli.SetSmartFGAutoDisableThreshold(sfgT); ConfigManager::Get().MarkDirty();
+      }
+      bool sfgScene = cfg.fg.sceneChangeEnabled;
+      if (Checkbox("Scene-change detection", &sfgScene, sfgActive)) {
+        cfg.fg.sceneChangeEnabled = sfgScene; sli.SetSmartFGSceneChangeEnabled(sfgScene); ConfigManager::Get().MarkDirty();
+      }
+      float sfgST = cfg.fg.sceneChangeThreshold;
+      if (SliderFloat("Scene-change sensitivity", &sfgST, 0.05f, 1.0f, "%.2f", sfgActive)) {
+        cfg.fg.sceneChangeThreshold = sfgST; sli.SetSmartFGSceneChangeThreshold(sfgST); ConfigManager::Get().MarkDirty();
+      }
+      float sfgIQ = cfg.fg.interpolationQuality;
+      if (SliderFloat("FG Interpolation Quality", &sfgIQ, 0.0f, 1.0f, "%.2f", sfgActive)) {
+        cfg.fg.interpolationQuality = sfgIQ; sli.SetSmartFGInterpolationQuality(sfgIQ); ConfigManager::Get().MarkDirty();
+      }
+      Spacing();
+    }
   }
 
-  if (ImGui::Button("Reset to Defaults")) {
-    ConfigManager::Get().ResetToDefaults();
-    ConfigManager::Get().Load();
-    ModConfig &reset = ConfigManager::Get().Data();
-    sli.SetDLSSModeIndex(reset.dlss.mode);
-    sli.SetDLSSPreset(reset.dlss.preset);
-    sli.SetFrameGenMultiplier(reset.fg.multiplier);
-    sli.SetSharpness(reset.dlss.sharpness);
-    sli.SetLODBias(reset.dlss.lodBias);
-    ApplySamplerLodBias(reset.dlss.lodBias);
-    sli.SetReflexEnabled(reset.rr.enabled);
-    sli.SetHUDFixEnabled(reset.system.hudFixEnabled);
-    sli.SetRayReconstructionEnabled(reset.rr.enabled);
-    sli.SetRRPreset(reset.rr.preset);
-    sli.SetRRDenoiserStrength(reset.rr.denoiserStrength);
-    sli.SetDeepDVCEnabled(reset.dvc.enabled);
-    sli.SetDeepDVCIntensity(reset.dvc.intensity);
-    sli.SetDeepDVCSaturation(reset.dvc.saturation);
-    sli.SetDeepDVCAdaptiveEnabled(reset.dvc.adaptiveEnabled);
-    sli.SetDeepDVCAdaptiveStrength(reset.dvc.adaptiveStrength);
-    sli.SetDeepDVCAdaptiveMin(reset.dvc.adaptiveMin);
-    sli.SetDeepDVCAdaptiveMax(reset.dvc.adaptiveMax);
-    sli.SetDeepDVCAdaptiveSmoothing(reset.dvc.adaptiveSmoothing);
-    sli.SetSmartFGEnabled(reset.fg.smartEnabled);
-    sli.SetSmartFGAutoDisable(reset.fg.autoDisable);
-    sli.SetSmartFGAutoDisableThreshold(reset.fg.autoDisableFps);
-    sli.SetSmartFGSceneChangeEnabled(reset.fg.sceneChangeEnabled);
-    sli.SetSmartFGSceneChangeThreshold(reset.fg.sceneChangeThreshold);
-    sli.SetSmartFGInterpolationQuality(reset.fg.interpolationQuality);
-    sli.SetHDREnabled(reset.hdr.enabled);
-    sli.SetHDRPeakNits(reset.hdr.peakNits);
-    sli.SetHDRPaperWhiteNits(reset.hdr.paperWhiteNits);
-    sli.SetHDRExposure(reset.hdr.exposure);
-    sli.SetHDRGamma(reset.hdr.gamma);
-    sli.SetHDRTonemapCurve(reset.hdr.tonemapCurve);
-    sli.SetHDRSaturation(reset.hdr.saturation);
-    sli.SetMVecScale(reset.mvec.scaleX, reset.mvec.scaleY);
-    m_showFPS = reset.ui.showFPS;
-    m_showVignette = reset.ui.showVignette;
-    m_needRebuildTextures = true;
+  // ---- QUALITY ----
+  {
+    bool open = m_sectionOpen[VGuiHash("quality_section")];
+    SectionHeader("Quality", &open);
+    m_sectionOpen[VGuiHash("quality_section")] = open;
+    if (open) {
+      float sharp = cfg.dlss.sharpness;
+      if (SliderFloat("Sharpness", &sharp, 0.0f, 1.0f, "%.2f")) {
+        cfg.dlss.sharpness = sharp; sli.SetSharpness(sharp); ConfigManager::Get().MarkDirty();
+      }
+      float lod = cfg.dlss.lodBias;
+      if (SliderFloat("Texture Detail (LOD Bias)", &lod, -2.0f, 0.0f, "%.2f")) {
+        cfg.dlss.lodBias = lod; sli.SetLODBias(lod); ApplySamplerLodBias(lod); ConfigManager::Get().MarkDirty();
+      }
+      bool mvAuto = cfg.mvec.autoScale;
+      if (Checkbox("Auto Motion Vector Scale", &mvAuto)) {
+        cfg.mvec.autoScale = mvAuto; ConfigManager::Get().MarkDirty();
+      }
+      float mvX = cfg.mvec.scaleX;
+      if (SliderFloat("MV Scale X", &mvX, 0.5f, 3.0f, "%.2f", !cfg.mvec.autoScale)) {
+        cfg.mvec.scaleX = mvX; sli.SetMVecScale(mvX, cfg.mvec.scaleY); ConfigManager::Get().MarkDirty();
+      }
+      float mvY = cfg.mvec.scaleY;
+      if (SliderFloat("MV Scale Y", &mvY, 0.5f, 3.0f, "%.2f", !cfg.mvec.autoScale)) {
+        cfg.mvec.scaleY = mvY; sli.SetMVecScale(cfg.mvec.scaleX, mvY); ConfigManager::Get().MarkDirty();
+      }
+      Spacing();
+    }
   }
 
-  ImGui::Separator();
-  ImGui::TextUnformatted(
-      std::format("Hotkeys: Menu {} | FPS {} | Vignette {}",
-                  InputHandler::Get().GetKeyName(cfg.ui.menuHotkey),
-                  InputHandler::Get().GetKeyName(cfg.ui.fpsHotkey),
-                  InputHandler::Get().GetKeyName(cfg.ui.vignetteHotkey))
-          .c_str());
-  ImGui::TextUnformatted(
-      std::format("Camera: {} (J {:.3f}, {:.3f}) Delta {:.3f}",
-                  m_cachedCamera ? "OK" : "Missing", m_cachedJitterX,
-                  m_cachedJitterY,
-                  StreamlineIntegration::Get().GetLastCameraDelta())
-          .c_str());
+  // ---- HDR ----
+  {
+    bool open = m_sectionOpen[VGuiHash("hdr_section")];
+    SectionHeader("HDR", &open);
+    m_sectionOpen[VGuiHash("hdr_section")] = open;
+    if (open) {
+      bool hdrEn = cfg.hdr.enabled;
+      if (Checkbox("Enable HDR", &hdrEn)) {
+        cfg.hdr.enabled = hdrEn; sli.SetHDREnabled(hdrEn); ConfigManager::Get().MarkDirty();
+      }
+      bool hdrActive = cfg.hdr.enabled;
+      float peak = cfg.hdr.peakNits;
+      if (SliderFloat("Peak Brightness (nits)", &peak, 100.0f, 10000.0f, "%.0f", hdrActive)) {
+        cfg.hdr.peakNits = peak;
+        if (cfg.hdr.paperWhiteNits > peak) cfg.hdr.paperWhiteNits = peak;
+        sli.SetHDRPeakNits(peak); sli.SetHDRPaperWhiteNits(cfg.hdr.paperWhiteNits); ConfigManager::Get().MarkDirty();
+      }
+      float pw = cfg.hdr.paperWhiteNits;
+      if (SliderFloat("Paper White (nits)", &pw, 50.0f, cfg.hdr.peakNits, "%.0f", hdrActive)) {
+        cfg.hdr.paperWhiteNits = pw; sli.SetHDRPaperWhiteNits(pw); ConfigManager::Get().MarkDirty();
+      }
+      const char* expModes[] = {"Manual", "Auto (Game)"};
+      int expMode = (cfg.hdr.exposure <= 0.0f) ? 1 : 0;
+      if (Combo("Exposure Mode", &expMode, expModes, 2, hdrActive)) {
+        cfg.hdr.exposure = (expMode == 1) ? 0.0f : (std::max)(cfg.hdr.exposure, 0.1f);
+        sli.SetHDRExposure(cfg.hdr.exposure); ConfigManager::Get().MarkDirty();
+      }
+      float exp = cfg.hdr.exposure;
+      if (SliderFloat("Exposure", &exp, 0.1f, 4.0f, "%.2f", hdrActive && cfg.hdr.exposure > 0.0f)) {
+        cfg.hdr.exposure = exp; sli.SetHDRExposure(exp); ConfigManager::Get().MarkDirty();
+      }
+      float gam = cfg.hdr.gamma;
+      if (SliderFloat("Gamma", &gam, 1.6f, 2.6f, "%.2f", hdrActive)) {
+        cfg.hdr.gamma = gam; sli.SetHDRGamma(gam); ConfigManager::Get().MarkDirty();
+      }
+      float tm = cfg.hdr.tonemapCurve;
+      if (SliderFloat("Tonemap Curve", &tm, -1.0f, 1.0f, "%.2f", hdrActive)) {
+        cfg.hdr.tonemapCurve = tm; sli.SetHDRTonemapCurve(tm); ConfigManager::Get().MarkDirty();
+      }
+      float sat = cfg.hdr.saturation;
+      if (SliderFloat("Saturation", &sat, 0.0f, 2.0f, "%.2f", hdrActive)) {
+        cfg.hdr.saturation = sat; sli.SetHDRSaturation(sat); ConfigManager::Get().MarkDirty();
+      }
+      Spacing();
+    }
+  }
 
-  ImGui::End();
+  // ---- OVERLAY ----
+  {
+    bool open = m_sectionOpen[VGuiHash("overlay_section")];
+    SectionHeader("Overlay", &open);
+    m_sectionOpen[VGuiHash("overlay_section")] = open;
+    if (open) {
+      std::string fpsLabel = std::format("Show FPS Overlay ({})", InputHandler::Get().GetKeyName(cfg.ui.fpsHotkey));
+      if (Checkbox(fpsLabel.c_str(), &m_showFPS)) {
+        cfg.ui.showFPS = m_showFPS; ConfigManager::Get().MarkDirty();
+      }
+      std::string vigLabel = std::format("Show Vignette ({})", InputHandler::Get().GetKeyName(cfg.ui.vignetteHotkey));
+      if (Checkbox(vigLabel.c_str(), &m_showVignette)) {
+        cfg.ui.showVignette = m_showVignette; ConfigManager::Get().MarkDirty();
+      }
+      float vInt = cfg.ui.vignetteIntensity;
+      if (SliderFloat("Vignette Intensity", &vInt, 0.0f, 1.0f)) {
+        cfg.ui.vignetteIntensity = vInt; ConfigManager::Get().MarkDirty();
+      }
+      float vRad = cfg.ui.vignetteRadius;
+      if (SliderFloat("Vignette Radius", &vRad, 0.2f, 1.0f)) {
+        cfg.ui.vignetteRadius = vRad; ConfigManager::Get().MarkDirty();
+      }
+      float vSoft = cfg.ui.vignetteSoftness;
+      if (SliderFloat("Vignette Softness", &vSoft, 0.05f, 1.0f)) {
+        cfg.ui.vignetteSoftness = vSoft; ConfigManager::Get().MarkDirty();
+      }
+      if (ColorEdit3("Vignette Color", &cfg.ui.vignetteColorR, &cfg.ui.vignetteColorG, &cfg.ui.vignetteColorB)) {
+        ConfigManager::Get().MarkDirty();
+      }
+      Spacing();
+    }
+  }
+
+  // ---- HOTKEYS ----
+  {
+    bool open = m_sectionOpen[VGuiHash("hotkeys_section")];
+    SectionHeader("Hotkeys", &open);
+    m_sectionOpen[VGuiHash("hotkeys_section")] = open;
+    if (open) {
+      Label("Click a button to rebind. Press Esc to cancel.", vtheme::kTextSecondary);
+      std::string menuKey = std::format("Menu: {}", InputHandler::Get().GetKeyName(cfg.ui.menuHotkey));
+      if (Button(menuKey.c_str())) CaptureNextHotkey(&cfg.ui.menuHotkey);
+      std::string fpsKey = std::format("FPS: {}", InputHandler::Get().GetKeyName(cfg.ui.fpsHotkey));
+      if (Button(fpsKey.c_str())) CaptureNextHotkey(&cfg.ui.fpsHotkey);
+      std::string vigKey = std::format("Vignette: {}", InputHandler::Get().GetKeyName(cfg.ui.vignetteHotkey));
+      if (Button(vigKey.c_str())) CaptureNextHotkey(&cfg.ui.vignetteHotkey);
+      Spacing();
+    }
+  }
+
+  // ---- CUSTOMIZATION ----
+  BuildCustomization();
+
+  // ---- PERFORMANCE ----
+  {
+    bool open = m_sectionOpen[VGuiHash("perf_section")];
+    SectionHeader("Performance", &open);
+    m_sectionOpen[VGuiHash("perf_section")] = open;
+    if (open) {
+      // FPS graph
+      float minFps = m_fpsHistory[0], maxFps = m_fpsHistory[0];
+      for (int i = 1; i < kFpsHistorySize; ++i) {
+        minFps = (std::min)(minFps, m_fpsHistory[i]);
+        maxFps = (std::max)(maxFps, m_fpsHistory[i]);
+      }
+      float graphMax = maxFps > 1.0f ? maxFps * 1.15f : 60.0f;
+      std::string graphLabel = std::format("FPS (min {:.0f} / max {:.0f})", minFps, maxFps);
+      PlotLines(graphLabel.c_str(), m_fpsHistory, kFpsHistorySize, m_fpsHistoryIndex, 0.0f, graphMax, 70.0f);
+
+      NorseSeparator();
+
+      // Metrics
+      if (g_metricsCache.gpuOk.load(std::memory_order_relaxed)) {
+        LabelValue("GPU Utilization", std::format("{}%", g_metricsCache.gpuPercent.load(std::memory_order_relaxed)).c_str());
+      } else {
+        LabelValue("GPU Utilization", "N/A");
+      }
+      if (g_metricsCache.vramOk.load(std::memory_order_relaxed)) {
+        uint32_t used = g_metricsCache.vramUsed.load(std::memory_order_relaxed);
+        uint32_t budget = g_metricsCache.vramBudget.load(std::memory_order_relaxed);
+        LabelValue("VRAM", std::format("{} / {} MB", (std::min)(used, budget), budget).c_str());
+      } else {
+        LabelValue("VRAM", "N/A");
+      }
+      float fgActual = sli.GetFgActualMultiplier();
+      LabelValue("FG Actual", fgActual > 1.01f ? std::format("{:.2f}x", fgActual).c_str() : "Off");
+
+      NorseSeparator();
+
+      // Camera info
+      LabelValue("Camera", std::format("{} (J {:.3f}, {:.3f})",
+                 m_cachedCamera ? "OK" : "Missing", m_cachedJitterX, m_cachedJitterY).c_str());
+      LabelValue("Camera Delta", std::format("{:.3f}", sli.GetLastCameraDelta()).c_str());
+
+      Spacing();
+      if (Button("Reset to Defaults")) {
+        ConfigManager::Get().ResetToDefaults();
+        ConfigManager::Get().Load();
+        ModConfig& reset = ConfigManager::Get().Data();
+        sli.SetDLSSModeIndex(reset.dlss.mode); sli.SetDLSSPreset(reset.dlss.preset);
+        sli.SetFrameGenMultiplier(reset.fg.multiplier); sli.SetSharpness(reset.dlss.sharpness);
+        sli.SetLODBias(reset.dlss.lodBias); ApplySamplerLodBias(reset.dlss.lodBias);
+        sli.SetReflexEnabled(reset.rr.enabled); sli.SetHUDFixEnabled(reset.system.hudFixEnabled);
+        sli.SetRayReconstructionEnabled(reset.rr.enabled); sli.SetRRPreset(reset.rr.preset);
+        sli.SetRRDenoiserStrength(reset.rr.denoiserStrength); sli.SetDeepDVCEnabled(reset.dvc.enabled);
+        sli.SetDeepDVCIntensity(reset.dvc.intensity); sli.SetDeepDVCSaturation(reset.dvc.saturation);
+        sli.SetDeepDVCAdaptiveEnabled(reset.dvc.adaptiveEnabled);
+        sli.SetDeepDVCAdaptiveStrength(reset.dvc.adaptiveStrength);
+        sli.SetDeepDVCAdaptiveMin(reset.dvc.adaptiveMin); sli.SetDeepDVCAdaptiveMax(reset.dvc.adaptiveMax);
+        sli.SetDeepDVCAdaptiveSmoothing(reset.dvc.adaptiveSmoothing);
+        sli.SetSmartFGEnabled(reset.fg.smartEnabled); sli.SetSmartFGAutoDisable(reset.fg.autoDisable);
+        sli.SetSmartFGAutoDisableThreshold(reset.fg.autoDisableFps);
+        sli.SetSmartFGSceneChangeEnabled(reset.fg.sceneChangeEnabled);
+        sli.SetSmartFGSceneChangeThreshold(reset.fg.sceneChangeThreshold);
+        sli.SetSmartFGInterpolationQuality(reset.fg.interpolationQuality);
+        sli.SetHDREnabled(reset.hdr.enabled); sli.SetHDRPeakNits(reset.hdr.peakNits);
+        sli.SetHDRPaperWhiteNits(reset.hdr.paperWhiteNits); sli.SetHDRExposure(reset.hdr.exposure);
+        sli.SetHDRGamma(reset.hdr.gamma); sli.SetHDRTonemapCurve(reset.hdr.tonemapCurve);
+        sli.SetHDRSaturation(reset.hdr.saturation);
+        sli.SetMVecScale(reset.mvec.scaleX, reset.mvec.scaleY);
+        m_showFPS = reset.ui.showFPS; m_showVignette = reset.ui.showVignette;
+      }
+      Spacing();
+    }
+  }
+
+  // Record content height for scrolling
+  m_contentHeight = m_cursorY - contentStartCursorY + m_scrollOffset;
+
+  m_renderer.PopClip();
+
+  // --- Scrollbar ---
+  if (m_contentHeight > m_visibleHeight) {
+    float sbX = panelDrawX + panelW - vtheme::kScrollbarW - 2.0f;
+    float sbY = contentStartY;
+    float sbH = m_visibleHeight;
+    float thumbH = (std::max)(30.0f, sbH * (m_visibleHeight / m_contentHeight));
+    float maxScroll = m_contentHeight - m_visibleHeight;
+    float thumbY = sbY + (m_scrollOffset / maxScroll) * (sbH - thumbH);
+
+    m_renderer.FillRect(sbX, sbY, vtheme::kScrollbarW, sbH, vtheme::kScrollBg);
+    bool sbHovered = PointInRect(m_input.mouseX, m_input.mouseY, sbX - 4, thumbY, vtheme::kScrollbarW + 8, thumbH);
+    m_renderer.FillRoundedRect(sbX, thumbY, vtheme::kScrollbarW, thumbH, 3.0f, sbHovered ? m_accent : vtheme::kScrollThumb);
+  }
+
+  // --- Scroll input ---
+  if (m_contentHeight > m_visibleHeight) {
+    float maxScroll = m_contentHeight - m_visibleHeight;
+    m_scrollOffset -= m_input.scrollDelta;
+    m_scrollOffset = std::clamp(m_scrollOffset, 0.0f, maxScroll);
+  }
 }
+
+// ============================================================================
+// Customization Section — Full UI customization panel
+// ============================================================================
+
+void ImGuiOverlay::BuildCustomization() {
+  ModConfig& cfg = ConfigManager::Get().Data();
+  auto& cust = cfg.customization;
+
+  bool open = m_sectionOpen[VGuiHash("cust_section")];
+  SectionHeader("Customization", &open);
+  m_sectionOpen[VGuiHash("cust_section")] = open;
+  if (!open) return;
+
+  // ---- Animation Sub-Section ----
+  {
+    bool subOpen = m_sectionOpen[VGuiHash("cust_anim")];
+    if (!m_sectionOpen.count(VGuiHash("cust_anim"))) subOpen = true;
+    SectionHeader("  Animation", &subOpen);
+    m_sectionOpen[VGuiHash("cust_anim")] = subOpen;
+    if (subOpen) {
+      int animType = std::clamp(cust.animationType, 0, static_cast<int>(AnimType::Count) - 1);
+      if (Combo("Enter/Exit Animation", &animType, AnimTypeNames, static_cast<int>(AnimType::Count))) {
+        cust.animationType = animType; ConfigManager::Get().MarkDirty();
+      }
+      float animSpd = cust.animSpeed;
+      if (SliderFloat("Animation Speed", &animSpd, 0.25f, 3.0f, "%.2fx")) {
+        cust.animSpeed = animSpd; ConfigManager::Get().MarkDirty();
+      }
+      Spacing();
+    }
+  }
+
+  // ---- Panel Appearance Sub-Section ----
+  {
+    bool subOpen = m_sectionOpen[VGuiHash("cust_panel")];
+    if (!m_sectionOpen.count(VGuiHash("cust_panel"))) subOpen = true;
+    SectionHeader("  Panel Appearance", &subOpen);
+    m_sectionOpen[VGuiHash("cust_panel")] = subOpen;
+    if (subOpen) {
+      float opacity = cust.panelOpacity;
+      if (SliderFloat("Panel Opacity", &opacity, 0.3f, 1.0f, "%.0f%%")) {
+        cust.panelOpacity = opacity; ConfigManager::Get().MarkDirty();
+      }
+      float width = cust.panelWidth;
+      if (SliderFloat("Panel Width", &width, 360.0f, 720.0f, "%.0f px")) {
+        cust.panelWidth = width; ConfigManager::Get().MarkDirty();
+      }
+      float corner = cust.cornerRadius;
+      if (SliderFloat("Corner Radius", &corner, 0.0f, 20.0f, "%.0f px")) {
+        cust.cornerRadius = corner; ConfigManager::Get().MarkDirty();
+      }
+      bool shadow = cust.panelShadow;
+      if (Checkbox("Panel Shadow", &shadow)) {
+        cust.panelShadow = shadow; ConfigManager::Get().MarkDirty();
+      }
+      Spacing();
+    }
+  }
+
+  // ---- Drag & Snap Sub-Section ----
+  {
+    bool subOpen = m_sectionOpen[VGuiHash("cust_drag")];
+    SectionHeader("  Drag & Position", &subOpen);
+    m_sectionOpen[VGuiHash("cust_drag")] = subOpen;
+    if (subOpen) {
+      Label("Drag the title bar to reposition the panel.", vtheme::kTextSecondary);
+      bool snap = cust.snapToEdges;
+      if (Checkbox("Snap to Screen Edges", &snap)) {
+        cust.snapToEdges = snap; ConfigManager::Get().MarkDirty();
+      }
+      float snapDist = cust.snapDistance;
+      if (SliderFloat("Snap Distance", &snapDist, 5.0f, 60.0f, "%.0f px", cust.snapToEdges)) {
+        cust.snapDistance = snapDist; ConfigManager::Get().MarkDirty();
+      }
+      if (Button("Reset Position to Default")) {
+        cust.panelX = -1.0f; cust.panelY = -1.0f;
+        m_panelX = 0; m_panelY = 0;
+        ConfigManager::Get().MarkDirty();
+      }
+      Spacing();
+    }
+  }
+
+  // ---- Accent Color Sub-Section ----
+  {
+    bool subOpen = m_sectionOpen[VGuiHash("cust_accent")];
+    SectionHeader("  Accent Color", &subOpen);
+    m_sectionOpen[VGuiHash("cust_accent")] = subOpen;
+    if (subOpen) {
+      if (ColorEdit3("Accent Color", &cust.accentR, &cust.accentG, &cust.accentB)) {
+        ConfigManager::Get().MarkDirty();
+      }
+      // Quick presets
+      Label("Quick Color Presets:", vtheme::kTextSecondary);
+      if (Button("Norse Gold")) {
+        cust.accentR = 0.831f; cust.accentG = 0.686f; cust.accentB = 0.216f; ConfigManager::Get().MarkDirty();
+      }
+      SameLineButton();
+      if (Button("Ice Blue")) {
+        cust.accentR = 0.2f; cust.accentG = 0.65f; cust.accentB = 0.9f; ConfigManager::Get().MarkDirty();
+      }
+      SameLineButton();
+      if (Button("Blood Red")) {
+        cust.accentR = 0.85f; cust.accentG = 0.15f; cust.accentB = 0.15f; ConfigManager::Get().MarkDirty();
+      }
+      if (Button("Emerald")) {
+        cust.accentR = 0.2f; cust.accentG = 0.78f; cust.accentB = 0.35f; ConfigManager::Get().MarkDirty();
+      }
+      SameLineButton();
+      if (Button("Royal Purple")) {
+        cust.accentR = 0.6f; cust.accentG = 0.3f; cust.accentB = 0.85f; ConfigManager::Get().MarkDirty();
+      }
+      SameLineButton();
+      if (Button("Sunset")) {
+        cust.accentR = 0.95f; cust.accentG = 0.5f; cust.accentB = 0.15f; ConfigManager::Get().MarkDirty();
+      }
+      if (Button("Silver")) {
+        cust.accentR = 0.75f; cust.accentG = 0.78f; cust.accentB = 0.82f; ConfigManager::Get().MarkDirty();
+      }
+      SameLineButton();
+      if (Button("Neon Green")) {
+        cust.accentR = 0.3f; cust.accentG = 1.0f; cust.accentB = 0.3f; ConfigManager::Get().MarkDirty();
+      }
+      SameLineButton();
+      if (Button("Hot Pink")) {
+        cust.accentR = 1.0f; cust.accentG = 0.2f; cust.accentB = 0.6f; ConfigManager::Get().MarkDirty();
+      }
+      Spacing();
+    }
+  }
+
+  // ---- FPS Counter Customization ----
+  {
+    bool subOpen = m_sectionOpen[VGuiHash("cust_fps")];
+    SectionHeader("  FPS Counter", &subOpen);
+    m_sectionOpen[VGuiHash("cust_fps")] = subOpen;
+    if (subOpen) {
+      int fpsPos = std::clamp(cust.fpsPosition, 0, 3);
+      if (Combo("FPS Position", &fpsPos, FPSPositionNames, 4)) {
+        cust.fpsPosition = fpsPos; ConfigManager::Get().MarkDirty();
+      }
+      int fpsStyle = std::clamp(cust.fpsStyle, 0, 2);
+      if (Combo("FPS Style", &fpsStyle, FPSStyleNames, 3)) {
+        cust.fpsStyle = fpsStyle; ConfigManager::Get().MarkDirty();
+      }
+      float fpsOp = cust.fpsOpacity;
+      if (SliderFloat("FPS Opacity", &fpsOp, 0.2f, 1.0f, "%.0f%%")) {
+        cust.fpsOpacity = fpsOp; ConfigManager::Get().MarkDirty();
+      }
+      float fpsScl = cust.fpsScale;
+      if (SliderFloat("FPS Scale", &fpsScl, 0.5f, 2.0f, "%.1fx")) {
+        cust.fpsScale = fpsScl; ConfigManager::Get().MarkDirty();
+      }
+      bool smooth = cust.smoothFPS;
+      if (Checkbox("Smooth FPS Display", &smooth)) {
+        cust.smoothFPS = smooth; ConfigManager::Get().MarkDirty();
+      }
+      Spacing();
+    }
+  }
+
+  // ---- Visual Effects Sub-Section ----
+  {
+    bool subOpen = m_sectionOpen[VGuiHash("cust_effects")];
+    SectionHeader("  Visual Effects", &subOpen);
+    m_sectionOpen[VGuiHash("cust_effects")] = subOpen;
+    if (subOpen) {
+      bool bgDim = cust.backgroundDim;
+      if (Checkbox("Background Dim", &bgDim)) {
+        cust.backgroundDim = bgDim; ConfigManager::Get().MarkDirty();
+      }
+      float dimAmount = cust.backgroundDimAmount;
+      if (SliderFloat("Dim Intensity", &dimAmount, 0.05f, 0.8f, "%.0f%%", cust.backgroundDim)) {
+        cust.backgroundDimAmount = dimAmount; ConfigManager::Get().MarkDirty();
+      }
+      bool wGlow = cust.widgetGlow;
+      if (Checkbox("Widget Hover Glow", &wGlow)) {
+        cust.widgetGlow = wGlow; ConfigManager::Get().MarkDirty();
+      }
+      bool sPulse = cust.statusPulse;
+      if (Checkbox("Status Dot Pulse", &sPulse)) {
+        cust.statusPulse = sPulse; ConfigManager::Get().MarkDirty();
+      }
+      Spacing();
+    }
+  }
+
+  // ---- Layout Sub-Section ----
+  {
+    bool subOpen = m_sectionOpen[VGuiHash("cust_layout")];
+    SectionHeader("  Layout & Font", &subOpen);
+    m_sectionOpen[VGuiHash("cust_layout")] = subOpen;
+    if (subOpen) {
+      int layout = std::clamp(cust.layoutMode, 0, 2);
+      if (Combo("Layout Mode", &layout, LayoutModeNames, 3)) {
+        cust.layoutMode = layout; ConfigManager::Get().MarkDirty();
+      }
+      float fontScl = cust.fontScale;
+      if (SliderFloat("Font Scale", &fontScl, 0.75f, 1.5f, "%.2fx")) {
+        cust.fontScale = fontScl; ConfigManager::Get().MarkDirty();
+      }
+      bool mini = cust.miniMode;
+      if (Checkbox("Mini Mode (when closed)", &mini)) {
+        cust.miniMode = mini; ConfigManager::Get().MarkDirty();
+      }
+      Spacing();
+    }
+  }
+
+  NorseSeparator();
+}
+
+// ============================================================================
+// Setup Wizard
+// ============================================================================
 
 void ImGuiOverlay::BuildSetupWizard() {
-  if (!m_showSetupWizard)
-    return;
-  UpdateInputState();
-  ModConfig &cfg = ConfigManager::Get().Data();
-  StreamlineIntegration &sli = StreamlineIntegration::Get();
+  if (!m_showSetupWizard) return;
+  ModConfig& cfg = ConfigManager::Get().Data();
+  StreamlineIntegration& sli = StreamlineIntegration::Get();
 
-  ImGui::SetNextWindowSize(ImVec2(520, 420), ImGuiCond_FirstUseEver);
-  ImGui::Begin("First-Time Setup Wizard", &m_showSetupWizard,
-               ImGuiWindowFlags_NoCollapse);
-  ImGui::Text("Welcome! We'll recommend settings based on your GPU.");
-  ImGui::Separator();
+  float wizW = 480.0f, wizH = 380.0f;
+  float wizX = (static_cast<float>(m_width) - wizW) * 0.5f;
+  float wizY = (static_cast<float>(m_height) - wizH) * 0.5f;
+
+  // Dark overlay behind wizard
+  m_renderer.FillRect(0, 0, static_cast<float>(m_width), static_cast<float>(m_height), vtheme::hex(0x000000, 0.5f));
+
+  // Wizard panel
+  m_renderer.FillRoundedRect(wizX, wizY, wizW, wizH, 8.0f, vtheme::kBgPanel);
+  m_renderer.OutlineRoundedRect(wizX, wizY, wizW, wizH, 8.0f, vtheme::kGoldDim, 1.5f);
+
+  // Title
+  m_renderer.DrawDiamond(wizX + 20.0f, wizY + 24.0f, 5.0f, vtheme::kGold);
+  m_renderer.DrawTextA("First-Time Setup Wizard", wizX + 36.0f, wizY + 8.0f, wizW - 48.0f, 36.0f, vtheme::kGold, vtheme::kFontTitle, ValhallaRenderer::TextAlign::Left, true);
+  m_renderer.DrawLine(wizX + 16.0f, wizY + 44.0f, wizX + wizW - 16.0f, wizY + 44.0f, vtheme::kGoldDim, 1.0f);
+
+  // Content
+  m_cursorX = wizX + 24.0f;
+  m_cursorY = wizY + 56.0f;
+  m_contentWidth = wizW - 48.0f;
+
+  Label("Welcome! We'll recommend settings based on your GPU.", vtheme::kTextPrimary);
+  Spacing(4.0f);
+
   if (g_nvapiMetrics.gpuName[0] != '\0') {
-    ImGui::TextUnformatted(
-        std::format("Detected GPU: {}", g_nvapiMetrics.gpuName).c_str());
+    LabelValue("Detected GPU", g_nvapiMetrics.gpuName);
   } else if (g_nvapiMetrics.dxgiName[0] != '\0') {
-    ImGui::TextUnformatted(
-        std::format("Detected GPU: {}", g_nvapiMetrics.dxgiName).c_str());
+    LabelValue("Detected GPU", g_nvapiMetrics.dxgiName);
   } else {
-    ImGui::Text("Detected GPU: Unknown (NVAPI not available)");
+    LabelValue("Detected GPU", "Unknown (NVAPI not available)");
   }
 
-  const char *gpuName = g_nvapiMetrics.gpuName[0] != '\0'
-                            ? g_nvapiMetrics.gpuName
-                            : g_nvapiMetrics.dxgiName;
-  bool isHighEnd = gpuName && (strstr(gpuName, "RTX 40") != nullptr ||
-                               strstr(gpuName, "RTX 50") != nullptr ||
-                               strstr(gpuName, "RTX 60") != nullptr ||
-                               strstr(gpuName, "Titan") != nullptr);
-  ImGui::Spacing();
-  if (ImGui::Button("Apply Recommended Settings")) {
+  const char* gpuName = g_nvapiMetrics.gpuName[0] != '\0' ? g_nvapiMetrics.gpuName : g_nvapiMetrics.dxgiName;
+  bool isHighEnd = gpuName && (strstr(gpuName, "RTX 40") || strstr(gpuName, "RTX 50") || strstr(gpuName, "RTX 60") || strstr(gpuName, "Titan"));
+
+  Spacing(12.0f);
+  if (isHighEnd) {
+    Label("High-end GPU detected. Recommending quality settings.", vtheme::kStatusOk);
+  } else {
+    Label("Mid-range GPU detected. Recommending balanced settings.", vtheme::kStatusWarn);
+  }
+  Spacing(16.0f);
+
+  if (Button("Apply Recommended Settings")) {
     LOG_INFO("[Wizard] Apply recommended settings clicked");
     if (isHighEnd) {
-      cfg.dlss.mode = 3;
-      cfg.dlss.preset = 0;
-      cfg.fg.multiplier = 4;
-      cfg.dlss.sharpness = 0.35f;
-      cfg.dlss.lodBias = -1.0f;
-      cfg.rr.enabled = true;
-      cfg.rr.enabled = true;
-      cfg.dvc.enabled = false;
-      cfg.dvc.adaptiveEnabled = false;
+      cfg.dlss.mode = 3; cfg.dlss.preset = 0; cfg.fg.multiplier = 4;
+      cfg.dlss.sharpness = 0.35f; cfg.dlss.lodBias = -1.0f;
+      cfg.rr.enabled = true; cfg.dvc.enabled = false; cfg.dvc.adaptiveEnabled = false;
     } else {
-      cfg.dlss.mode = 3;
-      cfg.dlss.preset = 0;
-      cfg.fg.multiplier = 0;
-      cfg.dlss.sharpness = 0.35f;
-      cfg.dlss.lodBias = -1.0f;
-      cfg.rr.enabled = true;
-      cfg.rr.enabled = false;
-      cfg.dvc.enabled = false;
-      cfg.dvc.adaptiveEnabled = false;
+      cfg.dlss.mode = 3; cfg.dlss.preset = 0; cfg.fg.multiplier = 0;
+      cfg.dlss.sharpness = 0.35f; cfg.dlss.lodBias = -1.0f;
+      cfg.rr.enabled = true; cfg.dvc.enabled = false; cfg.dvc.adaptiveEnabled = false;
     }
     ConfigManager::Get().MarkDirty();
-    sli.SetDLSSModeIndex(cfg.dlss.mode);
-    sli.SetDLSSPreset(cfg.dlss.preset);
-    sli.SetFrameGenMultiplier(cfg.fg.multiplier);
-    sli.SetSharpness(cfg.dlss.sharpness);
-    sli.SetLODBias(cfg.dlss.lodBias);
-    ApplySamplerLodBias(cfg.dlss.lodBias);
-    sli.SetReflexEnabled(cfg.rr.enabled);
-    sli.SetRayReconstructionEnabled(cfg.rr.enabled);
-    sli.SetDeepDVCEnabled(cfg.dvc.enabled);
-    sli.SetDeepDVCAdaptiveEnabled(cfg.dvc.adaptiveEnabled);
-    LOG_INFO("[Wizard] Applied: DLSS={} Preset={} FG={}x RR={}", cfg.dlss.mode,
-             cfg.dlss.preset, cfg.fg.multiplier,
-             cfg.rr.enabled ? 1 : 0);
-    cfg.system.setupWizardCompleted = true;
-    cfg.system.setupWizardForceShow = false;
+    sli.SetDLSSModeIndex(cfg.dlss.mode); sli.SetDLSSPreset(cfg.dlss.preset);
+    sli.SetFrameGenMultiplier(cfg.fg.multiplier); sli.SetSharpness(cfg.dlss.sharpness);
+    sli.SetLODBias(cfg.dlss.lodBias); ApplySamplerLodBias(cfg.dlss.lodBias);
+    sli.SetReflexEnabled(cfg.rr.enabled); sli.SetRayReconstructionEnabled(cfg.rr.enabled);
+    sli.SetDeepDVCEnabled(cfg.dvc.enabled); sli.SetDeepDVCAdaptiveEnabled(cfg.dvc.adaptiveEnabled);
+    cfg.system.setupWizardCompleted = true; cfg.system.setupWizardForceShow = false;
     ConfigManager::Get().MarkDirty();
     m_showSetupWizard = false;
   }
-  ImGui::SameLine();
-  if (ImGui::Button("Skip for Now")) {
-    cfg.system.setupWizardCompleted = true;
-    cfg.system.setupWizardForceShow = false;
+
+  SameLineButton();
+  if (Button("Skip for Now")) {
+    cfg.system.setupWizardCompleted = true; cfg.system.setupWizardForceShow = false;
     ConfigManager::Get().MarkDirty();
     m_showSetupWizard = false;
   }
-  ImGui::End();
 }
+
+// ============================================================================
+// FPS Overlay — Valhalla Themed
+// ============================================================================
 
 void ImGuiOverlay::BuildFPSOverlay() {
-  if (!m_showFPS)
-    return;
-  ImDrawList *drawList = ImGui::GetForegroundDrawList();
+  if (!m_showFPS) return;
+  auto& cust = ConfigManager::Get().Data().customization;
+
+  float screenW = static_cast<float>(m_width);
+  float screenH = static_cast<float>(m_height);
   int mult = StreamlineIntegration::Get().GetFrameGenMultiplier();
-  if (mult < 1)
-    mult = 1;
-  ImVec2 pos(24.0f, 24.0f);
-  drawList->AddText(nullptr, 28.0f, pos, IM_COL32(212, 175, 55, 220),
-                    std::format("{:.0f} -> {:.0f} FPS",
-                                m_cachedTotalFPS / static_cast<float>(mult),
-                                m_cachedTotalFPS)
-                        .c_str());
+  if (mult < 1) mult = 1;
+  float baseFps = m_cachedTotalFPS / static_cast<float>(mult);
+  float totalFps = m_cachedTotalFPS;
+  float fpsOpacity = std::clamp(cust.fpsOpacity, 0.2f, 1.0f);
+  float fpsScale = std::clamp(cust.fpsScale, 0.5f, 2.0f);
+  auto fpsStyle = static_cast<FPSStyle>(std::clamp(cust.fpsStyle, 0, 2));
+
+  // Smooth FPS interpolation
+  if (cust.smoothFPS) {
+    float dt = m_time - m_lastFrameTime;
+    m_smoothFPS = vanim::SmoothDamp(m_smoothFPS, totalFps, 8.0f, dt > 0 ? dt : 0.016f);
+  } else {
+    m_smoothFPS = totalFps;
+  }
+  float smoothBase = cust.smoothFPS ? vanim::SmoothDamp(m_smoothFPS / static_cast<float>(mult), baseFps, 8.0f, 0.016f) : baseFps;
+
+  // --- Size based on style ---
+  float boxW, boxH;
+  switch (fpsStyle) {
+    case FPSStyle::Minimal:  boxW = 110.0f * fpsScale; boxH = 40.0f * fpsScale; break;
+    case FPSStyle::Detailed: boxW = 220.0f * fpsScale; boxH = 100.0f * fpsScale; break;
+    default:                 boxW = 200.0f * fpsScale; boxH = 64.0f * fpsScale; break;
+  }
+
+  // --- Position based on config ---
+  float boxX, boxY;
+  auto fpsPos = static_cast<FPSPosition>(std::clamp(cust.fpsPosition, 0, 3));
+  float margin = 24.0f;
+  switch (fpsPos) {
+    case FPSPosition::TopLeft:     boxX = margin;                 boxY = margin; break;
+    case FPSPosition::BottomRight: boxX = screenW - boxW - margin; boxY = screenH - boxH - margin; break;
+    case FPSPosition::BottomLeft:  boxX = margin;                 boxY = screenH - boxH - margin; break;
+    default:                       boxX = screenW - boxW - margin; boxY = margin; break; // TopRight
+  }
+
+  // --- Background ---
+  m_renderer.FillRoundedRect(boxX, boxY, boxW, boxH, 6.0f * fpsScale, vtheme::hex(0x0A0B14, fpsOpacity));
+  m_renderer.OutlineRoundedRect(boxX, boxY, boxW, boxH, 6.0f * fpsScale, m_accentDim, 1.0f);
+
+  // Norse corner decorations
+  float ds = 5.0f * fpsScale;
+  m_renderer.DrawDiamond(boxX + ds + 4, boxY + ds + 4, ds, m_accent);
+  m_renderer.DrawDiamond(boxX + boxW - ds - 4, boxY + ds + 4, ds, m_accent);
+
+  // --- FPS color based on value ---
+  D2D1_COLOR_F fpsColor = m_accent;
+  if (m_smoothFPS < 30.0f) fpsColor = vtheme::kStatusBad;
+  else if (m_smoothFPS < 60.0f) fpsColor = vtheme::kStatusWarn;
+
+  switch (fpsStyle) {
+    case FPSStyle::Minimal: {
+      // Minimal: just the number, big and bold
+      std::string fpsStr = std::format("{:.0f}", m_smoothFPS);
+      m_renderer.DrawTextA(fpsStr.c_str(), boxX, boxY, boxW, boxH, fpsColor, 28.0f * fpsScale, ValhallaRenderer::TextAlign::Center, true);
+      break;
+    }
+    case FPSStyle::Detailed: {
+      // Detailed: base FPS, total FPS, FG multiplier, GPU%, VRAM
+      float rowH = boxH / 5.0f;
+      std::string totalStr = std::format("{:.0f} FPS", m_smoothFPS);
+      m_renderer.DrawTextA(totalStr.c_str(), boxX + 8, boxY + 4, boxW - 16, rowH * 1.5f, fpsColor, 24.0f * fpsScale, ValhallaRenderer::TextAlign::Center, true);
+
+      if (mult > 1) {
+        std::string baseStr = std::format("Base: {:.0f}  |  {}x FG", smoothBase, mult);
+        m_renderer.DrawTextA(baseStr.c_str(), boxX + 8, boxY + rowH * 1.5f, boxW - 16, rowH, vtheme::kTextSecondary, 11.0f * fpsScale, ValhallaRenderer::TextAlign::Center);
+      }
+
+      // GPU + VRAM
+      float metricsY = boxY + rowH * 2.6f;
+      if (g_metricsCache.gpuOk.load(std::memory_order_relaxed)) {
+        uint32_t gpu = g_metricsCache.gpuPercent.load(std::memory_order_relaxed);
+        std::string gpuStr = std::format("GPU {}%", gpu);
+        // GPU bar
+        float barX = boxX + 10, barW = boxW - 20, barH = 4.0f * fpsScale;
+        m_renderer.FillRoundedRect(barX, metricsY, barW, barH, 2.0f, vtheme::kSliderTrack);
+        float gpuT = static_cast<float>(gpu) / 100.0f;
+        D2D1_COLOR_F barColor = gpuT > 0.9f ? vtheme::kStatusBad : (gpuT > 0.7f ? vtheme::kStatusWarn : m_accent);
+        m_renderer.FillRoundedRect(barX, metricsY, barW * gpuT, barH, 2.0f, barColor);
+        m_renderer.DrawTextA(gpuStr.c_str(), boxX + 8, metricsY + barH + 2, boxW * 0.5f, rowH * 0.7f, vtheme::kTextSecondary, 10.0f * fpsScale);
+      }
+      if (g_metricsCache.vramOk.load(std::memory_order_relaxed)) {
+        uint32_t used = g_metricsCache.vramUsed.load(std::memory_order_relaxed);
+        uint32_t budget = g_metricsCache.vramBudget.load(std::memory_order_relaxed);
+        std::string vramStr = std::format("VRAM {}/{}MB", used, budget);
+        float vramY = boxY + rowH * 3.5f;
+        float barX = boxX + 10, barW = boxW - 20, barH = 4.0f * fpsScale;
+        m_renderer.FillRoundedRect(barX, vramY, barW, barH, 2.0f, vtheme::kSliderTrack);
+        float vramT = budget > 0 ? static_cast<float>(used) / static_cast<float>(budget) : 0.0f;
+        D2D1_COLOR_F barColor = vramT > 0.9f ? vtheme::kStatusBad : (vramT > 0.7f ? vtheme::kStatusWarn : m_accent);
+        m_renderer.FillRoundedRect(barX, vramY, barW * vramT, barH, 2.0f, barColor);
+        m_renderer.DrawTextA(vramStr.c_str(), boxX + 8, vramY + barH + 2, boxW - 16, rowH * 0.7f, vtheme::kTextSecondary, 10.0f * fpsScale);
+      }
+      break;
+    }
+    default: { // Standard
+      if (mult > 1) {
+        std::string baseStr = std::format("{:.0f}", smoothBase);
+        m_renderer.DrawTextA(baseStr.c_str(), boxX + 8, boxY + 2, boxW - 16, 22.0f * fpsScale, vtheme::kTextSecondary, 14.0f * fpsScale, ValhallaRenderer::TextAlign::Center);
+        m_renderer.DrawTextA("->", boxX + 8, boxY + 16.0f * fpsScale, boxW - 16, 14.0f * fpsScale, m_accentDim, 11.0f * fpsScale, ValhallaRenderer::TextAlign::Center);
+        std::string totalStr = std::format("{:.0f} FPS", m_smoothFPS);
+        m_renderer.DrawTextA(totalStr.c_str(), boxX + 8, boxY + 26.0f * fpsScale, boxW - 16, 34.0f * fpsScale, fpsColor, vtheme::kFontFPS * fpsScale, ValhallaRenderer::TextAlign::Center, true);
+      } else {
+        std::string fpsStr = std::format("{:.0f} FPS", m_smoothFPS);
+        m_renderer.DrawTextA(fpsStr.c_str(), boxX + 8, boxY + 8, boxW - 16, boxH - 16, fpsColor, vtheme::kFontFPS * fpsScale, ValhallaRenderer::TextAlign::Center, true);
+      }
+      break;
+    }
+  }
+
+  // Bottom accent line
+  m_renderer.DrawLine(boxX + 16, boxY + boxH - 6 * fpsScale, boxX + boxW - 16, boxY + boxH - 6 * fpsScale, m_accentDim, 1.0f);
+  // Bottom corner decorations
+  m_renderer.DrawDiamond(boxX + ds + 4, boxY + boxH - ds - 4, ds * 0.7f, m_accentDim);
+  m_renderer.DrawDiamond(boxX + boxW - ds - 4, boxY + boxH - ds - 4, ds * 0.7f, m_accentDim);
 }
+
+// ============================================================================
+// Vignette — D2D radial gradient (replaces D3D12 texture approach)
+// ============================================================================
 
 void ImGuiOverlay::BuildVignette() {
-  if (!m_showVignette)
-    return;
-  BuildTexturesIfNeeded();
-  if (!m_vignetteTexture || m_vignetteSrvGpu.ptr == 0)
-    return;
-  ImDrawList *drawList = ImGui::GetForegroundDrawList();
-  const ImVec2 size = ImGui::GetIO().DisplaySize;
-  ModConfig &cfg = ConfigManager::Get().Data();
-  const float intensity = std::clamp(cfg.ui.vignetteIntensity, 0.0f, 1.0f);
-  const float radius = std::clamp(cfg.ui.vignetteRadius, 0.2f, 1.0f);
-  const float softness = std::clamp(cfg.ui.vignetteSoftness, 0.05f, 1.0f);
-  const ImU32 color = IM_COL32(
-      (int)(cfg.ui.vignetteColorR * 255.0f), (int)(cfg.ui.vignetteColorG * 255.0f),
-      (int)(cfg.ui.vignetteColorB * 255.0f), (int)(intensity * 200.0f));
-  const float padX = size.x * 0.5f * (std::max)(0.0f, 1.0f - radius);
-  const float padY = size.y * 0.5f * (std::max)(0.0f, 1.0f - radius);
-  const float softX = padX + (size.x * 0.5f - padX) * softness;
-  const float softY = padY + (size.y * 0.5f - padY) * softness;
-  const ImVec2 uv0(padX / size.x, padY / size.y);
-  const ImVec2 uv1((size.x - padX) / size.x, (size.y - padY) / size.y);
-  const ImVec2 uvSoft0(softX / size.x, softY / size.y);
-  const ImVec2 uvSoft1((size.x - softX) / size.x, (size.y - softY) / size.y);
-  ImTextureID texId = (ImTextureID)m_vignetteSrvGpu.ptr;
-  drawList->AddImage(texId, ImVec2(0, 0), ImVec2(size.x, size.y), uv0, uv1,
-                     color);
-  if (softness > 0.0f) {
-    ImU32 softCol = IM_COL32(
-        (int)(cfg.ui.vignetteColorR * 255.0f), (int)(cfg.ui.vignetteColorG * 255.0f),
-        (int)(cfg.ui.vignetteColorB * 255.0f), (int)(intensity * 140.0f));
-    drawList->AddImage(texId, ImVec2(0, 0), ImVec2(size.x, size.y), uvSoft0,
-                       uvSoft1, softCol);
-  }
+  if (!m_showVignette) return;
+  ModConfig& cfg = ConfigManager::Get().Data();
+  float intensity = std::clamp(cfg.ui.vignetteIntensity, 0.0f, 1.0f);
+  float radius = std::clamp(cfg.ui.vignetteRadius, 0.2f, 1.0f);
+  float softness = std::clamp(cfg.ui.vignetteSoftness, 0.05f, 1.0f);
+  m_renderer.DrawVignette(static_cast<float>(m_width), static_cast<float>(m_height),
+                          cfg.ui.vignetteColorR, cfg.ui.vignetteColorG, cfg.ui.vignetteColorB,
+                          intensity, radius, softness);
 }
+
+// ============================================================================
+// Debug Window
+// ============================================================================
 
 void ImGuiOverlay::BuildDebugWindow() {
-  if (!m_showDebug)
-    return;
-  ImGui::Begin("Resource Debug", &m_showDebug);
+  if (!m_showDebug) return;
+  float dbgW = 400.0f, dbgH = 300.0f;
+  float dbgX = static_cast<float>(m_width) - dbgW - 24.0f;
+  float dbgY = static_cast<float>(m_height) - dbgH - 24.0f;
+
+  m_renderer.FillRoundedRect(dbgX, dbgY, dbgW, dbgH, 6.0f, vtheme::hex(0x0A0B14, 0.9f));
+  m_renderer.OutlineRoundedRect(dbgX, dbgY, dbgW, dbgH, 6.0f, vtheme::kGoldDim, 1.0f);
+  m_renderer.DrawTextA("Resource Debug", dbgX + 12, dbgY + 4, dbgW - 24, 28.0f, vtheme::kGold, vtheme::kFontSection, ValhallaRenderer::TextAlign::Left, true);
+  m_renderer.DrawLine(dbgX + 12, dbgY + 32, dbgX + dbgW - 12, dbgY + 32, vtheme::kGoldDim, 1.0f);
+
   std::string debugInfo = ResourceDetector::Get().GetDebugInfo();
-  if (debugInfo.empty())
-    debugInfo = "No debug info available yet...";
-  ImGui::TextUnformatted(debugInfo.c_str());
-  ImGui::End();
+  if (debugInfo.empty()) debugInfo = "No debug info available yet...";
+
+  // Simple text wrapping — show first ~10 lines
+  float textY = dbgY + 38.0f;
+  size_t pos = 0;
+  for (int line = 0; line < 10 && pos < debugInfo.size(); ++line) {
+    size_t nl = debugInfo.find('\n', pos);
+    std::string lineStr = debugInfo.substr(pos, nl != std::string::npos ? nl - pos : std::string::npos);
+    m_renderer.DrawTextA(lineStr.c_str(), dbgX + 12, textY, dbgW - 24, 22.0f, vtheme::kTextPrimary, vtheme::kFontSmall);
+    textY += 22.0f;
+    pos = (nl != std::string::npos) ? nl + 1 : debugInfo.size();
+  }
 }
 
-void ImGuiOverlay::BuildTexturesIfNeeded() {
-  if (!m_needRebuildTextures)
-    return;
-  m_needRebuildTextures = false;
-  if (!m_device || !m_queue || !m_srvHeap)
-    return;
-  if (m_shuttingDown.load(std::memory_order_relaxed))
-    return;
-  if (m_fence && m_fenceValue > 0) {
-    UINT64 completed = m_fence->GetCompletedValue();
-    std::erase_if(m_pendingUploads, [completed](const PendingUpload &pending) {
-      return completed >= pending.fenceValue;
-    });
-  }
-
-  if (m_vignetteSrv.ptr == 0 || m_vignetteSrvGpu.ptr == 0) {
-    AllocateSrv(nullptr, &m_vignetteSrv, &m_vignetteSrvGpu);
-    if (m_vignetteSrv.ptr == 0 || m_vignetteSrvGpu.ptr == 0)
-      return;
-  }
-
-  ModConfig &cfg = ConfigManager::Get().Data();
-  const float radius = std::clamp(cfg.ui.vignetteRadius, 0.2f, 1.0f);
-  const float softness = std::clamp(cfg.ui.vignetteSoftness, 0.05f, 1.0f);
-  const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
-  if (displaySize.x <= 0.0f || displaySize.y <= 0.0f) {
-    m_needRebuildTextures = true;
-    return;
-  }
-  const float displayW = (std::max)(1.0f, displaySize.x);
-  const float displayH = (std::max)(1.0f, displaySize.y);
-  const float aspect = displayW / displayH;
-  const int texSize = 256;
-  const float inner = radius;
-  const float outer =
-      std::clamp(radius + (1.0f - radius) * softness, radius + 0.001f, 1.0f);
-  const size_t texSizeU = static_cast<size_t>(texSize);
-  if (texSizeU > 4096 ||
-      texSizeU > ((std::numeric_limits<size_t>::max)() / (texSizeU * 4))) {
-    return;
-  }
-  std::vector<uint8_t> pixels(texSizeU * texSizeU * 4);
-  std::vector<float> xLookup(static_cast<size_t>(texSize));
-  std::vector<float> yLookup(static_cast<size_t>(texSize));
-  for (int x = 0; x < texSize; ++x) {
-    const float nx = ((x + 0.5f) / texSize) * 2.0f - 1.0f;
-    const float dx = nx * aspect;
-    xLookup[static_cast<size_t>(x)] = dx * dx;
-  }
-  for (int y = 0; y < texSize; ++y) {
-    const float ny = ((y + 0.5f) / texSize) * 2.0f - 1.0f;
-    yLookup[static_cast<size_t>(y)] = ny * ny;
-  }
-  for (int y = 0; y < texSize; ++y) {
-    for (int x = 0; x < texSize; ++x) {
-      float dist = sqrtf(xLookup[static_cast<size_t>(x)] +
-                         yLookup[static_cast<size_t>(y)]);
-      dist = (std::min)(dist, 1.0f);
-      float t = (dist - inner) / (outer - inner);
-      t = std::clamp(t, 0.0f, 1.0f);
-      const float smooth = t * t * (3.0f - 2.0f * t);
-      const uint8_t alpha = static_cast<uint8_t>(smooth * 255.0f);
-      const size_t idx = static_cast<size_t>((y * texSize + x) * 4);
-      pixels[idx + 0] = 255;
-      pixels[idx + 1] = 255;
-      pixels[idx + 2] = 255;
-      pixels[idx + 3] = alpha;
-    }
-  }
-
-  if (!m_vignetteTexture) {
-    D3D12_RESOURCE_DESC texDesc{};
-    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    texDesc.Width = texSize;
-    texDesc.Height = texSize;
-    texDesc.DepthOrArraySize = 1;
-    texDesc.MipLevels = 1;
-    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    texDesc.SampleDesc.Count = 1;
-    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    texDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-    D3D12_HEAP_PROPERTIES texProps{};
-    texProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-    if (FAILED(m_device->CreateCommittedResource(
-            &texProps, D3D12_HEAP_FLAG_NONE, &texDesc,
-            D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-            IID_PPV_ARGS(&m_vignetteTexture)))) {
-      return;
-    }
-  }
-
-  const UINT rowPitch =
-      (texSize * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) &
-      ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
-  const UINT64 uploadSize = static_cast<UINT64>(rowPitch) * texSize;
-  D3D12_HEAP_PROPERTIES uploadProps{};
-  uploadProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-  D3D12_RESOURCE_DESC uploadDesc{};
-  uploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-  uploadDesc.Width = uploadSize;
-  uploadDesc.Height = 1;
-  uploadDesc.DepthOrArraySize = 1;
-  uploadDesc.MipLevels = 1;
-  uploadDesc.SampleDesc.Count = 1;
-  uploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-  Microsoft::WRL::ComPtr<ID3D12Resource> uploadBuffer;
-  if (FAILED(m_device->CreateCommittedResource(
-          &uploadProps, D3D12_HEAP_FLAG_NONE, &uploadDesc,
-          D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-          IID_PPV_ARGS(&uploadBuffer)))) {
-    return;
-  }
-  uint8_t *mapped = nullptr;
-  D3D12_RANGE range{0, 0};
-  if (FAILED(
-          uploadBuffer->Map(0, &range, reinterpret_cast<void **>(&mapped))) ||
-      !mapped) {
-    return;
-  }
-  for (int y = 0; y < texSize; ++y) {
-    memcpy(mapped + y * rowPitch, pixels.data() + (y * texSize * 4),
-           texSize * 4);
-  }
-  uploadBuffer->Unmap(0, nullptr);
-
-  Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
-  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> cmd;
-  if (FAILED(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                              IID_PPV_ARGS(&allocator))) ||
-      FAILED(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                         allocator.Get(), nullptr,
-                                         IID_PPV_ARGS(&cmd)))) {
-    return;
-  }
-
-  D3D12_TEXTURE_COPY_LOCATION src{};
-  src.pResource = uploadBuffer.Get();
-  src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-  src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-  src.PlacedFootprint.Footprint.Width = texSize;
-  src.PlacedFootprint.Footprint.Height = texSize;
-  src.PlacedFootprint.Footprint.Depth = 1;
-  src.PlacedFootprint.Footprint.RowPitch = rowPitch;
-
-  D3D12_TEXTURE_COPY_LOCATION dst{};
-  dst.pResource = m_vignetteTexture;
-  dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-  dst.SubresourceIndex = 0;
-  D3D12_RESOURCE_BARRIER barrier{};
-  barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-  barrier.Transition.pResource = m_vignetteTexture;
-  barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  barrier.Transition.StateBefore = m_vignetteState;
-  barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-  if (m_vignetteState != D3D12_RESOURCE_STATE_COPY_DEST) {
-    cmd->ResourceBarrier(1, &barrier);
-  }
-  cmd->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-  barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-  barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-  cmd->ResourceBarrier(1, &barrier);
-  cmd->Close();
-  ID3D12CommandList *lists[] = {cmd.Get()};
-  m_queue->ExecuteCommandLists(1, lists);
-  m_queue->Signal(m_fence, m_fenceValue);
-  m_pendingUploads.push_back({uploadBuffer, m_fenceValue});
-  m_fenceValue++;
-  m_vignetteState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-
-  D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-  srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-  srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-  srvDesc.Texture2D.MipLevels = 1;
-  srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-  m_device->CreateShaderResourceView(m_vignetteTexture, &srvDesc,
-                                     m_vignetteSrv);
-}
+// ============================================================================
+// MAIN RENDER FUNCTION
+// ============================================================================
 
 void ImGuiOverlay::Render() {
-  if (!m_initialized || !m_swapChain || m_commandLists.empty() ||
-      m_commandAllocators.empty()) {
-    ConfigManager::Get().SaveIfDirty();
-    return;
-  }
-  if (!m_visible && !m_showFPS && !m_showVignette && !m_showDebug &&
-      !m_showSetupWizard) {
+  if (!m_initialized || !m_swapChain) {
     ConfigManager::Get().SaveIfDirty();
     return;
   }
 
-  ImGui_ImplDX12_NewFrame();
-  ImGui_ImplWin32_NewFrame();
+  auto& cust = ConfigManager::Get().Data().customization;
 
-  const uint64_t metricNow = GetTimeMs();
-  if (metricNow - g_metricsCache.lastUpdateMs.load(std::memory_order_relaxed) >=
-      500) {
-    g_metricsCache.lastUpdateMs.store(metricNow, std::memory_order_relaxed);
+  // Check if anything needs rendering
+  bool panelAnimating = m_panelSlide.IsAnimating() || m_panelAlpha.IsAnimating();
+  bool miniModeActive = cust.miniMode && !m_visible && !panelAnimating;
+  if (!m_visible && !m_showFPS && !m_showVignette && !m_showDebug && !m_showSetupWizard
+      && !panelAnimating && !miniModeActive) {
+    ConfigManager::Get().SaveIfDirty();
+    return;
   }
-  UpdateInputState();
 
-  ImGui::NewFrame();
+  // Update timing
+  float newTime = GetTimeSec();
+  m_lastFrameTime = m_firstFrame ? newTime : m_time;
+  m_time = newTime;
+  m_firstFrame = false;
 
-  BuildTexturesIfNeeded();
+  // Update status pulse phase
+  if (cust.statusPulse) {
+    m_statusPulsePhase += (m_time - m_lastFrameTime) * 2.5f;
+    if (m_statusPulsePhase > vanim::PI * 2.0f) m_statusPulsePhase -= vanim::PI * 2.0f;
+  }
 
-  if (m_visible)
-    BuildMainMenu();
+  // Smooth FPS update
+  if (cust.smoothFPS) {
+    float dt = m_time - m_lastFrameTime;
+    if (dt > 0 && dt < 1.0f) {
+      m_smoothFPS = vanim::SmoothDamp(m_smoothFPS, m_cachedTotalFPS, 8.0f, dt);
+    }
+  } else {
+    m_smoothFPS = m_cachedTotalFPS;
+  }
+
+  // Update animations
+  m_panelSlide.Update(m_time);
+  m_panelAlpha.Update(m_time);
+
+  // Begin D2D frame
+  UINT backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
+  if (!m_renderer.BeginFrame(backBufferIndex)) {
+    // Try to recreate render targets (e.g. after resize)
+    m_renderer.OnResize();
+    DXGI_SWAP_CHAIN_DESC desc{};
+    m_swapChain->GetDesc(&desc);
+    m_backBufferCount = desc.BufferCount;
+    m_width = desc.BufferDesc.Width;
+    m_height = desc.BufferDesc.Height;
+    m_renderer.Shutdown();
+    m_renderer.Initialize(m_device, m_queue, m_swapChain, m_backBufferCount);
+    if (!m_renderer.BeginFrame(backBufferIndex)) {
+      ConfigManager::Get().SaveIfDirty();
+      return;
+    }
+  }
+
+  // Begin widget input frame
+  BeginWidgetFrame();
+
+  // Render layers (back to front)
+  BuildVignette();
+
+  // Background dim effect when panel is visible
+  if (m_visible || panelAnimating) BuildBackgroundDim();
+
+  if (m_visible || panelAnimating) BuildMainPanel();
   BuildSetupWizard();
   BuildFPSOverlay();
-  BuildVignette();
   BuildDebugWindow();
 
-  ImGui::Render();
+  // Mini mode bar when panel is hidden
+  BuildMiniMode();
+
+  // End D2D frame
+  m_renderer.EndFrame();
   ConfigManager::Get().SaveIfDirty();
-
-  UINT backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
-  if (!m_backBuffers || backBufferIndex >= m_backBufferCount)
-    return;
-  if (m_fence && m_frameFenceValues[backBufferIndex] > 0) {
-    WaitForFence(m_fence, m_fenceEvent, m_frameFenceValues[backBufferIndex]);
-  }
-  ID3D12CommandAllocator *allocator = m_commandAllocators[backBufferIndex];
-  ID3D12GraphicsCommandList *cmd = m_commandLists[backBufferIndex];
-  allocator->Reset();
-  cmd->Reset(allocator, nullptr);
-
-  D3D12_RESOURCE_BARRIER barrier{};
-  barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-  barrier.Transition.pResource = m_backBuffers[backBufferIndex];
-  barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-  barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-  cmd->ResourceBarrier(1, &barrier);
-
-  cmd->OMSetRenderTargets(1, &m_rtvHandles[backBufferIndex], FALSE, nullptr);
-  ID3D12DescriptorHeap *heaps[] = {m_srvHeap};
-  cmd->SetDescriptorHeaps(1, heaps);
-  ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmd);
-
-  std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
-  cmd->ResourceBarrier(1, &barrier);
-
-  cmd->Close();
-  ID3D12CommandList *lists[] = {cmd};
-  m_queue->ExecuteCommandLists(1, lists);
-  m_fenceValue++;
-  m_queue->Signal(m_fence, m_fenceValue);
-  m_frameFenceValues[backBufferIndex] = m_fenceValue;
 }
