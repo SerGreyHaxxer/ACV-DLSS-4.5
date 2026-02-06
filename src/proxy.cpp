@@ -76,7 +76,7 @@ extern "C" void LogStartup(const char *msg) {
     return;
   std::lock_guard<std::mutex> lock(s_startupTraceMutex);
   if (!s_startupTraceFile.is_open()) {
-    s_startupTraceFile.open("startup_trace.log", std::ios::app);
+    s_startupTraceFile.open("startup_trace.log", std::ios::trunc);
   }
   if (s_startupTraceFile) {
     s_startupTraceFile << "[PROXY] " << msg << '\n';
@@ -242,6 +242,10 @@ HRESULT WINAPI CreateDXGIFactory(REFIID riid, void **ppFactory) {
   LogStartup("CreateDXGIFactory: Calling original");
   HRESULT hr = g_ProxyState.pfnCreateDXGIFactory(riid, ppFactory);
   LogStartup("CreateDXGIFactory: Original returned");
+  if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
+    *ppFactory = new WrappedIDXGIFactory(static_cast<IDXGIFactory*>(*ppFactory));
+    LogStartup("Factory Wrapped");
+  }
   return hr;
 }
 
@@ -252,6 +256,10 @@ HRESULT WINAPI CreateDXGIFactory1(REFIID riid, void **ppFactory) {
   LogStartup("CreateDXGIFactory1: Calling original");
   HRESULT hr = g_ProxyState.pfnCreateDXGIFactory1(riid, ppFactory);
   LogStartup("CreateDXGIFactory1: Original returned");
+  if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
+    *ppFactory = new WrappedIDXGIFactory(static_cast<IDXGIFactory*>(*ppFactory));
+    LogStartup("Factory1 Wrapped");
+  }
   return hr;
 }
 
@@ -262,6 +270,10 @@ HRESULT WINAPI CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppFactory) {
   LogStartup("CreateDXGIFactory2: Calling original");
   HRESULT hr = g_ProxyState.pfnCreateDXGIFactory2(Flags, riid, ppFactory);
   LogStartup("CreateDXGIFactory2: Original returned");
+  if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
+    *ppFactory = new WrappedIDXGIFactory(static_cast<IDXGIFactory*>(*ppFactory));
+    LogStartup("Factory2 Wrapped");
+  }
   return hr;
 }
 

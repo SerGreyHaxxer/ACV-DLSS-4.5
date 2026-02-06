@@ -192,12 +192,21 @@ static void InstallPresentHook(IDXGISwapChain *pSwapChain) {
   if (!pSwapChain)
     return;
 
-  // IDXGISwapChain::Present is VTable index 8
+  // Direct vtable pointer swap — modifies a data pointer, NOT executable code.
+  // Much stealthier than MinHook inline hooks: anti-cheat monitors code sections
+  // for JMP patches, but vtable pointers live in data sections.
+  // Pointer-sized writes on x64 are naturally atomic.
   void **vt = *reinterpret_cast<void***>(pSwapChain);
-  HookManager::Get().Initialize();
-  (void)HookManager::Get().CreateHook(
-      vt[8], reinterpret_cast<void*>(HookedPresent), &g_OrigPresent);
-  LOG_INFO("[HOOK] IDXGISwapChain::Present hook installed");
+  DWORD oldProtect;
+  if (VirtualProtect(&vt[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+    g_OrigPresent = reinterpret_cast<PFN_Present>(vt[8]);
+    vt[8] = reinterpret_cast<void*>(HookedPresent);
+    VirtualProtect(&vt[8], sizeof(void*), oldProtect, &oldProtect);
+    LOG_INFO("[HOOK] IDXGISwapChain::Present hook installed (vtable swap)");
+  } else {
+    LOG_ERROR("[HOOK] Failed to VirtualProtect Present vtable entry");
+    installed.store(false); // allow retry
+  }
 }
 
 void StartFrameTimer() {
@@ -395,6 +404,18 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChainForCoreWindow(
   ComPtr<IDXGIFactory2> f;
   if (FAILED(m_pReal->QueryInterface(IID_PPV_ARGS(&f))))
     return E_NOINTERFACE;
+
+  // Extract command queue + device for Streamline initialization
+  ComPtr<ID3D12CommandQueue> pQueue;
+  if (pD && SUCCEEDED(pD->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
+    StreamlineIntegration::Get().SetCommandQueue(pQueue.Get());
+    g_pRealCommandQueue = pQueue;
+    ComPtr<ID3D12Device> pD3DDevice;
+    if (SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&pD3DDevice)))) {
+      StreamlineIntegration::Get().Initialize(pD3DDevice.Get());
+    }
+  }
+
   HRESULT hr = f->CreateSwapChainForCoreWindow(pD, w, d, o, s);
   if (SUCCEEDED(hr) && s && *s) {
     {
@@ -457,6 +478,18 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChainForComposition(
   ComPtr<IDXGIFactory2> f;
   if (FAILED(m_pReal->QueryInterface(IID_PPV_ARGS(&f))))
     return E_NOINTERFACE;
+
+  // Extract command queue + device for Streamline initialization
+  ComPtr<ID3D12CommandQueue> pQueue;
+  if (pD && SUCCEEDED(pD->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
+    StreamlineIntegration::Get().SetCommandQueue(pQueue.Get());
+    g_pRealCommandQueue = pQueue;
+    ComPtr<ID3D12Device> pD3DDevice;
+    if (SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&pD3DDevice)))) {
+      StreamlineIntegration::Get().Initialize(pD3DDevice.Get());
+    }
+  }
+
   HRESULT hr = f->CreateSwapChainForComposition(pD, d, o, s);
   if (SUCCEEDED(hr) && s && *s) {
     {

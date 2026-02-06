@@ -523,31 +523,18 @@ void EnsureD3D12VTableHooks(ID3D12Device *pDevice) {
     return;
   if (s_deviceHooked.exchange(true))
     return;
-    // ====================================================================
-    // STEALTHY MODE: Minimal hook set — only what DLSS 4.5 absolutely needs.
-    // Removed: CreateCommandList, CreatePlacedResource, CreateSRV, CreateUAV
-    // Kept: CreateCommandQueue (SL needs queue), CreateCommittedResource
-    //       (resource detection), CreateRTV/DSV (strongest detection signals)
-    // ====================================================================
-    void **vt = GetVTable(pDevice);
-    (void)HookManager::Get().CreateHook(
-        GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateCommandQueue),
-        reinterpret_cast<void*>(Hooked_CreateCommandQueue),
-        &g_OriginalCreateCommandQueue);
-    (void)HookManager::Get().CreateHook(
-        GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateCommittedResource),
-        reinterpret_cast<void*>(Hooked_CreateCommittedResource),
-        &g_OriginalCreateCommittedResource);
-    // RTV/DSV creation — low-frequency, strongest resource identification signals
-    (void)HookManager::Get().CreateHook(
-        GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateRenderTargetView),
-        reinterpret_cast<void*>(HookedCreateRenderTargetView),
-        &g_OriginalCreateRTV);
-    (void)HookManager::Get().CreateHook(
-        GetVTableEntry<void*, vtable::Device>(vt, vtable::Device::CreateDepthStencilView),
-        reinterpret_cast<void*>(HookedCreateDepthStencilView),
-        &g_OriginalCreateDSV);
-    LOG_INFO("[HOOK] Stealth D3D12 Device hooks installed (Queue, CommittedRes, RTV, DSV)");
+  // Stealth mode: NO vtable hooks on the device.
+  // All D3D12 inline/vtable hooks removed to prevent EasyAntiCheat detection.
+  // Device hooks (CreateCommandQueue, CreateCommittedResource, CreateRTV,
+  // CreateDSV) previously caused access violations when EAC detected the
+  // code modifications and corrupted game state.
+  //
+  // Resource detection now relies on:
+  //   - Backbuffer from swap chain (color)
+  //   - Streamline internal resource management
+  //   - Jitter from pattern scan
+  StreamlineIntegration::Get().Initialize(pDevice);
+  LOG_INFO("[HOOK] Device registered (stealth — no vtable hooks)");
 }
 
 void WrapCreatedD3D12Device(REFIID /*riid*/, void **ppDevice, bool /*takeOwnership*/) {
@@ -588,16 +575,15 @@ void InstallD3D12Hooks() {
   static std::atomic<bool> installed(false);
   if (installed.exchange(true))
     return;
+  // Stealth mode: Only initialize MinHook framework.
+  // NO inline hooks on D3D12 functions — these trigger EasyAntiCheat detection
+  // and cause access violations (0xC0000005) when EAC corrupts game state.
+  //
+  // The device and command queue are obtained safely through DXGI factory
+  // wrapping (WrappedIDXGIFactory::CreateSwapChain extracts the queue).
+  // Present hook uses direct vtable pointer swap (data-only, no code patching).
   HookManager::Get().Initialize();
-  HMODULE hD3D12 = GetModuleHandleW(L"d3d12.dll");
-  if (hD3D12) {
-    void *target = GetProcAddress(hD3D12, "D3D12CreateDevice");
-    if (target)
-      (void)HookManager::Get().CreateHook(
-          target, reinterpret_cast<void *>(Hooked_D3D12CreateDevice),
-          &g_OriginalD3D12CreateDevice);
-  }
-  // Note: GetProcAddress hook disabled - too aggressive
+  LOG_INFO("[HOOK] MinHook initialized (stealth mode — no D3D12 inline hooks)");
 }
 bool InitializeHooks() { return true; }
 void CleanupHooks() {
