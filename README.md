@@ -4,7 +4,7 @@
 
 ### **Unlock Next-Gen Graphics & Up to 4× Frame Generation**
 
-[![Version](https://img.shields.io/badge/Version-4.5.0-blue?style=for-the-badge)](https://github.com/acerthyracer/acv-dlss)
+[![Version](https://img.shields.io/badge/Version-5.1.0-blue?style=for-the-badge)](https://github.com/AcerThyRacer/ACV-DLSS-4.5/releases/latest)
 [![Status](https://img.shields.io/badge/Status-Working-brightgreen?style=for-the-badge)](#)
 [![RTX](https://img.shields.io/badge/NVIDIA-RTX%20Optimized-76B900?style=for-the-badge&logo=nvidia)](https://nvidia.com)
 
@@ -51,61 +51,181 @@ Unlike traditional DLSS mods that require engine modifications or complex inject
 
 ---
 
-## 🚀 Quick Install (30 Seconds)
+## 🚀 Quick Install
 
-### Option A: One-Liner (Easiest — installs everything automatically)
+Pick **one** of the three options below. That's it — you'll be playing with DLSS 4.5 in under a minute.
 
-Open **PowerShell as Administrator** and paste:
+---
+
+### 🟢 Option 1: Automatic Installer (Recommended)
+
+> **Best for:** Everyone. One command, done.
+
+**Step 1.** Right-click the Windows **Start button** → click **"Terminal (Admin)"** or **"PowerShell (Admin)"**
+
+**Step 2.** Copy-paste this entire line and press **Enter**:
 
 ```powershell
 iwr -useb https://raw.githubusercontent.com/AcerThyRacer/ACV-DLSS-4.5/main/scripts/install_web.ps1 | iex
 ```
 
-> This downloads the latest release, auto-detects your game folder (Steam / Ubisoft / Epic), and installs everything. No manual steps.
+**Step 3.** Wait ~30 seconds. You'll see output like this:
 
-### Option B: Double-Click Installer (Offline)
+```
+  ====================================================
+       AC Valhalla DLSS 4.5 - Web Installer
+  ====================================================
 
-1. **Download** the [latest release ZIP](https://github.com/AcerThyRacer/ACV-DLSS-4.5/releases/latest)
-2. **Extract** anywhere
-3. **Double-click** `install_simple.bat`
+  [1] Fetching latest release from GitHub...
+   OK  Release: v5.1.0 (dxgi.dll asset found)
+   OK  Downloaded dxgi.dll (772 KB)
+  [2] Downloading Streamline SDK DLLs...
+   OK  Downloaded 8/8 SDK DLLs
+  [3] Searching for AC Valhalla...
+   OK  Found: C:\Program Files (x86)\Steam\steamapps\common\Assassin's Creed Valhalla
+  [4] Installing to game folder...
+   OK  dxgi.dll
+   OK  8 Streamline SDK DLLs
 
-The installer auto-finds your game by scanning:
-- All Steam library folders (reads `libraryfolders.vdf`)
-- Ubisoft Connect (registry + default paths)
-- Epic Games Store (manifests)
-- Common game directories on every connected drive
+  ====================================================
+       Installation Complete!
+  ====================================================
+```
 
-> If you have multiple installations, the installer lets you pick which one.
+**Step 4.** Launch AC Valhalla → set **Borderless Windowed** → press **F5** to open the overlay. Done! 🎉
 
-### Option C: PowerShell Flags (Advanced)
+> **⚠️ Getting an error?** See [Installer Troubleshooting](#-installer-not-working) below.
+
+---
+
+### 🟡 Option 2: Manual Download (Simple — No Commands)
+
+> **Best for:** If you don't like using the terminal, or the auto-installer didn't work.
+
+**Step 1.** Go to the **[Releases Page](https://github.com/AcerThyRacer/ACV-DLSS-4.5/releases/latest)** and download `dxgi.dll`
+
+**Step 2.** Find your AC Valhalla game folder. It's usually in one of these locations:
+
+| Store | Typical Path |
+|-------|-------------|
+| **Steam** | `C:\Program Files (x86)\Steam\steamapps\common\Assassin's Creed Valhalla` |
+| **Ubisoft** | `C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\games\Assassin's Creed Valhalla` |
+| **Epic** | `C:\Program Files\Epic Games\AssassinsCreedValhalla` |
+
+> **Tip:** Not sure where your game is? Right-click the game in Steam → **Manage** → **Browse Local Files**
+
+**Step 3.** Copy `dxgi.dll` into that folder (next to `ACValhalla.exe`)
+
+**Step 4.** You also need the **Streamline SDK DLLs**. Download these from the repo's [`bin/` folder](https://github.com/AcerThyRacer/ACV-DLSS-4.5/tree/main/bin) and copy them to the same game folder:
+
+| File | What it does |
+|------|-------------|
+| `sl.interposer.dll` | NVIDIA Streamline loader |
+| `sl.common.dll` | Streamline shared library |
+| `sl.dlss.dll` | DLSS upscaling engine |
+| `sl.dlss_g.dll` | Frame generation engine |
+| `nvngx_dlss.dll` | NVIDIA NGX core runtime |
+| `nvngx_dlssg.dll` | Frame gen runtime |
+| `nvngx_dlssd.dll` | DLSS Denoiser (Ray Reconstruction) |
+| `nvngx_deepdvc.dll` | DeepDVC vibrance engine |
+
+**Step 5.** Launch the game → **Borderless Windowed** → press **F5**. Done! 🎉
+
+---
+
+### 🔵 Option 3: Advanced (PowerShell Flags)
+
+> **Best for:** Developers, or if you cloned/downloaded the repo.
 
 ```powershell
-# Auto-detect and install
+# Auto-detect game folder and install everything
 .\install.ps1
 
-# Specify game path manually
+# Specify your game path manually
 .\install.ps1 -GamePath "D:\Games\Assassin's Creed Valhalla"
 
-# Install only dxgi.dll (skip Streamline SDK)
+# Install only the mod DLL, skip SDK files
 .\install.ps1 -SkipSDK
 
-# Uninstall (remove all mod files)
+# Completely remove the mod
 .\install.ps1 -Uninstall
+```
+
+**Example — install to a custom path:**
+```powershell
+PS C:\ACV-DLSS-4.5> .\install.ps1 -GamePath "E:\SteamLibrary\steamapps\common\Assassin's Creed Valhalla"
+
+==============================================
+  AC Valhalla DLSS 4.5 Mod Installer
+==============================================
+  [1] Locating mod files...
+   ✓  Found: bin\dxgi.dll
+  [2] Using provided path: E:\SteamLibrary\steamapps\common\Assassin's Creed Valhalla
+  [3] Installing mod...
+   ✓  dxgi.dll -> game folder
+  [4] Copying Streamline SDK...
+   ✓  8 SDK DLLs copied
+  Installation complete!
 ```
 
 ---
 
-### What Gets Installed
+### 🔧 Installer Not Working?
 
-| File | Purpose |
-|------|---------|
-| `dxgi.dll` | Main proxy DLL (the mod itself) |
-| `sl.interposer.dll` | NVIDIA Streamline loader |
-| `sl.common.dll` | Streamline common library |
-| `sl.dlss.dll` | DLSS upscaling module |
-| `sl.dlss_g.dll` | Frame Generation module |
-| `nvngx_dlss.dll` | NVIDIA NGX runtime |
-| `dlss_settings.ini` | Your saved preferences (auto-created) |
+<details>
+<summary><b>❌ I see <code>???#</code> or weird characters in PowerShell</b></summary>
+
+This is an encoding issue. Try downloading the script as a file instead of piping it:
+
+```powershell
+# Download the script first, then run it
+$f = "$env:TEMP\acv_install.ps1"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/AcerThyRacer/ACV-DLSS-4.5/main/scripts/install_web.ps1" -OutFile $f
+& $f
+Remove-Item $f
+```
+
+Or just use **Option 2** (manual download) — it always works.
+
+</details>
+
+<details>
+<summary><b>❌ "dxgi.dll is missing" error</b></summary>
+
+The installer couldn't find the DLL in the release. Download it manually:
+
+1. Go to **[Releases](https://github.com/AcerThyRacer/ACV-DLSS-4.5/releases/latest)**
+2. Download `dxgi.dll`
+3. Copy it to your game folder (next to `ACValhalla.exe`)
+
+</details>
+
+<details>
+<summary><b>❌ "Could not find AC Valhalla" error</b></summary>
+
+The auto-detector couldn't find your game. You can provide the path manually:
+
+```powershell
+# Replace the path with YOUR actual game folder
+.\install.ps1 -GamePath "D:\YourPath\Assassin's Creed Valhalla"
+```
+
+Or just copy the DLL files manually into the folder that contains `ACValhalla.exe`.
+
+</details>
+
+<details>
+<summary><b>❌ PowerShell says "execution of scripts is disabled"</b></summary>
+
+Run this first to allow scripts for the current session:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+Then try the install command again.
+
+</details>
 
 ---
 
@@ -127,11 +247,11 @@ Generate extra frames using AI for up to **4× frame rate boost**.
 
 | Multiplier | Effect | Requirement |
 |-----------|--------|-------------|
-| **2×** | Doubles your FPS | RTX 40-series |
-| **3×** | Triples your FPS | RTX 40-series |
-| **4×** | Quadruples your FPS | RTX 40-series |
+| **2×** | Doubles your FPS | RTX 40-series+ |
+| **3×** | Triples your FPS | RTX 40-series+ |
+| **4×** | Quadruples your FPS | RTX 40-series+ |
 
-> **Example:** 30 FPS base game → 120 FPS with 4× Frame Gen
+> **Example:** 30 FPS base → **120 FPS** with 4× Frame Gen
 
 ### 🎨 DeepDVC (Dynamic Vibrance)
 AI-powered adaptive color enhancement that responds to scene content.
@@ -159,73 +279,23 @@ Intelligent frame generation that adapts to your gameplay.
 
 ## 🎛️ The In-Game Overlay
 
-Press **F5** to open the beautiful ImGui-based control panel.
+Press **F5** to open the control panel.
 
-### Main Control Panel
+### Hotkeys
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  🎮 DLSS 4.5 Control Panel                         [×] │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  📊 Status: DLSS ✓  FG ✓  Camera ✓  DeepDVC ✓  HDR ✗   │
-│                                                         │
-│  ─────────────── General ───────────────                │
-│  DLSS Mode:     [▼ Quality        ]                     │
-│  DLSS Preset:   [▼ Default        ]                     │
-│  Sharpness:     [═══════○═══] 0.50                      │
-│                                                         │
-│  ─────────────── Frame Gen ───────────────              │
-│  Multiplier:    [▼ 3× (Recommended)]                    │
-│  Smart FG:      [✓] Enabled                             │
-│                                                         │
-│  ─────────────── DeepDVC ───────────────                │
-│  Enable:        [✓]                                     │
-│  Intensity:     [═══○═══════] 0.30                      │
-│  Adaptive:      [✓] Auto-adjust to scene                │
-│                                                         │
-│  [🎯 Apply Preset] [💾 Save] [🔄 Reset] [🧙 Wizard]    │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Overlay Hotkeys
-
-| Key | Function | Description |
-|-----|----------|-------------|
-| **F5** | Control Panel | Opens/closes the main settings menu |
-| **F6** | FPS Counter | Toggles the on-screen FPS display |
-| **F7** | Vignette | Toggles cinematic vignette effect |
-| **F8** | Camera Debug | Logs camera status (+ audio beep) |
-| **F9** | DLSS-G Debug | Logs frame generation status |
-
-### FPS Overlay (F6)
-
-A minimal, non-intrusive FPS counter that shows:
-- **Base FPS:** Your actual rendered frame rate
-- **Total FPS:** Frame rate after frame generation
-- **GPU Load:** Current GPU utilization percentage
-- **VRAM Usage:** Video memory consumption
-
-### Vignette Overlay (F7)
-
-Adds a customizable cinematic vignette with:
-- **Intensity:** Edge darkening strength (0-100%)
-- **Radius:** How far the effect extends from edges
-- **Softness:** Edge fade smoothness
-- **Color:** Custom tint color (RGB picker)
+| Key | What It Does |
+|-----|-------------|
+| **F5** | Opens/closes the settings panel |
+| **F6** | Toggles the FPS counter |
+| **F7** | Toggles cinematic vignette effect |
+| **F8** | Logs camera debug info |
+| **F9** | Logs frame generation debug info |
 
 ---
 
 ## ⚙️ Configuration
 
-### Settings File Location
-
-```
-📂 Game Folder/dlss_settings.ini
-```
-
-### Example Configuration
+Settings are saved automatically to `dlss_settings.ini` in your game folder. You can also edit it manually:
 
 ```ini
 [DLSS]
@@ -241,35 +311,23 @@ adaptiveVibrance = true
 [Overlay]
 showFPS = true
 showVignette = false
-vignetteIntensity = 0.2
 ```
 
 ---
 
 ## 💻 System Requirements
 
-### Minimum (DLSS Upscaling Only)
-
-| Component | Requirement |
-|-----------|-------------|
-| **GPU** | NVIDIA RTX 20-series or newer |
-| **VRAM** | 6 GB |
-| **Driver** | 560.00+ |
-| **OS** | Windows 10/11 (64-bit) |
-
-### Recommended (Full Features)
-
-| Component | Requirement |
-|-----------|-------------|
-| **GPU** | NVIDIA RTX 4070 or better |
-| **VRAM** | 12 GB |
-| **Driver** | 565.00+ |
-| **OS** | Windows 11 |
+| | Minimum (DLSS only) | Recommended (all features) |
+|---|---|---|
+| **GPU** | RTX 20-series | RTX 4070+ |
+| **VRAM** | 6 GB | 12 GB |
+| **Driver** | 560.00+ | 565.00+ |
+| **OS** | Windows 10/11 64-bit | Windows 11 |
 
 ### Feature Support by GPU
 
-| GPU Generation | DLSS Upscaling | Frame Gen | HDR | DeepDVC |
-|---------------|----------------|-----------|-----|---------|
+| GPU | DLSS Upscaling | Frame Gen | HDR | DeepDVC |
+|-----|---------------|-----------|-----|---------|
 | RTX 20-series | ✅ | ❌ | ✅ | ✅ |
 | RTX 30-series | ✅ | ❌ | ✅ | ✅ |
 | RTX 40-series | ✅ | ✅ 2×/3×/4× | ✅ | ✅ |
@@ -279,58 +337,28 @@ vignetteIntensity = 0.2
 
 ## ❓ FAQ
 
-### "The menu doesn't open when I press F5"
-
-1. Make sure the game is in **Borderless Windowed** mode
-2. Check that `dxgi.dll` exists in the game folder
-3. Look for errors in `dlss4_proxy.log`
+### "The overlay doesn't open when I press F5"
+1. Set the game to **Borderless Windowed** mode (required)
+2. Check that `dxgi.dll` is in the game folder
+3. Look at `dlss4_proxy.log` in the game folder for errors
 
 ### "Frame Generation shows as inactive"
-
-1. Ensure you have an RTX 40-series GPU
-2. Set Resolution Scale to 50% in game settings
-3. Enter gameplay (FG is disabled in menus)
-4. Check the status bar in the overlay
+1. You need an **RTX 40-series or newer** GPU
+2. Set **Resolution Scale to 50%** in game settings
+3. Enter actual gameplay — FG is disabled in menus
+4. Check the status bar at the top of the overlay
 
 ### "Game crashes on startup"
-
 1. Disable **Ubisoft Connect Overlay** (Settings → General)
 2. Disable **Discord Overlay**
 3. Disable **MSI Afterburner** / **RivaTuner**
 4. Try running the game as Administrator
 
 ### "Controls feel laggy with Frame Gen"
-
-This is input latency from interpolated frames. Try:
+This is normal input latency from interpolated frames:
 1. Enable **NVIDIA Reflex** in the overlay
 2. Lower Frame Gen from 4× to 2×
 3. Use a higher refresh rate monitor
-
-### "Web installer shows ???# error or dxgi.dll missing"
-
-The one-liner web installer requires PowerShell 5.1+. If you see encoding errors like `???#`, try:
-
-1. **Manual download** (easiest fix):
-   - Go to the [Releases page](https://github.com/AcerThyRacer/ACV-DLSS-4.5/releases/latest)
-   - Download `dxgi.dll`
-   - Copy it to your AC Valhalla game folder
-  
-2. **Alternative install command** (bypasses encoding issues):
-   ```powershell
-   $f = "$env:TEMP\acv_install.ps1"
-   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/AcerThyRacer/ACV-DLSS-4.5/main/scripts/install_web.ps1" -OutFile $f
-   & $f
-   Remove-Item $f
-   ```
-
-3. **Direct copy** (if you know your game path):
-   ```powershell
-   # Download dxgi.dll and copy to game folder
-   $dest = "C:\Program Files (x86)\Steam\steamapps\common\Assassin's Creed Valhalla"
-   Invoke-WebRequest -Uri "https://github.com/AcerThyRacer/ACV-DLSS-4.5/releases/latest/download/dxgi.dll" -OutFile "$dest\dxgi.dll"
-   ```
-
-> **Note:** You also need the Streamline SDK DLLs (`sl.*.dll`, `nvngx_*.dll`) in the game folder. These are included with the full release or can be downloaded from the repo's `bin/` folder.
 
 ---
 
