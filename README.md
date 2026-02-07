@@ -306,6 +306,32 @@ This is input latency from interpolated frames. Try:
 2. Lower Frame Gen from 4× to 2×
 3. Use a higher refresh rate monitor
 
+### "Web installer shows ???# error or dxgi.dll missing"
+
+The one-liner web installer requires PowerShell 5.1+. If you see encoding errors like `???#`, try:
+
+1. **Manual download** (easiest fix):
+   - Go to the [Releases page](https://github.com/AcerThyRacer/ACV-DLSS-4.5/releases/latest)
+   - Download `dxgi.dll`
+   - Copy it to your AC Valhalla game folder
+  
+2. **Alternative install command** (bypasses encoding issues):
+   ```powershell
+   $f = "$env:TEMP\acv_install.ps1"
+   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/AcerThyRacer/ACV-DLSS-4.5/main/scripts/install_web.ps1" -OutFile $f
+   & $f
+   Remove-Item $f
+   ```
+
+3. **Direct copy** (if you know your game path):
+   ```powershell
+   # Download dxgi.dll and copy to game folder
+   $dest = "C:\Program Files (x86)\Steam\steamapps\common\Assassin's Creed Valhalla"
+   Invoke-WebRequest -Uri "https://github.com/AcerThyRacer/ACV-DLSS-4.5/releases/latest/download/dxgi.dll" -OutFile "$dest\dxgi.dll"
+   ```
+
+> **Note:** You also need the Streamline SDK DLLs (`sl.*.dll`, `nvngx_*.dll`) in the game folder. These are included with the full release or can be downloaded from the repo's `bin/` folder.
+
 ---
 
 ## 🔨 Building from Source
@@ -375,16 +401,27 @@ Delete these files from the game folder:
 
 ## 📜 Changelog
 
-### v4.5.0 (Current)
-- ✨ Added 4× Frame Generation support
+### v5.1.0 (Current)
+- 🎮 New ButtonGroup widget for discrete value selection (pill buttons)
+- 🧙 Full 5-step Setup Wizard (GPU detection, DLSS, FG, DVC, HDR)
+- 🔧 Reworked Frame Gen, DeepDVC, HDR, and Ray Reconstruction sections
+- 🐛 Fixed slider format strings showing raw `%.0f` instead of values
+- 🐛 Fixed panel width cutoff (720px → 1000px)
+- 🐛 Fixed status dots always showing red
+- 🐛 Fixed duplicate mode/preset sliders
+- 🐛 Fixed web installer BOM encoding error and missing DLL download
+- ⚡ Thread-safety improvements and C++26 polyfill refinements
+
+### v5.0.0
+- ✨ Zero-stutter ghost hooks with Valhalla-themed UI
+- 🎨 F5 control panel, F6 FPS counter, F7 vignette
+- 🔧 Customizable overlay with drag, snap, and theming
+
+### v4.5.0
+- ✨ Added 4x Frame Generation support
 - 🎨 New ImGui overlay with live preview
 - 🔧 Automatic camera/motion vector detection
 - 🐛 Fixed resource tagging for DLSS-G activation
-
-### v4.0.0
-- Initial DLSS 4 support
-- DeepDVC integration
-- HDR output control
 
 ---
 
