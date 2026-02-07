@@ -4,7 +4,7 @@
 
 ### **Unlock Next-Gen Graphics & Up to 4× Frame Generation**
 
-[![Version](https://img.shields.io/badge/Version-5.1.0-blue?style=for-the-badge)](https://github.com/AcerThyRacer/ACV-DLSS-4.5/releases/latest)
+[![Version](https://img.shields.io/badge/Version-1.0.0--preview-blue?style=for-the-badge)](https://github.com/AcerThyRacer/ACV-DLSS-4.5/releases/latest)
 [![Status](https://img.shields.io/badge/Status-Working-brightgreen?style=for-the-badge)](#)
 [![RTX](https://img.shields.io/badge/NVIDIA-RTX%20Optimized-76B900?style=for-the-badge&logo=nvidia)](https://nvidia.com)
 
@@ -77,7 +77,7 @@ iwr -useb https://raw.githubusercontent.com/AcerThyRacer/ACV-DLSS-4.5/main/scrip
   ====================================================
 
   [1] Fetching latest release from GitHub...
-   OK  Release: v5.1.0 (dxgi.dll asset found)
+   OK  Release: v1.0.0-preview (dxgi.dll asset found)
    OK  Downloaded dxgi.dll (772 KB)
   [2] Downloading Streamline SDK DLLs...
    OK  Downloaded 11/11 SDK DLLs
@@ -434,7 +434,7 @@ Delete these files from the game folder:
 
 ## 📜 Changelog
 
-### v5.1.0 (Current)
+### v1.0.0-preview (Current)
 - 🎮 New ButtonGroup widget for discrete value selection (pill buttons)
 - 🧙 Full 5-step Setup Wizard (GPU detection, DLSS, FG, DVC, HDR)
 - 🔧 Reworked Frame Gen, DeepDVC, HDR, and Ray Reconstruction sections
@@ -442,19 +442,14 @@ Delete these files from the game folder:
 - 🐛 Fixed panel width cutoff (720px → 1000px)
 - 🐛 Fixed status dots always showing red
 - 🐛 Fixed duplicate mode/preset sliders
-- 🐛 Fixed web installer BOM encoding error and missing DLL download
+- 🐛 Fixed web installer SDK download (now uses release assets)
 - ⚡ Thread-safety improvements and C++26 polyfill refinements
-
-### v5.0.0
 - ✨ Zero-stutter ghost hooks with Valhalla-themed UI
 - 🎨 F5 control panel, F6 FPS counter, F7 vignette
 - 🔧 Customizable overlay with drag, snap, and theming
-
-### v4.5.0
-- ✨ Added 4x Frame Generation support
-- 🎨 New ImGui overlay with live preview
+- ✨ 4x Frame Generation support
+- 🎨 ImGui overlay with live preview
 - 🔧 Automatic camera/motion vector detection
-- 🐛 Fixed resource tagging for DLSS-G activation
 
 ---
 

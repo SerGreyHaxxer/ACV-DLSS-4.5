@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 project(acv-dlss
-    VERSION 5.1.0
+    VERSION 1.0.0
     DESCRIPTION "DLSS 4.5 DXGI Proxy for Assassin's Creed Valhalla"
     LANGUAGES CXX
 )
