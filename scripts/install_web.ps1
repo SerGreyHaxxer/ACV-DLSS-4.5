@@ -104,6 +104,9 @@ $slDlls = @(
     "sl.common.dll",
     "sl.dlss.dll",
     "sl.dlss_g.dll",
+    "sl.dlss_d.dll",
+    "sl.deepdvc.dll",
+    "sl.reflex.dll",
     "nvngx_dlss.dll",
     "nvngx_dlssg.dll",
     "nvngx_dlssd.dll",
@@ -141,11 +144,13 @@ $steamPaths = @(
 try {
     $reg = Get-ItemProperty "HKCU:\SOFTWARE\Valve\Steam" -ErrorAction SilentlyContinue
     if ($reg.SteamPath) { $steamPaths += $reg.SteamPath }
-} catch {}
+}
+catch {}
 try {
     $reg = Get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\Valve\Steam" -ErrorAction SilentlyContinue
     if ($reg.InstallPath) { $steamPaths += $reg.InstallPath }
-} catch {}
+}
+catch {}
 
 foreach ($steamRoot in ($steamPaths | Sort-Object -Unique)) {
     $vdfPath = "$steamRoot\steamapps\libraryfolders.vdf"
@@ -175,7 +180,8 @@ try {
             if ($candidates -notcontains $p) { $candidates += $p }
         }
     }
-} catch {}
+}
+catch {}
 
 # Method 3: Common paths on all drives
 $commonSubPaths = @(

@@ -80,12 +80,12 @@ iwr -useb https://raw.githubusercontent.com/AcerThyRacer/ACV-DLSS-4.5/main/scrip
    OK  Release: v5.1.0 (dxgi.dll asset found)
    OK  Downloaded dxgi.dll (772 KB)
   [2] Downloading Streamline SDK DLLs...
-   OK  Downloaded 8/8 SDK DLLs
+   OK  Downloaded 11/11 SDK DLLs
   [3] Searching for AC Valhalla...
    OK  Found: C:\Program Files (x86)\Steam\steamapps\common\Assassin's Creed Valhalla
   [4] Installing to game folder...
    OK  dxgi.dll
-   OK  8 Streamline SDK DLLs
+   OK  11 Streamline SDK DLLs
 
   ====================================================
        Installation Complete!
@@ -124,6 +124,9 @@ iwr -useb https://raw.githubusercontent.com/AcerThyRacer/ACV-DLSS-4.5/main/scrip
 | `sl.common.dll` | Streamline shared library |
 | `sl.dlss.dll` | DLSS upscaling engine |
 | `sl.dlss_g.dll` | Frame generation engine |
+| `sl.dlss_d.dll` | DLSS Denoiser plugin |
+| `sl.deepdvc.dll` | DeepDVC vibrance plugin |
+| `sl.reflex.dll` | NVIDIA Reflex plugin |
 | `nvngx_dlss.dll` | NVIDIA NGX core runtime |
 | `nvngx_dlssg.dll` | Frame gen runtime |
 | `nvngx_dlssd.dll` | DLSS Denoiser (Ray Reconstruction) |
@@ -164,7 +167,7 @@ PS C:\ACV-DLSS-4.5> .\install.ps1 -GamePath "E:\SteamLibrary\steamapps\common\As
   [3] Installing mod...
    ✓  dxgi.dll -> game folder
   [4] Copying Streamline SDK...
-   ✓  8 SDK DLLs copied
+   ✓  11 SDK DLLs copied
   Installation complete!
 ```
 
@@ -395,7 +398,7 @@ The script will:
 ### Manual Build
 
 ```powershell
-# Configure
+# Configure (replace generator with your VS version)
 cmake -B build -G "Visual Studio 17 2022" -A x64 `
   -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
 
@@ -404,6 +407,8 @@ cmake --build build --config Release
 
 # Output: build/Release/dxgi.dll
 ```
+
+> **Tip:** `build.ps1` auto-detects your installed Visual Studio version, so you don't need to specify the generator manually.
 
 ---
 

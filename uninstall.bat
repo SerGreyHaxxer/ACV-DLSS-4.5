@@ -34,10 +34,13 @@ if "%gamePath%"=="" (
 
 echo Target: "%gamePath%"
 echo Deleting files...
-del "%gamePath%\dxgi.dll" /q
-del "%gamePath%\sl.*.dll" /q
-del "%gamePath%\nvngx_*.dll" /q
-del "%gamePath%\dlss4_proxy.log" /q
+if exist "%gamePath%\dxgi.dll" del "%gamePath%\dxgi.dll" /q
+for %%f in ("%gamePath%\sl.*.dll") do del "%%f" /q
+for %%f in ("%gamePath%\nvngx_*.dll") do del "%%f" /q
+if exist "%gamePath%\dlss_settings.ini" del "%gamePath%\dlss_settings.ini" /q
+if exist "%gamePath%\dlss4_proxy.log" del "%gamePath%\dlss4_proxy.log" /q
+if exist "%gamePath%\dlss4_crash.log" del "%gamePath%\dlss4_crash.log" /q
+if exist "%gamePath%\startup_trace.log" del "%gamePath%\startup_trace.log" /q
 
 echo.
 echo [OK] Uninstallation Complete.

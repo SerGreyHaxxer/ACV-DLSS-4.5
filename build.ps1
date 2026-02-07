@@ -63,10 +63,26 @@ if (-not (Test-Path "build")) {
     New-Item -ItemType Directory -Path "build" | Out-Null
 }
 
-# Configure CMake
-Write-Host ""
-Write-Host "[BUILD] Configuring CMake..." -ForegroundColor Cyan
-$ConfigArgs = @("-B", "build", "-G", "Visual Studio 18 2026", "-A", "x64")
+# Detect installed Visual Studio version for the CMake generator
+$VSGenerator = $null
+$VSVersions = @(
+    @{ Path = "C:\Program Files\Microsoft Visual Studio\18"; Generator = "Visual Studio 18 2026" },
+    @{ Path = "C:\Program Files\Microsoft Visual Studio\2022"; Generator = "Visual Studio 17 2022" },
+    @{ Path = "C:\Program Files\Microsoft Visual Studio\2019"; Generator = "Visual Studio 16 2019" }
+)
+foreach ($vs in $VSVersions) {
+    if (Test-Path $vs.Path) {
+        $VSGenerator = $vs.Generator
+        Write-Info "Detected: $($vs.Generator)"
+        break
+    }
+}
+if (-not $VSGenerator) {
+    $VSGenerator = "Visual Studio 17 2022"
+    Write-Warn "Could not detect VS version, defaulting to: $VSGenerator"
+}
+
+$ConfigArgs = @("-B", "build", "-G", $VSGenerator, "-A", "x64")
 if (Test-Path "$VcpkgRoot\scripts\buildsystems\vcpkg.cmake") {
     $ConfigArgs += "-DCMAKE_TOOLCHAIN_FILE=$VcpkgRoot\scripts\buildsystems\vcpkg.cmake"
     Write-Info "Using vcpkg from: $VcpkgRoot"
@@ -178,7 +194,10 @@ if ($Deploy) {
             "sl.interposer.dll",
             "sl.common.dll",
             "sl.dlss.dll",
-            "sl.dlss_g.dll"
+            "sl.dlss_g.dll",
+            "sl.dlss_d.dll",
+            "sl.deepdvc.dll",
+            "sl.reflex.dll"
         )
         
         foreach ($dll in $slDlls) {
