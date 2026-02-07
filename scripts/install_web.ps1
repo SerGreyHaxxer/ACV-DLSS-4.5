@@ -96,7 +96,7 @@ catch {
     }
 }
 
-# -- Step 2: Download Streamline SDK DLLs -------------------------------------
+# -- Step 2: Download Streamline SDK DLLs from release assets ------------------
 Write-Host "  [2] Downloading Streamline SDK DLLs..." -ForegroundColor Cyan
 
 $slDlls = @(
@@ -113,14 +113,26 @@ $slDlls = @(
     "nvngx_deepdvc.dll"
 )
 
-$baseRawUrl = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch/bin"
 $downloaded = 0
 $ProgressPreference = 'SilentlyContinue'
 
 foreach ($dll in $slDlls) {
     $destPath = Join-Path $TempDir $dll
+    $dlUrl = $null
+
+    # Try release asset first (most reliable)
+    if ($release) {
+        $asset = $release.assets | Where-Object { $_.name -eq $dll } | Select-Object -First 1
+        if ($asset) { $dlUrl = $asset.browser_download_url }
+    }
+
+    # Fallback to raw.githubusercontent.com
+    if (-not $dlUrl) {
+        $dlUrl = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch/bin/$dll"
+    }
+
     try {
-        Invoke-WebRequest -Uri "$baseRawUrl/$dll" -OutFile $destPath -UseBasicParsing
+        Invoke-WebRequest -Uri $dlUrl -OutFile $destPath -UseBasicParsing
         $downloaded++
     }
     catch {
