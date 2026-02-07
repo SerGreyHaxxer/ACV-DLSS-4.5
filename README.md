@@ -66,7 +66,7 @@ Pick **one** of the three options below. That's it — you'll be playing with DL
 **Step 2.** Copy-paste this entire line and press **Enter**:
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/AcerThyRacer/ACV-DLSS-4.5/main/scripts/install_web.ps1 | iex
+iwr -useb https://github.com/AcerThyRacer/ACV-DLSS-4.5/releases/download/v1.0.0-preview/install_web.ps1 | iex
 ```
 
 **Step 3.** Wait ~30 seconds. You'll see output like this:
