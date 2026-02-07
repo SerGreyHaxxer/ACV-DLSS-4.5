@@ -15,6 +15,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 #include "imgui_overlay.h"
+
+#include "auto_ui_generator.h" // Phase 1: Auto-UI
 #include "config_manager.h"
 #include "input_handler.h"
 #include "logger.h"
@@ -22,12 +24,13 @@
 #include "resource_detector.h"
 #include "sampler_interceptor.h"
 #include "streamline_integration.h"
-#include "auto_ui_generator.h" // Phase 1: Auto-UI
+
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <format>
 #include <limits>
-#include <cmath>
+
 
 // ============================================================================
 // NvAPI Metrics (reused from original — independent of GUI library)
@@ -60,8 +63,7 @@ struct NvApiMetrics {
 } g_nvapiMetrics;
 
 bool InitNvApi() {
-  if (g_nvapiMetrics.initialized)
-    return g_nvapiMetrics.hasGpu;
+  if (g_nvapiMetrics.initialized) return g_nvapiMetrics.hasGpu;
   g_nvapiMetrics.initialized = true;
   if (NvAPI_Initialize() != NVAPI_OK) return false;
   NvU32 gpuCount = 0;
@@ -69,8 +71,7 @@ bool InitNvApi() {
   if (NvAPI_EnumPhysicalGPUs(handles, &gpuCount) != NVAPI_OK || gpuCount == 0) return false;
   g_nvapiMetrics.gpu = handles[0];
   NvAPI_ShortString name{};
-  if (NvAPI_GPU_GetFullName(g_nvapiMetrics.gpu, name) == NVAPI_OK)
-    strncpy_s(g_nvapiMetrics.gpuName, name, _TRUNCATE);
+  if (NvAPI_GPU_GetFullName(g_nvapiMetrics.gpu, name) == NVAPI_OK) strncpy_s(g_nvapiMetrics.gpuName, name, _TRUNCATE);
   g_nvapiMetrics.hasGpu = true;
   return true;
 }
@@ -83,8 +84,8 @@ void EnsureDxgiName(ID3D12Device* device) {
   if (FAILED(dxgiDevice->GetAdapter(&adapter))) return;
   DXGI_ADAPTER_DESC desc{};
   if (FAILED(adapter->GetDesc(&desc))) return;
-  WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, g_nvapiMetrics.dxgiName,
-                      sizeof(g_nvapiMetrics.dxgiName), nullptr, nullptr);
+  WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, g_nvapiMetrics.dxgiName, sizeof(g_nvapiMetrics.dxgiName),
+                      nullptr, nullptr);
   g_nvapiMetrics.dxgiNameReady = true;
 }
 
@@ -161,8 +162,7 @@ void ImGuiOverlay::Initialize(IDXGISwapChain* swapChain) {
   if (m_initialized || !swapChain) return;
   m_shuttingDown.store(false, std::memory_order_release);
 
-  if (FAILED(swapChain->QueryInterface(__uuidof(IDXGISwapChain3), (void**)&m_swapChain)) || !m_swapChain)
-    return;
+  if (FAILED(swapChain->QueryInterface(__uuidof(IDXGISwapChain3), (void**)&m_swapChain)) || !m_swapChain) return;
 
   DXGI_SWAP_CHAIN_DESC desc{};
   if (FAILED(m_swapChain->GetDesc(&desc))) return;
@@ -238,8 +238,14 @@ void ImGuiOverlay::Shutdown() {
     m_prevWndProc = nullptr;
   }
 
-  if (m_device) { m_device->Release(); m_device = nullptr; }
-  if (m_swapChain) { m_swapChain->Release(); m_swapChain = nullptr; }
+  if (m_device) {
+    m_device->Release();
+    m_device = nullptr;
+  }
+  if (m_swapChain) {
+    m_swapChain->Release();
+    m_swapChain = nullptr;
+  }
   m_initialized = false;
   LOG_INFO("[ValhallaOverlay] Shutdown complete");
 }
@@ -261,14 +267,17 @@ LRESULT CALLBACK ImGuiOverlay::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam
   // Block mouse input from reaching the game when overlay is visible
   if (overlay.m_visible || overlay.m_showSetupWizard) {
     switch (msg) {
-      case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_RBUTTONDOWN: case WM_RBUTTONUP:
-      case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MOUSEMOVE:
-        return 0; // consume
+      case WM_LBUTTONDOWN:
+      case WM_LBUTTONUP:
+      case WM_RBUTTONDOWN:
+      case WM_RBUTTONUP:
+      case WM_MBUTTONDOWN:
+      case WM_MBUTTONUP:
+      case WM_MOUSEMOVE: return 0; // consume
     }
   }
 
-  if (overlay.m_prevWndProc)
-    return CallWindowProcW(overlay.m_prevWndProc, hwnd, msg, wParam, lParam);
+  if (overlay.m_prevWndProc) return CallWindowProcW(overlay.m_prevWndProc, hwnd, msg, wParam, lParam);
   return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
@@ -278,7 +287,8 @@ LRESULT CALLBACK ImGuiOverlay::OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam
 
 void ImGuiOverlay::OnResize(UINT width, UINT height) {
   if (width == 0 || height == 0) return; // Ignore zero-sized resize (minimized)
-  m_width = width; m_height = height;
+  m_width = width;
+  m_height = height;
   if (m_initialized) {
     m_renderer.OnResize();
     // Render targets were released — they will be recreated on the next
@@ -381,9 +391,13 @@ void ImGuiOverlay::ToggleVignette() {
   ConfigManager::Get().MarkDirty();
 }
 
-void ImGuiOverlay::ToggleDebugMode(bool enabled) { m_showDebug = enabled; }
+void ImGuiOverlay::ToggleDebugMode(bool enabled) {
+  m_showDebug = enabled;
+}
 
-void ImGuiOverlay::CaptureNextHotkey(int* target) { m_pendingHotkeyTarget = target; }
+void ImGuiOverlay::CaptureNextHotkey(int* target) {
+  m_pendingHotkeyTarget = target;
+}
 
 void ImGuiOverlay::UpdateControls() {
   ModConfig& cfg = ConfigManager::Get().Data();
@@ -402,10 +416,9 @@ void ImGuiOverlay::UpdateControls() {
   // Load accent color
   auto& cust = cfg.customization;
   m_accent = vtheme::rgba(cust.accentR, cust.accentG, cust.accentB, 1.0f);
-  m_accentBright = vtheme::rgba(
-    std::clamp(cust.accentR * 1.3f, 0.0f, 1.0f),
-    std::clamp(cust.accentG * 1.3f, 0.0f, 1.0f),
-    std::clamp(cust.accentB * 1.3f, 0.0f, 1.0f), 1.0f);
+  m_accentBright =
+      vtheme::rgba(std::clamp(cust.accentR * 1.3f, 0.0f, 1.0f), std::clamp(cust.accentG * 1.3f, 0.0f, 1.0f),
+                   std::clamp(cust.accentB * 1.3f, 0.0f, 1.0f), 1.0f);
   m_accentDim = vtheme::rgba(cust.accentR * 0.65f, cust.accentG * 0.65f, cust.accentB * 0.65f, 0.6f);
 
   // Load panel position if saved
@@ -421,25 +434,20 @@ float ImGuiOverlay::ComputeAnimProgress(float rawProgress, bool opening) const {
   auto animType = static_cast<AnimType>(ConfigManager::Get().Data().customization.animationType);
   float t = std::clamp(rawProgress, 0.0f, 1.0f);
   switch (animType) {
-    case AnimType::SlideLeft: case AnimType::SlideRight:
-    case AnimType::SlideTop: case AnimType::SlideBottom:
-      return opening ? vanim::EaseOutCubic(t) : vanim::EaseInCubic(t);
-    case AnimType::Fade:
-      return opening ? vanim::EaseOutQuint(t) : vanim::EaseInCubic(t);
-    case AnimType::Scale:
-      return opening ? vanim::EaseOutBack(t) : vanim::EaseInCubic(t);
-    case AnimType::Bounce:
-      return opening ? vanim::EaseBounce(t) : vanim::EaseInCubic(t);
-    case AnimType::Elastic:
-      return opening ? vanim::EaseElastic(t) : vanim::EaseInCubic(t);
-    default:
-      return opening ? vanim::EaseOutCubic(t) : vanim::EaseInCubic(t);
+    case AnimType::SlideLeft:
+    case AnimType::SlideRight:
+    case AnimType::SlideTop:
+    case AnimType::SlideBottom: return opening ? vanim::EaseOutCubic(t) : vanim::EaseInCubic(t);
+    case AnimType::Fade: return opening ? vanim::EaseOutQuint(t) : vanim::EaseInCubic(t);
+    case AnimType::Scale: return opening ? vanim::EaseOutBack(t) : vanim::EaseInCubic(t);
+    case AnimType::Bounce: return opening ? vanim::EaseBounce(t) : vanim::EaseInCubic(t);
+    case AnimType::Elastic: return opening ? vanim::EaseElastic(t) : vanim::EaseInCubic(t);
+    default: return opening ? vanim::EaseOutCubic(t) : vanim::EaseInCubic(t);
   }
 }
 
-void ImGuiOverlay::ComputePanelTransform(float progress, float screenW, float screenH,
-                                          float panelW, float panelH,
-                                          float& outX, float& outY, float& outAlpha, float& outScale) const {
+void ImGuiOverlay::ComputePanelTransform(float progress, float screenW, float screenH, float panelW, float panelH,
+                                         float& outX, float& outY, float& outAlpha, float& outScale) const {
   auto& cust = ConfigManager::Get().Data().customization;
   auto animType = static_cast<AnimType>(cust.animationType);
   float eased = ComputeAnimProgress(progress, m_panelSlide.opening);
@@ -512,8 +520,7 @@ void ImGuiOverlay::BuildBackgroundDim() {
   float progress = m_panelAlpha.current;
   if (progress < 0.01f) return;
   float dimAlpha = cust.backgroundDimAmount * progress;
-  m_renderer.FillRect(0, 0, static_cast<float>(m_width), static_cast<float>(m_height),
-                      vtheme::hex(0x000000, dimAlpha));
+  m_renderer.FillRect(0, 0, static_cast<float>(m_width), static_cast<float>(m_height), vtheme::hex(0x000000, dimAlpha));
 }
 
 void ImGuiOverlay::BuildPanelShadow(float x, float y, float w, float h, float alpha) {
@@ -542,10 +549,12 @@ void ImGuiOverlay::BuildMiniMode() {
 
   // Small accent dot
   m_renderer.DrawCircle(barX + 14, barY + barH * 0.5f, 3.0f, m_accent);
-  m_renderer.DrawTextA("DLSS", barX + 24, barY, 50.0f, barH, vtheme::kTextSecondary, 11.0f, ValhallaRenderer::TextAlign::Left, true);
+  m_renderer.DrawTextA("DLSS", barX + 24, barY, 50.0f, barH, vtheme::kTextSecondary, 11.0f,
+                       ValhallaRenderer::TextAlign::Left, true);
 
   std::string fpsStr = std::format("{:.0f}", m_smoothFPS);
-  m_renderer.DrawTextA(fpsStr.c_str(), barX + 80, barY, 50.0f, barH, vtheme::kTextPrimary, 13.0f, ValhallaRenderer::TextAlign::Right, true);
+  m_renderer.DrawTextA(fpsStr.c_str(), barX + 80, barY, 50.0f, barH, vtheme::kTextPrimary, 13.0f,
+                       ValhallaRenderer::TextAlign::Right, true);
 
   // Click to open
   if (hovered && m_input.mouseClicked) {
@@ -574,10 +583,8 @@ void ImGuiOverlay::BuildFPSOverlay() {
     fpsColor = vtheme::rgba(0.46f, 0.72f, 0.0f, opacity); // NVIDIA green — good
   } else if (m_smoothFPS >= 30.0f) {
     float t = (m_smoothFPS - 30.0f) / 25.0f;
-    fpsColor = vtheme::rgba(
-      vanim::Lerp(0.83f, 0.46f, t),
-      vanim::Lerp(0.69f, 0.72f, t),
-      vanim::Lerp(0.22f, 0.0f, t), opacity); // Gold to green
+    fpsColor = vtheme::rgba(vanim::Lerp(0.83f, 0.46f, t), vanim::Lerp(0.69f, 0.72f, t), vanim::Lerp(0.22f, 0.0f, t),
+                            opacity); // Gold to green
   } else {
     fpsColor = vtheme::rgba(0.97f, 0.32f, 0.29f, opacity); // Red — bad
   }
@@ -589,14 +596,30 @@ void ImGuiOverlay::BuildFPSOverlay() {
     float textH = 30.0f * scale;
     float x = 0, y = 0;
     switch (fpsPos) {
-      case FPSPosition::TopRight:    x = screenW - textW - 16; y = 16; break;
-      case FPSPosition::TopLeft:     x = 16; y = 16; break;
-      case FPSPosition::BottomRight: x = screenW - textW - 16; y = screenH - textH - 16; break;
-      case FPSPosition::BottomLeft:  x = 16; y = screenH - textH - 16; break;
-      default: x = screenW - textW - 16; y = 16; break;
+      case FPSPosition::TopRight:
+        x = screenW - textW - 16;
+        y = 16;
+        break;
+      case FPSPosition::TopLeft:
+        x = 16;
+        y = 16;
+        break;
+      case FPSPosition::BottomRight:
+        x = screenW - textW - 16;
+        y = screenH - textH - 16;
+        break;
+      case FPSPosition::BottomLeft:
+        x = 16;
+        y = screenH - textH - 16;
+        break;
+      default:
+        x = screenW - textW - 16;
+        y = 16;
+        break;
     }
     std::string fpsStr = std::format("{:.0f}", m_smoothFPS);
-    m_renderer.DrawTextA(fpsStr.c_str(), x, y, textW, textH, fpsColor, fontSize, ValhallaRenderer::TextAlign::Right, true);
+    m_renderer.DrawTextA(fpsStr.c_str(), x, y, textW, textH, fpsColor, fontSize, ValhallaRenderer::TextAlign::Right,
+                         true);
     return;
   }
 
@@ -606,11 +629,26 @@ void ImGuiOverlay::BuildFPSOverlay() {
   float margin = 16.0f;
   float x = 0, y = 0;
   switch (fpsPos) {
-    case FPSPosition::TopRight:    x = screenW - panelW - margin; y = margin; break;
-    case FPSPosition::TopLeft:     x = margin; y = margin; break;
-    case FPSPosition::BottomRight: x = screenW - panelW - margin; y = screenH - panelH - margin; break;
-    case FPSPosition::BottomLeft:  x = margin; y = screenH - panelH - margin; break;
-    default: x = screenW - panelW - margin; y = margin; break;
+    case FPSPosition::TopRight:
+      x = screenW - panelW - margin;
+      y = margin;
+      break;
+    case FPSPosition::TopLeft:
+      x = margin;
+      y = margin;
+      break;
+    case FPSPosition::BottomRight:
+      x = screenW - panelW - margin;
+      y = screenH - panelH - margin;
+      break;
+    case FPSPosition::BottomLeft:
+      x = margin;
+      y = screenH - panelH - margin;
+      break;
+    default:
+      x = screenW - panelW - margin;
+      y = margin;
+      break;
   }
 
   // Norse-inspired dark panel with gold accent border
@@ -635,19 +673,20 @@ void ImGuiOverlay::BuildFPSOverlay() {
   float fpsNumW = panelW - 30.0f * scale;
   float fpsNumH = 32.0f * scale;
   std::string fpsStr = std::format("{:.0f}", m_smoothFPS);
-  m_renderer.DrawTextA(fpsStr.c_str(), fpsNumX, fpsNumY, fpsNumW, fpsNumH,
-                       fpsColor, vtheme::kFontFPS * scale, ValhallaRenderer::TextAlign::Left, true);
+  m_renderer.DrawTextA(fpsStr.c_str(), fpsNumX, fpsNumY, fpsNumW, fpsNumH, fpsColor, vtheme::kFontFPS * scale,
+                       ValhallaRenderer::TextAlign::Left, true);
 
   // "FPS" label — muted gold, smaller
   D2D1_COLOR_F labelColor = vtheme::rgba(m_accent.r, m_accent.g, m_accent.b, 0.5f * opacity);
   float labelX = fpsNumX + m_renderer.MeasureTextA(fpsStr, vtheme::kFontFPS * scale, true).width + 4.0f * scale;
-  m_renderer.DrawTextA("FPS", labelX, fpsNumY + 10.0f * scale, 40.0f * scale, 20.0f * scale,
-                       labelColor, vtheme::kFontFPSLabel * scale, ValhallaRenderer::TextAlign::Left);
+  m_renderer.DrawTextA("FPS", labelX, fpsNumY + 10.0f * scale, 40.0f * scale, 20.0f * scale, labelColor,
+                       vtheme::kFontFPSLabel * scale, ValhallaRenderer::TextAlign::Left);
 
   if (fpsStyle == FPSStyle::Detailed) {
     // Thin separator
     float sepY = y + 48.0f * scale;
-    m_renderer.DrawLine(x + 10.0f * scale, sepY, x + panelW - 10.0f * scale, sepY, vtheme::hex(0x30363D, 0.4f * opacity), 1.0f);
+    m_renderer.DrawLine(x + 10.0f * scale, sepY, x + panelW - 10.0f * scale, sepY,
+                        vtheme::hex(0x30363D, 0.4f * opacity), 1.0f);
 
     // Frame time
     float frameMs = m_smoothFPS > 0.1f ? 1000.0f / m_smoothFPS : 0.0f;
@@ -681,8 +720,7 @@ void ImGuiOverlay::BuildVignette() {
   float screenW = static_cast<float>(m_width);
   float screenH = static_cast<float>(m_height);
 
-  m_renderer.DrawVignette(screenW, screenH,
-                          ui.vignetteColorR, ui.vignetteColorG, ui.vignetteColorB,
+  m_renderer.DrawVignette(screenW, screenH, ui.vignetteColorR, ui.vignetteColorG, ui.vignetteColorB,
                           ui.vignetteIntensity, ui.vignetteRadius, ui.vignetteSoftness);
 }
 
@@ -782,7 +820,8 @@ void ImGuiOverlay::SectionHeader(const char* label, bool* open) {
   textColor.r = vanim::Lerp(textColor.r, m_accentBright.r, hoverT * 0.3f);
   textColor.g = vanim::Lerp(textColor.g, m_accentBright.g, hoverT * 0.3f);
   textColor.b = vanim::Lerp(textColor.b, m_accentBright.b, hoverT * 0.3f);
-  m_renderer.DrawTextA(label, x + 24.0f, y, w - 32.0f, h, textColor, vtheme::kFontSection, ValhallaRenderer::TextAlign::Left, true);
+  m_renderer.DrawTextA(label, x + 24.0f, y, w - 32.0f, h, textColor, vtheme::kFontSection,
+                       ValhallaRenderer::TextAlign::Left, true);
 
   // Click to toggle
   if (hovered && m_input.mouseClicked) {
@@ -793,14 +832,17 @@ void ImGuiOverlay::SectionHeader(const char* label, bool* open) {
 }
 
 void ImGuiOverlay::Label(const char* text, const D2D1_COLOR_F& color) {
-  m_renderer.DrawTextA(text, m_cursorX + 4.0f, m_cursorY, m_contentWidth - 8.0f, vtheme::kWidgetHeight, color, vtheme::kFontBody);
+  m_renderer.DrawTextA(text, m_cursorX + 4.0f, m_cursorY, m_contentWidth - 8.0f, vtheme::kWidgetHeight, color,
+                       vtheme::kFontBody);
   m_cursorY += vtheme::kWidgetHeight;
 }
 
 void ImGuiOverlay::LabelValue(const char* label, const char* value) {
   float w = m_contentWidth;
-  m_renderer.DrawTextA(label, m_cursorX + 4.0f, m_cursorY, w * 0.55f, vtheme::kWidgetHeight, vtheme::kTextSecondary, vtheme::kFontSmall);
-  m_renderer.DrawTextA(value, m_cursorX + w * 0.55f, m_cursorY, w * 0.45f - 4.0f, vtheme::kWidgetHeight, vtheme::kTextPrimary, vtheme::kFontBody, ValhallaRenderer::TextAlign::Right);
+  m_renderer.DrawTextA(label, m_cursorX + 4.0f, m_cursorY, w * 0.55f, vtheme::kWidgetHeight, vtheme::kTextSecondary,
+                       vtheme::kFontSmall);
+  m_renderer.DrawTextA(value, m_cursorX + w * 0.55f, m_cursorY, w * 0.45f - 4.0f, vtheme::kWidgetHeight,
+                       vtheme::kTextPrimary, vtheme::kFontBody, ValhallaRenderer::TextAlign::Right);
   m_cursorY += vtheme::kWidgetHeight;
 }
 
@@ -821,7 +863,8 @@ void ImGuiOverlay::StatusDot(const char* label, const D2D1_COLOR_F& color) {
   m_renderer.DrawCircle(cx, cy, (dotR + 2.5f) * pulseScale, glow);
   m_renderer.DrawCircle(cx, cy, dotR * pulseScale, color);
 
-  m_renderer.DrawTextA(label, m_cursorX + dotR * 2 + 12.0f, m_cursorY, 100.0f, vtheme::kWidgetHeight, vtheme::kTextSecondary, vtheme::kFontSmall);
+  m_renderer.DrawTextA(label, m_cursorX + dotR * 2 + 12.0f, m_cursorY, 100.0f, vtheme::kWidgetHeight,
+                       vtheme::kTextSecondary, vtheme::kFontSmall);
 }
 
 void ImGuiOverlay::Spacing(float height) {
@@ -927,7 +970,10 @@ bool ImGuiOverlay::Checkbox(const char* label, bool* value, bool enabled) {
   // Track background — interpolate between off/on colors
   D2D1_COLOR_F trackOff = vtheme::hex(0x30363D, 1.0f);
   D2D1_COLOR_F trackOn = m_accent;
-  if (!enabled) { trackOff.a = 0.3f; trackOn.a = 0.3f; }
+  if (!enabled) {
+    trackOff.a = 0.3f;
+    trackOn.a = 0.3f;
+  }
   D2D1_COLOR_F trackColor;
   trackColor.r = vanim::Lerp(trackOff.r, trackOn.r, toggleT);
   trackColor.g = vanim::Lerp(trackOff.g, trackOn.g, toggleT);
@@ -967,38 +1013,76 @@ bool ImGuiOverlay::SliderFloat(const char* label, float* value, float vmin, floa
   float x = m_cursorX;
   float y = m_cursorY;
   float w = m_contentWidth;
-  float labelH = 20.0f;
+  float labelH = 22.0f;
 
-  // Label row — label left, value right
+  // --- Format the numeric value ---
   std::string valStr = std::vformat(fmt, std::make_format_args(*value));
-  D2D1_COLOR_F textColor = enabled ? vtheme::kTextSecondary : vtheme::hex(0x484F58, 1.0f);
-  m_renderer.DrawTextA(label, x + 4.0f, y, w * 0.65f, labelH, textColor, vtheme::kFontSmall);
-  m_renderer.DrawTextA(valStr.c_str(), x + w * 0.65f, y, w * 0.35f - 4.0f, labelH,
-                       enabled ? vtheme::kTextPrimary : vtheme::kTextSecondary, vtheme::kFontSmall, ValhallaRenderer::TextAlign::Right);
-  y += labelH;
 
-  // Track geometry
-  float trackH = 4.0f;
+  // --- Label row: label on left, value in accent pill on right ---
+  D2D1_COLOR_F labelColor = enabled ? vtheme::kTextSecondary : vtheme::hex(0x484F58, 1.0f);
+  m_renderer.DrawTextA(label, x + 4.0f, y, w * 0.60f, labelH, labelColor, vtheme::kFontBody);
+
+  // Value pill badge — accent-tinted background with bold white number
+  float pillFontSize = vtheme::kFontBody;
+  auto valSize = m_renderer.MeasureTextA(valStr, pillFontSize, true);
+  float pillW = valSize.width + 16.0f;
+  float pillH = 20.0f;
+  float pillX = x + w - pillW - 4.0f;
+  float pillY = y + (labelH - pillH) * 0.5f;
+
+  if (enabled) {
+    // Accent-tinted dark pill background
+    D2D1_COLOR_F pillBg = vtheme::rgba(m_accent.r * 0.15f, m_accent.g * 0.15f, m_accent.b * 0.15f, 0.85f);
+    m_renderer.FillRoundedRect(pillX, pillY, pillW, pillH, pillH * 0.5f, pillBg);
+    // Subtle accent border
+    D2D1_COLOR_F pillBorder = m_accent;
+    pillBorder.a = 0.35f;
+    m_renderer.OutlineRoundedRect(pillX, pillY, pillW, pillH, pillH * 0.5f, pillBorder, 1.0f);
+    // Value text in bold white
+    m_renderer.DrawTextA(valStr.c_str(), pillX, pillY, pillW, pillH, vtheme::kTextPrimary, pillFontSize,
+                         ValhallaRenderer::TextAlign::Center, true);
+  } else {
+    // Disabled: muted pill
+    m_renderer.FillRoundedRect(pillX, pillY, pillW, pillH, pillH * 0.5f, vtheme::hex(0x1C2128, 0.5f));
+    m_renderer.DrawTextA(valStr.c_str(), pillX, pillY, pillW, pillH, vtheme::hex(0x484F58, 1.0f), pillFontSize,
+                         ValhallaRenderer::TextAlign::Center);
+  }
+  y += labelH + 2.0f;
+
+  // --- Track geometry (thicker, more prominent) ---
+  float trackH = 6.0f;
   float trackX = x + 4.0f;
   float trackW = w - 8.0f;
-  float trackY = y + 6.0f;
+  float trackY = y + 4.0f;
 
   float t = (vmax > vmin) ? std::clamp((*value - vmin) / (vmax - vmin), 0.0f, 1.0f) : 0.0f;
   float grabCenterX = trackX + t * trackW;
 
-  // Track background (pill shape)
-  D2D1_COLOR_F trackBg = enabled ? vtheme::hex(0x21262D, 1.0f) : vtheme::hex(0x1C2128, 0.5f);
+  // Track background — rounded pill with subtle inner shadow
+  D2D1_COLOR_F trackBg = enabled ? vtheme::hex(0x161B22, 1.0f) : vtheme::hex(0x1C2128, 0.4f);
   m_renderer.FillRoundedRect(trackX, trackY, trackW, trackH, trackH * 0.5f, trackBg);
-
-  // Filled portion
-  if (t > 0.002f) {
-    D2D1_COLOR_F fillColor = enabled ? m_accent : vtheme::hex(0x30363D, 0.5f);
-    m_renderer.FillRoundedRect(trackX, trackY, t * trackW, trackH, trackH * 0.5f, fillColor);
+  // Inner shadow (thin dark line at top of track)
+  if (enabled) {
+    m_renderer.FillRect(trackX + 2.0f, trackY, trackW - 4.0f, 1.0f, vtheme::hex(0x010409, 0.3f));
   }
 
-  // Interaction
-  float hitPad = 10.0f;
-  bool trackHovered = enabled && PointInRect(m_input.mouseX, m_input.mouseY, trackX - 4.0f, trackY - hitPad, trackW + 8.0f, trackH + hitPad * 2.0f);
+  // Filled portion — accent gradient fill
+  float fillW = t * trackW;
+  if (fillW > 1.0f) {
+    D2D1_COLOR_F fillColor = enabled ? m_accent : vtheme::hex(0x30363D, 0.4f);
+    m_renderer.FillRoundedRect(trackX, trackY, fillW, trackH, trackH * 0.5f, fillColor);
+    // Bright highlight along top of fill
+    if (enabled && fillW > 4.0f) {
+      D2D1_COLOR_F highlight = m_accentBright;
+      highlight.a = 0.35f;
+      m_renderer.FillRect(trackX + 2.0f, trackY + 0.5f, fillW - 4.0f, 1.5f, highlight);
+    }
+  }
+
+  // --- Interaction ---
+  float hitPad = 12.0f;
+  bool trackHovered = enabled && PointInRect(m_input.mouseX, m_input.mouseY, trackX - 4.0f, trackY - hitPad,
+                                             trackW + 8.0f, trackH + hitPad * 2.0f);
 
   if (trackHovered && m_input.mouseClicked && enabled) {
     m_activeId = id;
@@ -1018,29 +1102,67 @@ bool ImGuiOverlay::SliderFloat(const char* label, float* value, float vmin, floa
     }
   }
 
-  // Grab handle — circle style
-  float grabR = 7.0f;
+  // --- Grab handle ---
+  float grabR = 8.0f;
   bool isDragging = (m_activeId == id);
-  bool grabHovered = enabled && PointInRect(m_input.mouseX, m_input.mouseY, grabCenterX - grabR - 2, trackY - grabR - 2, grabR * 2 + 4, grabR * 2 + 4);
+  bool grabHovered = enabled && PointInRect(m_input.mouseX, m_input.mouseY, grabCenterX - grabR - 4, trackY - grabR - 4,
+                                            grabR * 2 + 8, grabR * 2 + 8);
 
-  // Hover animation for grab
+  // Hover/drag animation
   float& hoverT = m_hoverAnim[id];
-  hoverT += ((grabHovered || isDragging) ? 1.0f : -1.0f) * (m_time - m_lastFrameTime) / vtheme::kAnimHoverDuration;
+  float dt = std::clamp(m_time - m_lastFrameTime, 0.0001f, 0.1f);
+  hoverT += ((grabHovered || isDragging) ? 1.0f : -1.0f) * dt / vtheme::kAnimHoverDuration;
   hoverT = std::clamp(hoverT, 0.0f, 1.0f);
 
-  float grabDrawR = vanim::Lerp(grabR - 1.0f, grabR, hoverT);
+  float grabDrawR = vanim::Lerp(grabR - 1.5f, grabR, hoverT);
   float grabCY = trackY + trackH * 0.5f;
-  D2D1_COLOR_F grabColor = enabled ? vtheme::hex(0xFFFFFF, 1.0f) : vtheme::hex(0x484F58, 1.0f);
-  m_renderer.DrawCircle(grabCenterX, grabCY, grabDrawR, grabColor);
 
-  // Accent ring on hover/drag
+  // Outer glow ring (visible on hover/drag)
   if (hoverT > 0.01f && enabled) {
-    D2D1_COLOR_F ring = m_accent;
-    ring.a = hoverT * 0.25f;
-    m_renderer.DrawCircle(grabCenterX, grabCY, grabDrawR + 4.0f, ring);
+    D2D1_COLOR_F glow = m_accent;
+    glow.a = hoverT * 0.2f;
+    m_renderer.DrawCircle(grabCenterX, grabCY, grabDrawR + 5.0f, glow);
   }
 
-  m_cursorY = y + 20.0f;
+  // Main grab circle — filled white with accent tint on drag
+  if (enabled) {
+    D2D1_COLOR_F grabOuter =
+        isDragging ? vtheme::rgba(vanim::Lerp(1.0f, m_accent.r, 0.3f), vanim::Lerp(1.0f, m_accent.g, 0.3f),
+                                  vanim::Lerp(1.0f, m_accent.b, 0.3f), 1.0f)
+                   : vtheme::hex(0xE6EDF3, 1.0f);
+    m_renderer.DrawCircle(grabCenterX, grabCY, grabDrawR, grabOuter);
+    // Inner highlight dot — gives a 3D convex look
+    D2D1_COLOR_F innerDot = vtheme::hex(0xFFFFFF, vanim::Lerp(0.5f, 0.8f, hoverT));
+    m_renderer.DrawCircle(grabCenterX - 1.5f, grabCY - 1.5f, grabDrawR * 0.35f, innerDot);
+  } else {
+    m_renderer.DrawCircle(grabCenterX, grabCY, grabDrawR - 1.0f, vtheme::hex(0x484F58, 0.8f));
+  }
+
+  // --- Floating tooltip during drag ---
+  if (isDragging && enabled) {
+    std::string tipStr = std::vformat(fmt, std::make_format_args(*value));
+    auto tipSize = m_renderer.MeasureTextA(tipStr, vtheme::kFontSmall, true);
+    float tipW = tipSize.width + 14.0f;
+    float tipH = 20.0f;
+    float tipX = grabCenterX - tipW * 0.5f;
+    float tipY = grabCY - grabDrawR - tipH - 6.0f;
+    // Clamp tooltip to stay within bounds
+    tipX = std::clamp(tipX, trackX, trackX + trackW - tipW);
+
+    // Tooltip background — dark pill
+    m_renderer.FillRoundedRect(tipX, tipY, tipW, tipH, 6.0f, vtheme::hex(0x0D1117, 0.95f));
+    m_renderer.OutlineRoundedRect(tipX, tipY, tipW, tipH, 6.0f, m_accentDim, 1.0f);
+    // Tooltip text
+    m_renderer.DrawTextA(tipStr.c_str(), tipX, tipY, tipW, tipH, vtheme::kTextPrimary, vtheme::kFontSmall,
+                         ValhallaRenderer::TextAlign::Center, true);
+    // Small downward triangle pointer
+    float triCx = grabCenterX;
+    float triTop = tipY + tipH;
+    m_renderer.DrawLine(triCx - 3.0f, triTop, triCx, triTop + 4.0f, vtheme::hex(0x0D1117, 0.95f), 2.0f);
+    m_renderer.DrawLine(triCx + 3.0f, triTop, triCx, triTop + 4.0f, vtheme::hex(0x0D1117, 0.95f), 2.0f);
+  }
+
+  m_cursorY = y + 22.0f;
   return changed;
 }
 
@@ -1082,8 +1204,8 @@ bool ImGuiOverlay::Combo(const char* label, int* selectedIndex, const char* cons
 
   // Current selection text
   const char* currentText = (*selectedIndex >= 0 && *selectedIndex < itemCount) ? items[*selectedIndex] : "---";
-  m_renderer.DrawTextA(currentText, x + 10.0f, y, w - 36.0f, h,
-                       enabled ? vtheme::kTextPrimary : vtheme::kTextSecondary, vtheme::kFontBody);
+  m_renderer.DrawTextA(currentText, x + 10.0f, y, w - 36.0f, h, enabled ? vtheme::kTextPrimary : vtheme::kTextSecondary,
+                       vtheme::kFontBody);
 
   // Dropdown chevron
   float arrowX = x + w - 18.0f;
@@ -1165,7 +1287,8 @@ bool ImGuiOverlay::ColorEdit3(const char* label, float* r, float* g, float* b) {
   m_renderer.FillRoundedRect(swatchX, swatchY, swatchSize, swatchSize, 4.0f, vtheme::rgba(*r, *g, *b, 1.0f));
   m_renderer.OutlineRoundedRect(swatchX, swatchY, swatchSize, swatchSize, 4.0f, vtheme::hex(0x484F58, 0.5f), 1.0f);
 
-  m_renderer.DrawTextA(label, x + swatchSize + 12.0f, y, w - swatchSize - 16.0f, h, vtheme::kTextPrimary, vtheme::kFontBody);
+  m_renderer.DrawTextA(label, x + swatchSize + 12.0f, y, w - swatchSize - 16.0f, h, vtheme::kTextPrimary,
+                       vtheme::kFontBody);
 
   // Click to expand/collapse
   bool headerHovered = PointInRect(m_input.mouseX, m_input.mouseY, x, y, w, h);
@@ -1191,16 +1314,25 @@ bool ImGuiOverlay::ColorEdit3(const char* label, float* r, float* g, float* b) {
 
   if (isOpen) {
     float tempR = *r, tempG = *g, tempB = *b;
-    if (SliderFloat("  Red", &tempR, 0.0f, 1.0f, "%.2f")) { *r = tempR; changed = true; }
-    if (SliderFloat("  Green", &tempG, 0.0f, 1.0f, "%.2f")) { *g = tempG; changed = true; }
-    if (SliderFloat("  Blue", &tempB, 0.0f, 1.0f, "%.2f")) { *b = tempB; changed = true; }
+    if (SliderFloat("  Red", &tempR, 0.0f, 1.0f, "%.2f")) {
+      *r = tempR;
+      changed = true;
+    }
+    if (SliderFloat("  Green", &tempG, 0.0f, 1.0f, "%.2f")) {
+      *g = tempG;
+      changed = true;
+    }
+    if (SliderFloat("  Blue", &tempB, 0.0f, 1.0f, "%.2f")) {
+      *b = tempB;
+      changed = true;
+    }
   }
 
   return changed;
 }
 
-void ImGuiOverlay::PlotLines(const char* label, const float* values, int count, int offset,
-                             float vmin, float vmax, float graphH) {
+void ImGuiOverlay::PlotLines(const char* label, const float* values, int count, int offset, float vmin, float vmax,
+                             float graphH) {
   float x = m_cursorX + 4.0f;
   float y = m_cursorY;
   float w = m_contentWidth - 8.0f;
@@ -1262,18 +1394,16 @@ void ImGuiOverlay::BuildMainPanel() {
   float panelDrawX = m_panelX, panelDrawY = m_panelY;
   float alpha = m_panelAlpha.current;
   float scale = 1.0f;
-  ComputePanelTransform(m_panelSlide.current, screenW, screenH, panelW, panelH,
-                        panelDrawX, panelDrawY, alpha, scale);
+  ComputePanelTransform(m_panelSlide.current, screenW, screenH, panelW, panelH, panelDrawX, panelDrawY, alpha, scale);
   m_panelScale = scale;
 
   if (alpha < 0.01f) return; // fully hidden
 
   // --- Update accent colors dynamically ---
   m_accent = vtheme::rgba(cust.accentR, cust.accentG, cust.accentB, 1.0f);
-  m_accentBright = vtheme::rgba(
-    std::clamp(cust.accentR * 1.3f, 0.0f, 1.0f),
-    std::clamp(cust.accentG * 1.3f, 0.0f, 1.0f),
-    std::clamp(cust.accentB * 1.3f, 0.0f, 1.0f), 1.0f);
+  m_accentBright =
+      vtheme::rgba(std::clamp(cust.accentR * 1.3f, 0.0f, 1.0f), std::clamp(cust.accentG * 1.3f, 0.0f, 1.0f),
+                   std::clamp(cust.accentB * 1.3f, 0.0f, 1.0f), 1.0f);
   m_accentDim = vtheme::rgba(cust.accentR * 0.65f, cust.accentG * 0.65f, cust.accentB * 0.65f, 0.6f);
 
   // --- Panel shadow (multi-layer) ---
@@ -1288,7 +1418,8 @@ void ImGuiOverlay::BuildMainPanel() {
 
   // Subtle right border only
   D2D1_COLOR_F edgeColor = vtheme::hex(0x30363D, 0.3f * alpha);
-  m_renderer.DrawLine(panelDrawX + panelW - 1, panelDrawY, panelDrawX + panelW - 1, panelDrawY + panelH, edgeColor, 1.0f);
+  m_renderer.DrawLine(panelDrawX + panelW - 1, panelDrawY, panelDrawX + panelW - 1, panelDrawY + panelH, edgeColor,
+                      1.0f);
 
   // --- Title bar ---
   float titleH = vtheme::kTitleBarHeight;
@@ -1296,10 +1427,10 @@ void ImGuiOverlay::BuildMainPanel() {
   m_renderer.FillRect(panelDrawX, panelDrawY, panelW, titleH, titleBg);
 
   // Title text — clean and minimal
-  m_renderer.DrawTextA("AC VALHALLA", panelDrawX + 16.0f, panelDrawY, panelW * 0.5f, titleH,
-                       m_accent, vtheme::kFontTitle * fontScl, ValhallaRenderer::TextAlign::Left, true);
-  m_renderer.DrawTextA("DLSS 4.5", panelDrawX + 16.0f, panelDrawY, panelW - 56.0f, titleH,
-                       vtheme::kTextSecondary, vtheme::kFontSmall, ValhallaRenderer::TextAlign::Right);
+  m_renderer.DrawTextA("AC VALHALLA", panelDrawX + 16.0f, panelDrawY, panelW * 0.5f, titleH, m_accent,
+                       vtheme::kFontTitle * fontScl, ValhallaRenderer::TextAlign::Left, true);
+  m_renderer.DrawTextA("DLSS 4.5", panelDrawX + 16.0f, panelDrawY, panelW - 56.0f, titleH, vtheme::kTextSecondary,
+                       vtheme::kFontSmall, ValhallaRenderer::TextAlign::Right);
 
   // --- Dragging on title bar ---
   bool onTitleBar = PointInRect(m_input.mouseX, m_input.mouseY, panelDrawX, panelDrawY, panelW - 40.0f, titleH);
@@ -1342,7 +1473,8 @@ void ImGuiOverlay::BuildMainPanel() {
   }
 
   // Title bar separator — subtle line
-  m_renderer.DrawLine(panelDrawX, panelDrawY + titleH, panelDrawX + panelW, panelDrawY + titleH, vtheme::hex(0x30363D, 0.4f), 1.0f);
+  m_renderer.DrawLine(panelDrawX, panelDrawY + titleH, panelDrawX + panelW, panelDrawY + titleH,
+                      vtheme::hex(0x30363D, 0.4f), 1.0f);
 
   // --- Status bar ---
   float statusY = panelDrawY + titleH + 2.0f;
@@ -1367,13 +1499,17 @@ void ImGuiOverlay::BuildMainPanel() {
   m_cursorY = statusY;
   m_contentWidth = 90.0f;
   StatusDot("DLSS", dlssOk ? vtheme::kStatusOk : (dlssWarn ? vtheme::kStatusWarn : vtheme::kStatusBad));
-  m_cursorX = dotX + 85.0f; m_cursorY = statusY;
+  m_cursorX = dotX + 85.0f;
+  m_cursorY = statusY;
   StatusDot("FG", fgOk ? vtheme::kStatusOk : (fgWarn ? vtheme::kStatusWarn : vtheme::kStatusBad));
-  m_cursorX = dotX + 155.0f; m_cursorY = statusY;
+  m_cursorX = dotX + 155.0f;
+  m_cursorY = statusY;
   StatusDot("Camera", camOk ? vtheme::kStatusOk : vtheme::kStatusWarn);
-  m_cursorX = dotX + 250.0f; m_cursorY = statusY;
+  m_cursorX = dotX + 250.0f;
+  m_cursorY = statusY;
   StatusDot("DVC", dvcOk ? vtheme::kStatusOk : (dvcWarn ? vtheme::kStatusWarn : vtheme::kStatusBad));
-  m_cursorX = dotX + 330.0f; m_cursorY = statusY;
+  m_cursorX = dotX + 330.0f;
+  m_cursorY = statusY;
   StatusDot("HDR", hdrOk ? vtheme::kStatusOk : (hdrWarn ? vtheme::kStatusWarn : vtheme::kStatusBad));
 
   // --- Scrollable content area ---
@@ -1392,15 +1528,20 @@ void ImGuiOverlay::BuildMainPanel() {
   // Hotkey capture overlay
   if (m_pendingHotkeyTarget) {
     int key = -1;
-    if (GetAsyncKeyState(VK_ESCAPE) & 0x1) key = VK_ESCAPE;
+    if (GetAsyncKeyState(VK_ESCAPE) & 0x1)
+      key = VK_ESCAPE;
     else {
       for (int scanKey = 0x08; scanKey <= 0xFE; ++scanKey) {
-        if (GetAsyncKeyState(scanKey) & 0x1) { key = scanKey; break; }
+        if (GetAsyncKeyState(scanKey) & 0x1) {
+          key = scanKey;
+          break;
+        }
       }
     }
     if (key != -1) {
-      if (key == VK_ESCAPE) { m_pendingHotkeyTarget = nullptr; }
-      else {
+      if (key == VK_ESCAPE) {
+        m_pendingHotkeyTarget = nullptr;
+      } else {
         *m_pendingHotkeyTarget = key;
         m_pendingHotkeyTarget = nullptr;
         InputHandler::Get().UpdateHotkey("Toggle Menu", cfg.ui.menuHotkey);
@@ -1428,34 +1569,66 @@ void ImGuiOverlay::BuildMainPanel() {
     m_sectionOpen[VGuiHash("presets_section")] = presetOpen;
     if (presetOpen) {
       if (Button("Quality")) {
-        cfg.dlss.mode = 5; cfg.dlss.preset = 0; cfg.fg.multiplier = 2; cfg.dlss.sharpness = 0.2f;
-        cfg.dlss.lodBias = -1.0f; cfg.rr.enabled = true; cfg.dvc.enabled = false;
-        sli.SetDLSSModeIndex(cfg.dlss.mode); sli.SetDLSSPreset(cfg.dlss.preset);
-        sli.SetFrameGenMultiplier(cfg.fg.multiplier); sli.SetSharpness(cfg.dlss.sharpness);
-        sli.SetLODBias(cfg.dlss.lodBias); ApplySamplerLodBias(cfg.dlss.lodBias);
-        sli.SetReflexEnabled(cfg.rr.enabled); sli.SetRayReconstructionEnabled(cfg.rr.enabled);
-        sli.SetDeepDVCEnabled(cfg.dvc.enabled); ConfigManager::Get().MarkDirty();
+        cfg.dlss.mode = 5;
+        cfg.dlss.preset = 0;
+        cfg.fg.multiplier = 2;
+        cfg.dlss.sharpness = 0.2f;
+        cfg.dlss.lodBias = -1.0f;
+        cfg.rr.enabled = true;
+        cfg.dvc.enabled = false;
+        sli.SetDLSSModeIndex(cfg.dlss.mode);
+        sli.SetDLSSPreset(cfg.dlss.preset);
+        sli.SetFrameGenMultiplier(cfg.fg.multiplier);
+        sli.SetSharpness(cfg.dlss.sharpness);
+        sli.SetLODBias(cfg.dlss.lodBias);
+        ApplySamplerLodBias(cfg.dlss.lodBias);
+        sli.SetReflexEnabled(cfg.rr.enabled);
+        sli.SetRayReconstructionEnabled(cfg.rr.enabled);
+        sli.SetDeepDVCEnabled(cfg.dvc.enabled);
+        ConfigManager::Get().MarkDirty();
       }
       SameLineButton();
       if (Button("Balanced")) {
-        cfg.dlss.mode = 2; cfg.dlss.preset = 0; cfg.fg.multiplier = 3; cfg.dlss.sharpness = 0.35f;
-        cfg.dlss.lodBias = -1.0f; cfg.rr.enabled = true; cfg.dvc.enabled = false; cfg.dvc.adaptiveEnabled = false;
-        sli.SetDLSSModeIndex(cfg.dlss.mode); sli.SetDLSSPreset(cfg.dlss.preset);
-        sli.SetFrameGenMultiplier(cfg.fg.multiplier); sli.SetSharpness(cfg.dlss.sharpness);
-        sli.SetLODBias(cfg.dlss.lodBias); ApplySamplerLodBias(cfg.dlss.lodBias);
-        sli.SetReflexEnabled(cfg.rr.enabled); sli.SetRayReconstructionEnabled(cfg.rr.enabled);
-        sli.SetDeepDVCEnabled(cfg.dvc.enabled); sli.SetDeepDVCAdaptiveEnabled(cfg.dvc.adaptiveEnabled);
+        cfg.dlss.mode = 2;
+        cfg.dlss.preset = 0;
+        cfg.fg.multiplier = 3;
+        cfg.dlss.sharpness = 0.35f;
+        cfg.dlss.lodBias = -1.0f;
+        cfg.rr.enabled = true;
+        cfg.dvc.enabled = false;
+        cfg.dvc.adaptiveEnabled = false;
+        sli.SetDLSSModeIndex(cfg.dlss.mode);
+        sli.SetDLSSPreset(cfg.dlss.preset);
+        sli.SetFrameGenMultiplier(cfg.fg.multiplier);
+        sli.SetSharpness(cfg.dlss.sharpness);
+        sli.SetLODBias(cfg.dlss.lodBias);
+        ApplySamplerLodBias(cfg.dlss.lodBias);
+        sli.SetReflexEnabled(cfg.rr.enabled);
+        sli.SetRayReconstructionEnabled(cfg.rr.enabled);
+        sli.SetDeepDVCEnabled(cfg.dvc.enabled);
+        sli.SetDeepDVCAdaptiveEnabled(cfg.dvc.adaptiveEnabled);
         ConfigManager::Get().MarkDirty();
       }
       SameLineButton();
       if (Button("Performance")) {
-        cfg.dlss.mode = 1; cfg.dlss.preset = 0; cfg.fg.multiplier = 4; cfg.dlss.sharpness = 0.5f;
-        cfg.dlss.lodBias = -1.2f; cfg.rr.enabled = true; cfg.dvc.enabled = false; cfg.dvc.adaptiveEnabled = false;
-        sli.SetDLSSModeIndex(cfg.dlss.mode); sli.SetDLSSPreset(cfg.dlss.preset);
-        sli.SetFrameGenMultiplier(cfg.fg.multiplier); sli.SetSharpness(cfg.dlss.sharpness);
-        sli.SetLODBias(cfg.dlss.lodBias); ApplySamplerLodBias(cfg.dlss.lodBias);
-        sli.SetReflexEnabled(cfg.rr.enabled); sli.SetRayReconstructionEnabled(cfg.rr.enabled);
-        sli.SetDeepDVCEnabled(cfg.dvc.enabled); sli.SetDeepDVCAdaptiveEnabled(cfg.dvc.adaptiveEnabled);
+        cfg.dlss.mode = 1;
+        cfg.dlss.preset = 0;
+        cfg.fg.multiplier = 4;
+        cfg.dlss.sharpness = 0.5f;
+        cfg.dlss.lodBias = -1.2f;
+        cfg.rr.enabled = true;
+        cfg.dvc.enabled = false;
+        cfg.dvc.adaptiveEnabled = false;
+        sli.SetDLSSModeIndex(cfg.dlss.mode);
+        sli.SetDLSSPreset(cfg.dlss.preset);
+        sli.SetFrameGenMultiplier(cfg.fg.multiplier);
+        sli.SetSharpness(cfg.dlss.sharpness);
+        sli.SetLODBias(cfg.dlss.lodBias);
+        ApplySamplerLodBias(cfg.dlss.lodBias);
+        sli.SetReflexEnabled(cfg.rr.enabled);
+        sli.SetRayReconstructionEnabled(cfg.rr.enabled);
+        sli.SetDeepDVCEnabled(cfg.dvc.enabled);
+        sli.SetDeepDVCAdaptiveEnabled(cfg.dvc.adaptiveEnabled);
         ConfigManager::Get().MarkDirty();
       }
       Spacing();
@@ -1473,12 +1646,17 @@ void ImGuiOverlay::BuildMainPanel() {
       const char* dlssModes[] = {"Off", "Max Performance", "Balanced", "Max Quality", "Ultra Quality", "DLAA"};
       int dlssMode = sli.GetDLSSModeIndex();
       if (Combo("DLSS Quality Mode", &dlssMode, dlssModes, 6, sli.IsDLSSSupported())) {
-        sli.SetDLSSModeIndex(dlssMode); cfg.dlss.mode = dlssMode; ConfigManager::Get().MarkDirty();
+        sli.SetDLSSModeIndex(dlssMode);
+        cfg.dlss.mode = dlssMode;
+        ConfigManager::Get().MarkDirty();
       }
-      const char* presets[] = {"Default", "Preset A", "Preset B", "Preset C", "Preset D", "Preset E", "Preset F", "Preset G"};
+      const char* presets[] = {"Default",  "Preset A", "Preset B", "Preset C",
+                               "Preset D", "Preset E", "Preset F", "Preset G"};
       int preset = sli.GetDLSSPresetIndex();
       if (Combo("DLSS Preset", &preset, presets, 8)) {
-        sli.SetDLSSPreset(preset); cfg.dlss.preset = preset; ConfigManager::Get().MarkDirty();
+        sli.SetDLSSPreset(preset);
+        cfg.dlss.preset = preset;
+        ConfigManager::Get().MarkDirty();
       }
       // Auto-UI for other general settings
       if (AutoUI::DrawStruct(*this, cfg.dlss)) ConfigManager::Get().MarkDirty();
@@ -1495,17 +1673,24 @@ void ImGuiOverlay::BuildMainPanel() {
       // Manual handling for now due to complex dependencies
       bool rrEnabled = cfg.rr.enabled;
       if (Checkbox("Enable DLSS Ray Reconstruction", &rrEnabled, sli.IsRayReconstructionSupported())) {
-        cfg.rr.enabled = rrEnabled; sli.SetRayReconstructionEnabled(rrEnabled); ConfigManager::Get().MarkDirty();
+        cfg.rr.enabled = rrEnabled;
+        sli.SetRayReconstructionEnabled(rrEnabled);
+        ConfigManager::Get().MarkDirty();
       }
       bool rrActive = sli.IsRayReconstructionSupported() && cfg.rr.enabled;
-      const char* rrPresets[] = {"Default", "Preset D", "Preset E", "Preset F", "Preset G", "Preset H", "Preset I", "Preset J", "Preset K", "Preset L", "Preset M", "Preset N", "Preset O"};
+      const char* rrPresets[] = {"Default",  "Preset D", "Preset E", "Preset F", "Preset G", "Preset H", "Preset I",
+                                 "Preset J", "Preset K", "Preset L", "Preset M", "Preset N", "Preset O"};
       int rrPreset = cfg.rr.preset;
       if (Combo("RR Preset", &rrPreset, rrPresets, 13, rrActive)) {
-        cfg.rr.preset = rrPreset; sli.SetRRPreset(rrPreset); ConfigManager::Get().MarkDirty();
+        cfg.rr.preset = rrPreset;
+        sli.SetRRPreset(rrPreset);
+        ConfigManager::Get().MarkDirty();
       }
       float rrStr = cfg.rr.denoiserStrength;
       if (SliderFloat("RR Denoiser Strength", &rrStr, 0.0f, 1.0f, "%.2f", rrActive)) {
-        cfg.rr.denoiserStrength = rrStr; sli.SetRRDenoiserStrength(rrStr); ConfigManager::Get().MarkDirty();
+        cfg.rr.denoiserStrength = rrStr;
+        sli.SetRRDenoiserStrength(rrStr);
+        ConfigManager::Get().MarkDirty();
       }
       Spacing();
     }
@@ -1528,12 +1713,15 @@ void ImGuiOverlay::BuildMainPanel() {
     SectionHeader("Frame Generation", &open);
     m_sectionOpen[VGuiHash("fg_section")] = open;
     if (open) {
-      const char* fgModes[] = {"Off", "2x (DLSS-G)", "3x (DLSS-G)", "4x (DLSS-G)", "5x (DLSS-G)", "6x (DLSS-G)", "7x (DLSS-G)", "8x (DLSS-G)"};
+      const char* fgModes[] = {"Off",         "2x (DLSS-G)", "3x (DLSS-G)", "4x (DLSS-G)",
+                               "5x (DLSS-G)", "6x (DLSS-G)", "7x (DLSS-G)", "8x (DLSS-G)"};
       int fgMult = sli.GetFrameGenMultiplier();
       int fgIndex = (fgMult >= 2 && fgMult <= 8) ? (fgMult - 1) : 0;
       if (Combo("Frame Generation", &fgIndex, fgModes, 8, sli.IsFrameGenSupported())) {
         int mult = fgIndex > 0 ? (fgIndex + 1) : 0;
-        sli.SetFrameGenMultiplier(mult); cfg.fg.multiplier = mult; ConfigManager::Get().MarkDirty();
+        sli.SetFrameGenMultiplier(mult);
+        cfg.fg.multiplier = mult;
+        ConfigManager::Get().MarkDirty();
       }
       if (AutoUI::DrawStruct(*this, cfg.fg)) ConfigManager::Get().MarkDirty();
       Spacing();
@@ -1548,9 +1736,9 @@ void ImGuiOverlay::BuildMainPanel() {
   // The above AutoUI::DrawStruct(*this, cfg.fg) draws EVERYTHING in FrameGenConfig, including SmartFG.
   // So I should remove the separate Smart FG section if I want to rely on AutoUI, OR
   // use DrawCategory.
-  
+
   // Let's rely on the previous section handling it via DrawStruct(cfg.fg) which iterates all fields.
-  
+
   // ---- QUALITY ----
   {
     bool open = m_sectionOpen[VGuiHash("quality_section")];
@@ -1592,7 +1780,9 @@ void ImGuiOverlay::BuildMainPanel() {
     if (open) {
       bool vigOn = cfg.ui.showVignette;
       if (Checkbox("Enable Vignette", &vigOn)) {
-        cfg.ui.showVignette = vigOn; m_showVignette = vigOn; ConfigManager::Get().MarkDirty();
+        cfg.ui.showVignette = vigOn;
+        m_showVignette = vigOn;
+        ConfigManager::Get().MarkDirty();
       }
       bool vigActive = cfg.ui.showVignette;
       if (SliderFloat("Intensity", &cfg.ui.vignetteIntensity, 0.0f, 1.0f, "%.2f", vigActive)) {
@@ -1671,8 +1861,8 @@ void ImGuiOverlay::BuildMainPanel() {
       NorseSeparator();
 
       // Camera info
-      std::string camStr = std::format("{} (J {:.3f}, {:.3f})",
-                 m_cachedCamera ? "OK" : "Missing", m_cachedJitterX, m_cachedJitterY);
+      std::string camStr =
+          std::format("{} (J {:.3f}, {:.3f})", m_cachedCamera ? "OK" : "Missing", m_cachedJitterX, m_cachedJitterY);
       LabelValue("Camera", camStr.c_str());
       std::string camDeltaStr = std::format("{:.3f}", sli.GetLastCameraDelta());
       LabelValue("Camera Delta", camDeltaStr.c_str());
@@ -1682,28 +1872,41 @@ void ImGuiOverlay::BuildMainPanel() {
         ConfigManager::Get().ResetToDefaults();
         ConfigManager::Get().Load();
         ModConfig& reset = ConfigManager::Get().Data();
-        sli.SetDLSSModeIndex(reset.dlss.mode); sli.SetDLSSPreset(reset.dlss.preset);
-        sli.SetFrameGenMultiplier(reset.fg.multiplier); sli.SetSharpness(reset.dlss.sharpness);
-        sli.SetLODBias(reset.dlss.lodBias); ApplySamplerLodBias(reset.dlss.lodBias);
-        sli.SetReflexEnabled(reset.rr.enabled); sli.SetHUDFixEnabled(reset.system.hudFixEnabled);
-        sli.SetRayReconstructionEnabled(reset.rr.enabled); sli.SetRRPreset(reset.rr.preset);
-        sli.SetRRDenoiserStrength(reset.rr.denoiserStrength); sli.SetDeepDVCEnabled(reset.dvc.enabled);
-        sli.SetDeepDVCIntensity(reset.dvc.intensity); sli.SetDeepDVCSaturation(reset.dvc.saturation);
+        sli.SetDLSSModeIndex(reset.dlss.mode);
+        sli.SetDLSSPreset(reset.dlss.preset);
+        sli.SetFrameGenMultiplier(reset.fg.multiplier);
+        sli.SetSharpness(reset.dlss.sharpness);
+        sli.SetLODBias(reset.dlss.lodBias);
+        ApplySamplerLodBias(reset.dlss.lodBias);
+        sli.SetReflexEnabled(reset.rr.enabled);
+        sli.SetHUDFixEnabled(reset.system.hudFixEnabled);
+        sli.SetRayReconstructionEnabled(reset.rr.enabled);
+        sli.SetRRPreset(reset.rr.preset);
+        sli.SetRRDenoiserStrength(reset.rr.denoiserStrength);
+        sli.SetDeepDVCEnabled(reset.dvc.enabled);
+        sli.SetDeepDVCIntensity(reset.dvc.intensity);
+        sli.SetDeepDVCSaturation(reset.dvc.saturation);
         sli.SetDeepDVCAdaptiveEnabled(reset.dvc.adaptiveEnabled);
         sli.SetDeepDVCAdaptiveStrength(reset.dvc.adaptiveStrength);
-        sli.SetDeepDVCAdaptiveMin(reset.dvc.adaptiveMin); sli.SetDeepDVCAdaptiveMax(reset.dvc.adaptiveMax);
+        sli.SetDeepDVCAdaptiveMin(reset.dvc.adaptiveMin);
+        sli.SetDeepDVCAdaptiveMax(reset.dvc.adaptiveMax);
         sli.SetDeepDVCAdaptiveSmoothing(reset.dvc.adaptiveSmoothing);
-        sli.SetSmartFGEnabled(reset.fg.smartEnabled); sli.SetSmartFGAutoDisable(reset.fg.autoDisable);
+        sli.SetSmartFGEnabled(reset.fg.smartEnabled);
+        sli.SetSmartFGAutoDisable(reset.fg.autoDisable);
         sli.SetSmartFGAutoDisableThreshold(reset.fg.autoDisableFps);
         sli.SetSmartFGSceneChangeEnabled(reset.fg.sceneChangeEnabled);
         sli.SetSmartFGSceneChangeThreshold(reset.fg.sceneChangeThreshold);
         sli.SetSmartFGInterpolationQuality(reset.fg.interpolationQuality);
-        sli.SetHDREnabled(reset.hdr.enabled); sli.SetHDRPeakNits(reset.hdr.peakNits);
-        sli.SetHDRPaperWhiteNits(reset.hdr.paperWhiteNits); sli.SetHDRExposure(reset.hdr.exposure);
-        sli.SetHDRGamma(reset.hdr.gamma); sli.SetHDRTonemapCurve(reset.hdr.tonemapCurve);
+        sli.SetHDREnabled(reset.hdr.enabled);
+        sli.SetHDRPeakNits(reset.hdr.peakNits);
+        sli.SetHDRPaperWhiteNits(reset.hdr.paperWhiteNits);
+        sli.SetHDRExposure(reset.hdr.exposure);
+        sli.SetHDRGamma(reset.hdr.gamma);
+        sli.SetHDRTonemapCurve(reset.hdr.tonemapCurve);
         sli.SetHDRSaturation(reset.hdr.saturation);
         sli.SetMVecScale(reset.mvec.scaleX, reset.mvec.scaleY);
-        m_showFPS = reset.ui.showFPS; m_showVignette = reset.ui.showVignette;
+        m_showFPS = reset.ui.showFPS;
+        m_showVignette = reset.ui.showVignette;
       }
       Spacing();
     }
@@ -1782,15 +1985,14 @@ void ImGuiOverlay::BuildMainPanel() {
         std::string statusStr;
         auto fgStatus = sli.GetFrameGenStatus();
         switch (fgStatus) {
-        case sl::DLSSGStatus::eOk: statusStr = "OK"; break;
-        default: statusStr = std::format("Error ({})", static_cast<int>(fgStatus)); break;
+          case sl::DLSSGStatus::eOk: statusStr = "OK"; break;
+          default: statusStr = std::format("Error ({})", static_cast<int>(fgStatus)); break;
         }
         LabelValue("FG Status", statusStr.c_str());
       }
       {
-        std::string multStr = std::format("{}x (effective {:.1f}x)",
-                                          sli.GetFrameGenMultiplier(),
-                                          sli.GetFgActualMultiplier());
+        std::string multStr =
+            std::format("{}x (effective {:.1f}x)", sli.GetFrameGenMultiplier(), sli.GetFgActualMultiplier());
         LabelValue("FG Multiplier", multStr.c_str());
       }
       if (cfg.fg.smartEnabled) {
@@ -1871,7 +2073,7 @@ void ImGuiOverlay::BuildCustomization() {
 
   // Use Auto-UI to generate widgets based on reflection categories
   // This replaces the manual calls
-  
+
   bool subOpen = m_sectionOpen[VGuiHash("cust_anim")];
   SectionHeader("  Animation & Panel", &subOpen);
   m_sectionOpen[VGuiHash("cust_anim")] = subOpen;

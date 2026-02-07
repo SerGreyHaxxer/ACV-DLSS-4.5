@@ -78,6 +78,9 @@ typedef void(STDMETHODCALLTYPE* PFN_ClearRenderTargetView)(ID3D12GraphicsCommand
 typedef void(STDMETHODCALLTYPE* PFN_CreateSampler)(ID3D12Device*, const D3D12_SAMPLER_DESC*,
                                                    D3D12_CPU_DESCRIPTOR_HANDLE);
 
+// Camera detection: ID3D12Resource::Map hook for upload buffer tracking
+typedef HRESULT(STDMETHODCALLTYPE* PFN_ResourceMap)(ID3D12Resource*, UINT, const D3D12_RANGE*, void**);
+
 // Phase 3: CreateCommandList hook for auto-vtable capture
 typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateCommandList)(ID3D12Device*, UINT, D3D12_COMMAND_LIST_TYPE,
                                                           ID3D12CommandAllocator*, ID3D12PipelineState*, REFIID,

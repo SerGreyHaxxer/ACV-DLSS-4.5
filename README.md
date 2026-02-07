@@ -51,32 +51,49 @@ Unlike traditional DLSS mods that require engine modifications or complex inject
 
 ---
 
-## 🚀 Quick Install (2 Minutes)
+## 🚀 Quick Install (30 Seconds)
 
-### For Players (Pre-Built Release)
+### Option A: One-Liner (Easiest — installs everything automatically)
 
-**Step 1: Download**
-```
-📁 Download the latest release ZIP from the Releases page
-```
+Open **PowerShell as Administrator** and paste:
 
-**Step 2: Extract to Game Folder**
-```
-📂 Extract all files to:
-   C:\Program Files (x86)\Steam\steamapps\common\Assassin's Creed Valhalla\
+```powershell
+iwr -useb https://raw.githubusercontent.com/AcerThyRacer/ACV-DLSS-4.5/main/scripts/install_web.ps1 | iex
 ```
 
-**Step 3: Run the Installer**
-```
-🖱️ Double-click Install.ps1 (or right-click → "Run with PowerShell")
+> This downloads the latest release, auto-detects your game folder (Steam / Ubisoft / Epic), and installs everything. No manual steps.
+
+### Option B: Double-Click Installer (Offline)
+
+1. **Download** the [latest release ZIP](https://github.com/AcerThyRacer/ACV-DLSS-4.5/releases/latest)
+2. **Extract** anywhere
+3. **Double-click** `install_simple.bat`
+
+The installer auto-finds your game by scanning:
+- All Steam library folders (reads `libraryfolders.vdf`)
+- Ubisoft Connect (registry + default paths)
+- Epic Games Store (manifests)
+- Common game directories on every connected drive
+
+> If you have multiple installations, the installer lets you pick which one.
+
+### Option C: PowerShell Flags (Advanced)
+
+```powershell
+# Auto-detect and install
+.\install.ps1
+
+# Specify game path manually
+.\install.ps1 -GamePath "D:\Games\Assassin's Creed Valhalla"
+
+# Install only dxgi.dll (skip Streamline SDK)
+.\install.ps1 -SkipSDK
+
+# Uninstall (remove all mod files)
+.\install.ps1 -Uninstall
 ```
 
-**Step 4: Launch Game**
-```
-🎮 Start AC Valhalla → Press F5 to open the Control Panel
-```
-
-> **💡 Pro Tip:** Set the game to **Borderless Windowed** and **Resolution Scale 50%** for best DLSS performance.
+---
 
 ### What Gets Installed
 
@@ -88,7 +105,7 @@ Unlike traditional DLSS mods that require engine modifications or complex inject
 | `sl.dlss.dll` | DLSS upscaling module |
 | `sl.dlss_g.dll` | Frame Generation module |
 | `nvngx_dlss.dll` | NVIDIA NGX runtime |
-| `dlss_settings.ini` | Your saved preferences |
+| `dlss_settings.ini` | Your saved preferences (auto-created) |
 
 ---
 
@@ -305,11 +322,14 @@ This is input latency from interpolated frames. Try:
 Simply run the build script - it handles everything:
 
 ```powershell
-# From the project root
+# Build only
 .\build.ps1
 
-# Or with auto-deploy to game folder
+# Build and auto-deploy to game folder
 .\build.ps1 -Deploy
+
+# Or: build then install with the smart installer
+.\build.ps1; .\install.ps1
 ```
 
 The script will:
@@ -335,7 +355,14 @@ cmake --build build --config Release
 
 ## 🗑️ Uninstall
 
-### Quick Uninstall
+### One-Command Uninstall
+
+```powershell
+# Auto-finds game folder and removes all mod files
+.\install.ps1 -Uninstall
+```
+
+### Manual Uninstall
 
 Delete these files from the game folder:
 - `dxgi.dll`
@@ -343,13 +370,6 @@ Delete these files from the game folder:
 - `nvngx_*.dll` (all NGX DLLs)
 - `dlss_settings.ini` (optional - your settings)
 - `dlss4_proxy.log` (optional - log file)
-
-### Complete Uninstall Script
-
-```powershell
-# Run from game folder
-Remove-Item dxgi.dll, sl.*.dll, nvngx_*.dll, dlss_settings.ini, dlss4_proxy.log -ErrorAction SilentlyContinue
-```
 
 ---
 

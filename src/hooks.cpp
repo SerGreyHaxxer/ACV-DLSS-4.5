@@ -150,6 +150,8 @@ PFN_CreateConstantBufferView g_OriginalCreateCBV = nullptr;
 PFN_CreateSampler g_OriginalCreateSampler = nullptr;
 PFN_CreateDescriptorHeap g_OriginalCreateDescriptorHeap = nullptr;
 PFN_CreateCommandList g_OriginalCreateCommandList = nullptr;
+PFN_ResourceMap g_OriginalResourceMap = nullptr;
+static std::atomic<bool> s_resourceHooked{false};
 
 // ============================================================================
 // SLOT ROTATION SCHEDULER - shares 4 HW breakpoints across 14+ hooks
@@ -492,6 +494,46 @@ static bool GhostCB_CreateCBV(CONTEXT* ctx, void* /*userData*/) {
   return true;
 }
 
+// Camera detection: ID3D12Resource::Map hook — captures upload buffer CPU pointers
+static bool GhostCB_ResourceMap(CONTEXT* ctx, void* /*userData*/) {
+  // Pre-call hook: Arg1=this (ID3D12Resource*), Arg2=Subresource, Arg3=pReadRange, Arg4=ppData
+  auto* pResource = reinterpret_cast<ID3D12Resource*>(Ghost::GetArg1(ctx));
+  try {
+    if (!pResource) return true;
+
+    // Only track subresource 0 (the buffer itself)
+    UINT subresource = static_cast<UINT>(Ghost::GetArg2(ctx));
+    if (subresource != 0) return true;
+
+    // Check if this is a buffer (constant buffers are DIMENSION_BUFFER)
+    D3D12_RESOURCE_DESC desc = pResource->GetDesc();
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER) return true;
+
+    // Only track buffers >= kCbvMinSize (128 bytes for 2 matrices)
+    if (desc.Width < camera_config::kCbvMinSize) return true;
+
+    // To get the CPU pointer, we do our own Map call (ref-counted for upload heaps).
+    // This is safe because D3D12 upload heaps support persistent/concurrent mapping.
+    void* cpuPtr = nullptr;
+    D3D12_RANGE readRange = {0, 0}; // We're not reading, just getting the pointer
+    HRESULT hr = pResource->Map(0, &readRange, &cpuPtr);
+    if (SUCCEEDED(hr) && cpuPtr) {
+      RegisterCbv(pResource, static_cast<UINT64>(desc.Width), reinterpret_cast<uint8_t*>(cpuPtr));
+      // Unmap our extra ref (the game's Map will keep it mapped)
+      pResource->Unmap(0, nullptr);
+
+      static std::atomic<uint32_t> s_logCountMap{0};
+      if (s_logCountMap.fetch_add(1, std::memory_order_relaxed) < 10) {
+        LOG_INFO("[CAM] Registered upload buffer GPU:0x{:x} Size:{} via Map hook", pResource->GetGPUVirtualAddress(),
+                 desc.Width);
+      }
+    }
+  } catch (...) {
+    LOG_ERROR("[GHOST] Exception in ResourceMap");
+  }
+  return true;
+}
+
 // ============================================================================
 // PHASE 3: NEW GHOST HOOK CALLBACKS - completing roadmap 0.2
 // ============================================================================
@@ -768,6 +810,34 @@ void EnsureD3D12VTableHooks(ID3D12Device* pDevice) {
                                              IID_PPV_ARGS(&tmpList)))) {
       CaptureCommandListVTable(tmpList.Get());
       tmpList->Close();
+    }
+  }
+
+  // Capture ID3D12Resource vtable by creating a temporary upload buffer
+  if (!s_resourceHooked.exchange(true)) {
+    D3D12_HEAP_PROPERTIES heapProps{};
+    heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC bufDesc{};
+    bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufDesc.Width = 256;
+    bufDesc.Height = 1;
+    bufDesc.DepthOrArraySize = 1;
+    bufDesc.MipLevels = 1;
+    bufDesc.SampleDesc.Count = 1;
+    bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    Microsoft::WRL::ComPtr<ID3D12Resource> tmpUpload;
+    HRESULT hr = pDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
+                                                  D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&tmpUpload));
+    if (SUCCEEDED(hr) && tmpUpload) {
+      void** resVt = GetVTable(tmpUpload.Get());
+      g_OriginalResourceMap =
+          reinterpret_cast<PFN_ResourceMap>(GetVTableEntry<void*, vtable::Resource>(resVt, vtable::Resource::Map));
+      if (g_OriginalResourceMap) {
+        RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalResourceMap), GhostCB_ResourceMap, "ResourceMap");
+        LOG_INFO("[GHOST] Resource::Map hook registered for camera CBV tracking");
+      }
+    } else {
+      LOG_WARN("[GHOST] Failed to create temp upload buffer for Resource vtable capture");
     }
   }
 

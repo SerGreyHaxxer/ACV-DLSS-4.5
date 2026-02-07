@@ -16,7 +16,9 @@
  */
 #pragma once
 #include <d3d12.h>
+
 #include <cstdint>
+
 
 // CBV registration (for upload buffers mapped to GPU)
 void RegisterCbv(ID3D12Resource* pResource, UINT64 size, uint8_t* cpuPtr);
@@ -34,3 +36,14 @@ uint64_t GetLastCameraFoundFrame();
 uint64_t GetLastFullScanFrame();
 void GetCameraScanCounts(uint64_t& cbvCount, uint64_t& descCount, uint64_t& rootCount);
 
+// Diagnostics
+struct CameraDiagnostics {
+  uint32_t registeredCbvCount;
+  uint32_t trackedDescriptors;
+  uint32_t trackedRootAddresses;
+  float lastScore;
+  uint64_t lastFoundFrame;
+  int lastScanMethod; // 0=None, 1=Cached, 2=FullScan, 3=Descriptor, 4=Root
+  bool cameraValid;
+};
+CameraDiagnostics GetCameraDiagnostics();

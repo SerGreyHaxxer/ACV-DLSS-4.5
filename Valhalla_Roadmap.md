@@ -121,6 +121,21 @@ Level 5: Logging (lowest priority)
 - [ ] Dependency vulnerability scanning
 - [ ] Automated dependency update testing
 
+### 0.5 Installation & Onboarding
+**Status:** ❌ Not Started | 🎯 Target: Immediate
+
+| Task | Priority | Effort | Status |
+|------|----------|--------|--------|
+| PowerShell One-Liner (`iwr ... | iex`) | High | 1 day | 📝 Pending |
+| Interactive Batch Script Installer | High | 1 day | 📝 Pending |
+| Game Path Auto-Detection | Medium | 2 days | 📝 Pending |
+| Uninstaller Script | Low | 1 day | 📝 Pending |
+
+**Deliverables:**
+- [ ] `install.ps1` (Web-based installer)
+- [ ] `install.bat` (Offline installer)
+- [ ] `uninstall.bat`
+
 ---
 
 ## 🧪 Phase 1: Testing Infrastructure (Weeks 5-8)
@@ -597,7 +612,8 @@ format_override = "DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS"
 - [ ] Graceful degradation on all errors
 
 ### User Experience
-- [ ] Setup time < 2 minutes
+- [ ] Setup time < 30 seconds (via script)
+- [ ] One-line install command available
 - [ ] Config changes apply instantly
 - [ ] Clear error messages
 - [ ] Comprehensive FAQ
@@ -645,6 +661,6 @@ format_override = "DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS"
 
 ---
 
-*Last Updated: 2026-02-06*
+*Last Updated: 2026-02-07*
 *Version: 2.0*
 *Author: AI Assistant with human oversight*
