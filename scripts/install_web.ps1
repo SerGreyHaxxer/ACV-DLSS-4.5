@@ -32,9 +32,21 @@ Write-Host "  [1] Fetching latest release from GitHub..." -ForegroundColor Cyan
 $dxgiPath = Join-Path $TempDir "dxgi.dll"
 
 try {
-    $apiUrl = "https://api.github.com/repos/$RepoOwner/$RepoName/releases/latest"
     $headers = @{ "User-Agent" = "ACValhalla-DLSS-Installer" }
-    $release = Invoke-RestMethod -Uri $apiUrl -Headers $headers -UseBasicParsing -ErrorAction Stop
+
+    # Try /releases/latest first (excludes pre-releases), then /releases (includes all)
+    $release = $null
+    try {
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$RepoOwner/$RepoName/releases/latest" -Headers $headers -UseBasicParsing -ErrorAction Stop
+    }
+    catch {}
+
+    if (-not $release) {
+        $allReleases = Invoke-RestMethod -Uri "https://api.github.com/repos/$RepoOwner/$RepoName/releases" -Headers $headers -UseBasicParsing -ErrorAction Stop
+        if ($allReleases.Count -gt 0) { $release = $allReleases[0] }
+    }
+
+    if (-not $release) { throw "No releases found" }
     $tag = $release.tag_name
 
     # Look for dxgi.dll directly as a release asset
