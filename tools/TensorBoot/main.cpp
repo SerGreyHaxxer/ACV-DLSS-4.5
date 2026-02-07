@@ -6,7 +6,7 @@
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
  *
- * TensorBoot - Safe Mode Bootstrapper for Tensor-Curie DLSS Proxy
+ * TensorBoot - Safe Mode Bootstrapper for AC Valhalla DLSS Proxy
  * ================================================================
  * This launcher performs pre-flight checks before starting the game:
  *   - Validates game executable and proxy DLL integrity
@@ -55,7 +55,7 @@ void PrintBanner() {
    |_|\___|_| |_|___/\___/|_|    |____/ \___/ \___/ \__|
                                                         
 )" << Color::Reset;
-  std::cout << "  Tensor-Curie Safe Mode Bootstrapper v1.0.0\n";
+  std::cout << "  AC Valhalla Safe Mode Bootstrapper v1.0.0\n";
   std::cout << "  DLSS 4.5 Mod for Assassin's Creed Valhalla\n";
   std::cout << "  ============================================\n\n";
 }

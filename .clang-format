@@ -1,4 +1,4 @@
-# Tensor-Curie .clang-format
+# AC Valhalla .clang-format
 # Based on LLVM style with adjustments for Windows/D3D12 C++ codebase.
 
 Language: Cpp

@@ -5,7 +5,7 @@ find_package(spdlog CONFIG REQUIRED)
 find_package(tomlplusplus CONFIG REQUIRED)
 
 # Test executable — includes source files needed by integration tests
-add_executable(tensor-curie-tests
+add_executable(acv-dlss-tests
     test_main.cpp
     test_inplace_vector.cpp
     test_hive.cpp
@@ -20,13 +20,13 @@ add_executable(tensor-curie-tests
     ${CMAKE_SOURCE_DIR}/src/ghost_hook.cpp
 )
 
-target_include_directories(tensor-curie-tests PRIVATE
+target_include_directories(acv-dlss-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/local_headers
     ${CMAKE_SOURCE_DIR}/external
 )
 
-target_link_libraries(tensor-curie-tests PRIVATE
+target_link_libraries(acv-dlss-tests PRIVATE
     Catch2::Catch2WithMain
     spdlog::spdlog
     tomlplusplus::tomlplusplus
@@ -34,25 +34,25 @@ target_link_libraries(tensor-curie-tests PRIVATE
     psapi
 )
 
-target_compile_options(tensor-curie-tests PRIVATE
+target_compile_options(acv-dlss-tests PRIVATE
     /W4
     /permissive-
     /Zc:__cplusplus
 )
 
-target_compile_definitions(tensor-curie-tests PRIVATE
+target_compile_definitions(acv-dlss-tests PRIVATE
     UNICODE _UNICODE
     WIN32_LEAN_AND_MEAN
     _CRT_SECURE_NO_WARNINGS
-    TENSOR_CURIE_TESTING=1
+    ACV_DLSS_TESTING=1
 )
 
 # Use dynamic CRT for tests (matches vcpkg x64-windows triplet default)
-set_target_properties(tensor-curie-tests PROPERTIES
+set_target_properties(acv-dlss-tests PROPERTIES
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
 )
 
 # Register tests with CTest
 include(CTest)
 include(Catch)
-catch_discover_tests(tensor-curie-tests)
+catch_discover_tests(acv-dlss-tests)

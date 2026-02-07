@@ -1,6 +1,6 @@
-# 🪓 Tensor-Curie: Comprehensive Roadmap 2026-2027
+# 🪓 AC Valhalla: Comprehensive Roadmap 2026-2027
 
-**Project:** Tensor-Curie (DLSS 4.5 Graphics Injection Framework)
+**Project:** AC Valhalla (DLSS 4.5 Graphics Injection Framework)
 **Version:** 5.0.0 (In Development)
 **Standard:** C++23 / C++26 Polyfills
 **Status:** 🚧 Active Development - Major Restructuring Phase
@@ -9,7 +9,7 @@
 
 ## 📊 Executive Summary
 
-Tensor-Curie is evolving from a game-specific mod into a **general-purpose graphics injection framework**. This roadmap addresses architectural debt, adds missing testing infrastructure, improves code quality, and expands platform support.
+AC Valhalla is evolving from a game-specific mod into a **general-purpose graphics injection framework**. This roadmap addresses architectural debt, adds missing testing infrastructure, improves code quality, and expands platform support.
 
 **Current State Assessment:**
 - ✅ **Strengths:** Advanced resource detection, C++26 polyfills, reflection-based config
@@ -24,7 +24,7 @@ Tensor-Curie is evolving from a game-specific mod into a **general-purpose graph
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         TENSOR-CURIE ARCHITECTURE                    │
+│                         AC VALHALLA ARCHITECTURE                     │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐             │

@@ -1,4 +1,4 @@
-# Tensor-Curie Build Script
+# AC Valhalla Build Script
 # Builds the DLSS 4.5 proxy DLL and optionally deploys to game folder
 #
 # Usage:
@@ -25,7 +25,7 @@ function Write-Err { param($msg) Write-Host "[ERROR] $msg" -ForegroundColor Red 
 
 Write-Host ""
 Write-Host "================================================================" -ForegroundColor Magenta
-Write-Host "  Tensor-Curie DLSS 4.5 Mod Builder                            " -ForegroundColor Magenta
+Write-Host "  AC Valhalla DLSS 4.5 Mod Builder                              " -ForegroundColor Magenta
 Write-Host "================================================================" -ForegroundColor Magenta
 Write-Host ""
 

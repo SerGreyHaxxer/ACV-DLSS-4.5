@@ -31,7 +31,7 @@ static std::filesystem::path GetCacheDir() {
   wchar_t buf[MAX_PATH] = {};
   DWORD len = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH);
   if (len > 0 && len < MAX_PATH) {
-    auto dir = std::filesystem::path(buf) / L"tensor-curie";
+    auto dir = std::filesystem::path(buf) / L"acv-dlss";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     if (!ec) return dir;

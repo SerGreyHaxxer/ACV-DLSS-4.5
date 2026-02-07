@@ -4,7 +4,7 @@
 
 ### **Unlock Next-Gen Graphics & Up to 4× Frame Generation**
 
-[![Version](https://img.shields.io/badge/Version-4.5.0-blue?style=for-the-badge)](https://github.com/acerthyracer/tensor-curie)
+[![Version](https://img.shields.io/badge/Version-4.5.0-blue?style=for-the-badge)](https://github.com/acerthyracer/acv-dlss)
 [![Status](https://img.shields.io/badge/Status-Working-brightgreen?style=for-the-badge)](#)
 [![RTX](https://img.shields.io/badge/NVIDIA-RTX%20Optimized-76B900?style=for-the-badge&logo=nvidia)](https://nvidia.com)
 
@@ -20,9 +20,9 @@
 
 ## 🌟 What Makes This Mod Unique
 
-Unlike traditional DLSS mods that require engine modifications or complex injectors, **Tensor-Curie** uses an innovative approach:
+Unlike traditional DLSS mods that require engine modifications or complex injectors, **AC Valhalla** uses an innovative approach:
 
-| Feature | Traditional Mods | Tensor-Curie |
+| Feature | Traditional Mods | AC Valhalla |
 |---------|-----------------|--------------|
 | **Installation** | Manual DLL injection, registry hacks | One-click installer |
 | **Camera Detection** | Requires engine source access | Automatic camera matrix detection |
@@ -35,7 +35,7 @@ Unlike traditional DLSS mods that require engine modifications or complex inject
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│                    Tensor-Curie Architecture                    │
+│                    AC Valhalla Architecture                     │
 ├─────────────────┬──────────────────────────────────────────────┤
 │  DXGI Proxy     │  Intercepts graphics calls without injection │
 │  ─────────────  │  ─────────────────────────────────────────── │

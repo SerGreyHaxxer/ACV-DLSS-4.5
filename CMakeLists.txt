@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(tensor-curie
+project(acv-dlss
     VERSION 4.5.0
     DESCRIPTION "DLSS 4.5 DXGI Proxy for Assassin's Creed Valhalla"
     LANGUAGES CXX
@@ -17,7 +17,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 # ============================================================================
 # Options
 # ============================================================================
-option(TENSOR_CURIE_WERROR "Treat warnings as errors (used by CI)" OFF)
+option(ACV_DLSS_WERROR "Treat warnings as errors (used by CI)" OFF)
 
 # ============================================================================
 # Static Analysis & Sanitizers
@@ -31,7 +31,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 # Clang-tidy integration (if available, skip in CI to avoid noise)
-if(NOT TENSOR_CURIE_WERROR)
+if(NOT ACV_DLSS_WERROR)
     find_program(CLANG_TIDY_EXE NAMES clang-tidy clang-tidy.exe)
     if(CLANG_TIDY_EXE)
         message(STATUS "Found clang-tidy: ${CLANG_TIDY_EXE}")
@@ -131,7 +131,7 @@ target_compile_options(${PROJECT_NAME} PRIVATE
 )
 
 # Warnings-as-errors for CI builds
-if(TENSOR_CURIE_WERROR)
+if(ACV_DLSS_WERROR)
     target_compile_options(${PROJECT_NAME} PRIVATE /WX)
     message(STATUS "Warnings-as-errors enabled (CI mode)")
 endif()
@@ -142,7 +142,7 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
     _CRT_SECURE_NO_WARNINGS
-    TENSOR_CURIE_VERSION="${PROJECT_VERSION}"
+    ACV_DLSS_VERSION="${PROJECT_VERSION}"
 )
 
 # ============================================================================
@@ -173,8 +173,8 @@ add_subdirectory(tools/TensorBoot)
 # ============================================================================
 # Phase 1: Testing Infrastructure (Catch2)
 # ============================================================================
-option(TENSOR_CURIE_BUILD_TESTS "Build the unit test suite" OFF)
-if(TENSOR_CURIE_BUILD_TESTS)
+option(ACV_DLSS_BUILD_TESTS "Build the unit test suite" OFF)
+if(ACV_DLSS_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()

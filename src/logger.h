@@ -36,7 +36,7 @@ public:
       auto file_sink =
           std::make_shared<spdlog::sinks::basic_file_sink_mt>(filename, true);
       auto logger = std::make_shared<spdlog::async_logger>(
-          "tensor-curie", file_sink, spdlog::thread_pool(),
+          "acv-dlss", file_sink, spdlog::thread_pool(),
           spdlog::async_overflow_policy::block);
 
       spdlog::set_default_logger(logger);

@@ -1296,7 +1296,7 @@ void ImGuiOverlay::BuildMainPanel() {
   m_renderer.FillRect(panelDrawX, panelDrawY, panelW, titleH, titleBg);
 
   // Title text — clean and minimal
-  m_renderer.DrawTextA("TENSOR CURIE", panelDrawX + 16.0f, panelDrawY, panelW * 0.5f, titleH,
+  m_renderer.DrawTextA("AC VALHALLA", panelDrawX + 16.0f, panelDrawY, panelW * 0.5f, titleH,
                        m_accent, vtheme::kFontTitle * fontScl, ValhallaRenderer::TextAlign::Left, true);
   m_renderer.DrawTextA("DLSS 4.5", panelDrawX + 16.0f, panelDrawY, panelW - 56.0f, titleH,
                        vtheme::kTextSecondary, vtheme::kFontSmall, ValhallaRenderer::TextAlign::Right);
@@ -1816,8 +1816,8 @@ void ImGuiOverlay::BuildMainPanel() {
       Label("SYSTEM");
       {
         std::string verStr =
-#ifdef TENSOR_CURIE_VERSION
-            TENSOR_CURIE_VERSION;
+#ifdef ACV_DLSS_VERSION
+            ACV_DLSS_VERSION;
 #else
             "dev";
 #endif

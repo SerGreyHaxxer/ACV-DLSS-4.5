@@ -1,4 +1,4 @@
-// Tensor-Curie Screen Space Ray Tracing (SSRT) Compute Shader
+// AC Valhalla Screen Space Ray Tracing (SSRT) Compute Shader
 // Phase 2.1: Ray Tracing Injection
 
 #define BLOCK_SIZE 8

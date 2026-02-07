@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 project(TensorBoot
     VERSION 1.0.0
-    DESCRIPTION "Safe Mode Bootstrapper for Tensor-Curie DLSS Proxy"
+    DESCRIPTION "Safe Mode Bootstrapper for AC Valhalla DLSS Proxy"
     LANGUAGES CXX
 )
 

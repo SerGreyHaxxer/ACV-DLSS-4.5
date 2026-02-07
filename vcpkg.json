@@ -1,5 +1,5 @@
 {
-  "name": "tensor-curie",
+  "name": "acv-dlss",
   "version": "4.5.0",
   "builtin-baseline": "fb87e2bb3fe69e16c224989acb5a61349166c782",
   "dependencies": [

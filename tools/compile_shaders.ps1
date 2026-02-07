@@ -1,4 +1,4 @@
-# Tensor-Curie Shader Compiler
+# AC Valhalla Shader Compiler
 # Compiles HLSL shaders to precompiled C++ byte array headers.
 # Requires Windows SDK fxc.exe (included with Visual Studio).
 #
