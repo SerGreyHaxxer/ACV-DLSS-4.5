@@ -192,6 +192,19 @@ void ResourceDetector::NewFrame() {
       // Trimming logic instead of full clear would go here
     }
   }
+
+  // Trim m_seenGeneration every 600 frames: remove entries not seen in the last 2 generations
+  if (currentFrame % 600 == 0) {
+    uint64_t currentGen = currentFrame / resource_config::kCleanupInterval;
+    uint64_t minGen = currentGen >= 2 ? currentGen - 2 : 0;
+    for (auto it = m_seenGeneration.begin(); it != m_seenGeneration.end();) {
+      if (it->second < minGen) {
+        it = m_seenGeneration.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
 }
 
 void ResourceDetector::Clear() {
@@ -203,6 +216,7 @@ void ResourceDetector::Clear() {
   m_motionCandidates.clear();
   m_depthCandidates.clear();
   m_colorCandidates.clear();
+  m_seenGeneration.clear();
 
   // CRITICAL: Do NOT clear m_bestMotion, m_bestDepth, m_bestColor or overrides
   // here. They will be replaced naturally if better candidates are found or
@@ -218,8 +232,6 @@ void ResourceDetector::SetExpectedDimensions(uint32_t width, uint32_t height) {
   m_expectedHeight = height;
 }
 
-// Define a GUID for our tag: {25CDDAA4-B1C6-41E5-9C52-FE69FC2E6A3D}
-static const GUID RD_GEN_TAG = {0x25cddaa4, 0xb1c6, 0x41e5, {0x9c, 0x52, 0xfe, 0x69, 0xfc, 0x2e, 0x6a, 0x3d}};
 
 void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
   RegisterResource(pResource, false);
@@ -298,23 +310,46 @@ void ResourceDetector::RegisterColorFromClear(ID3D12Resource* pResource) {
 void ResourceDetector::RegisterExposure(ID3D12Resource* pResource) {
   if (!pResource) return;
   D3D12_RESOURCE_DESC desc = pResource->GetDesc();
-  // Exposure textures are very small HDR textures (1x1 to 4x4)
-  if (desc.Width > 4 || desc.Height > 4) return;
+  // Exposure textures are very small HDR textures (1x1 to 16x16)
+  if (desc.Width > 16 || desc.Height > 16) return;
 
-  // Only HDR formats for exposure
-  if (desc.Format != DXGI_FORMAT_R32_FLOAT && desc.Format != DXGI_FORMAT_R16_FLOAT &&
-      desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT && desc.Format != DXGI_FORMAT_R32G32B32A32_FLOAT &&
-      desc.Format != DXGI_FORMAT_R11G11B10_FLOAT && desc.Format != DXGI_FORMAT_R16G16_FLOAT &&
-      desc.Format != DXGI_FORMAT_R32_TYPELESS && desc.Format != DXGI_FORMAT_R16_TYPELESS)
-    return;
+  bool isUAV = (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0;
+
+  // For textures larger than 4x4, only accept UAV-flagged R32_FLOAT or R16_FLOAT
+  if (desc.Width > 4 || desc.Height > 4) {
+    if (!isUAV || (desc.Format != DXGI_FORMAT_R32_FLOAT && desc.Format != DXGI_FORMAT_R16_FLOAT))
+      return;
+  } else {
+    // Only HDR formats for exposure
+    if (desc.Format != DXGI_FORMAT_R32_FLOAT && desc.Format != DXGI_FORMAT_R16_FLOAT &&
+        desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT && desc.Format != DXGI_FORMAT_R32G32B32A32_FLOAT &&
+        desc.Format != DXGI_FORMAT_R11G11B10_FLOAT && desc.Format != DXGI_FORMAT_R16G16_FLOAT &&
+        desc.Format != DXGI_FORMAT_R32_TYPELESS && desc.Format != DXGI_FORMAT_R16_TYPELESS)
+      return;
+  }
 
   std::unique_lock<std::shared_mutex> lock(m_mutex);
   if (m_exposureResource.Get() == pResource) return;
-  // Prefer 1x1 R32_FLOAT (most common exposure format)
+  // Prefer 1x1 R32_FLOAT > 1x1 R16_FLOAT > smallest UAV-flagged R32_FLOAT
   if (m_exposureResource) {
     D3D12_RESOURCE_DESC curDesc = m_exposureResource->GetDesc();
-    if (curDesc.Width == 1 && curDesc.Height == 1 && (desc.Width > 1 || desc.Height > 1))
+    bool curIs1x1 = (curDesc.Width == 1 && curDesc.Height == 1);
+    bool newIs1x1 = (desc.Width == 1 && desc.Height == 1);
+    if (curIs1x1 && !newIs1x1)
       return; // Keep existing 1x1 over larger
+    if (curIs1x1 && newIs1x1) {
+      if (curDesc.Format == DXGI_FORMAT_R32_FLOAT)
+        return; // Keep existing 1x1 R32_FLOAT (best)
+      if (curDesc.Format == DXGI_FORMAT_R16_FLOAT && desc.Format != DXGI_FORMAT_R32_FLOAT)
+        return; // Keep existing 1x1 R16_FLOAT unless new is R32_FLOAT
+    }
+    if (!curIs1x1 && !newIs1x1) {
+      // Both are larger; prefer smaller UAV-flagged R32_FLOAT
+      UINT64 curSize = curDesc.Width * curDesc.Height;
+      UINT64 newSize = desc.Width * desc.Height;
+      if (curSize <= newSize)
+        return; // Keep existing smaller or equal
+    }
   }
   m_exposureResource = pResource;
   LOG_INFO("[Scanner] Exposure Resource Identified: {}x{} Fmt:{} Ptr:{:p}", desc.Width, desc.Height,
@@ -370,32 +405,10 @@ ResourceDetector::GetMotionFormatOverride(ID3D12Resource* pResource) {
 void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDuplicate) {
   if (!pResource) return;
 
-  // OPTIMIZATION: Check if we've already processed this resource in the current
-  // "generation"
-  uint64_t currentFrame = m_frameCount.load(std::memory_order_acquire);
-  uint64_t currentGen = currentFrame / resource_config::kCleanupInterval;
-
-  uint64_t lastSeenGen = 0;
-  UINT dataSize = sizeof(uint64_t);
-  if (!allowDuplicate && SUCCEEDED(pResource->GetPrivateData(RD_GEN_TAG, &dataSize, &lastSeenGen))) {
-    if (lastSeenGen == currentGen) {
-      return; // Already processed this generation
-    }
-  }
-
-  // Mark it as seen for this generation immediately
-  if (FAILED(pResource->SetPrivateData(RD_GEN_TAG, sizeof(uint64_t), &currentGen))) {
-    static uint32_t s_tagFailLog = 0;
-    if (s_tagFailLog++ % 300 == 0) {
-      LOG_WARN("[RES] SetPrivateData failed for resource {:p}", static_cast<void*>(pResource));
-    }
-    return;
-  }
-
   D3D12_RESOURCE_DESC desc = pResource->GetDesc();
 
-  // Check for small Exposure textures (up to 4x4)
-  if (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && desc.Width <= 4 && desc.Height <= 4) {
+  // Check for small Exposure textures (up to 16x16)
+  if (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && desc.Width <= 16 && desc.Height <= 16) {
     RegisterExposure(pResource);
     return;
   }
@@ -427,6 +440,18 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDup
   }
 
   std::unique_lock<std::shared_mutex> lock(m_mutex);
+
+  // OPTIMIZATION: Check if we've already processed this resource in the current
+  // generation (read frame count under lock to avoid TOCTOU race)
+  uint64_t currentFrame = m_frameCount.load(std::memory_order_relaxed);
+  uint64_t currentGen = currentFrame / resource_config::kCleanupInterval;
+  if (!allowDuplicate) {
+    auto it = m_seenGeneration.find(pResource);
+    if (it != m_seenGeneration.end() && it->second == currentGen) {
+      return; // Already processed this generation
+    }
+  }
+  m_seenGeneration[pResource] = currentGen;
 
   static uint32_t s_acceptLog = 0;
   if (s_acceptLog++ % 120 == 0) {

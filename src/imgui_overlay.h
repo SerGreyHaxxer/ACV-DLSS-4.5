@@ -54,6 +54,11 @@ public:
     void UpdateControls();
     bool IsVisible() const { return m_visible; }
 
+    // Widget drawing methods (public for auto_ui_generator)
+    bool Checkbox(const char* label, bool* value, bool enabled = true);
+    bool SliderFloat(const char* label, float* value, float vmin, float vmax, const char* fmt = "%.2f", bool enabled = true);
+    bool Combo(const char* label, int* selectedIndex, const char* const* items, int itemCount, bool enabled = true);
+
 private:
     ImGuiOverlay() = default;
 
@@ -75,15 +80,11 @@ private:
     void BeginWidgetFrame();
     bool PointInRect(float px, float py, float rx, float ry, float rw, float rh) const;
 
-    // Widget drawing methods â€” return true if value changed
     void SectionHeader(const char* label, bool* open);
     void NorseSeparator();
     void Label(const char* text, const D2D1_COLOR_F& color = vtheme::kTextPrimary);
     void LabelValue(const char* label, const char* value);
     bool Button(const char* label, float w = 0.0f);
-    bool Checkbox(const char* label, bool* value, bool enabled = true);
-    bool SliderFloat(const char* label, float* value, float vmin, float vmax, const char* fmt = "%.2f", bool enabled = true);
-    bool Combo(const char* label, int* selectedIndex, const char* const* items, int itemCount, bool enabled = true);
     bool ColorEdit3(const char* label, float* r, float* g, float* b);
     void StatusDot(const char* label, const D2D1_COLOR_F& color);
     void PlotLines(const char* label, const float* values, int count, int offset,

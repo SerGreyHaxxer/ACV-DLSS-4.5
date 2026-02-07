@@ -8,6 +8,7 @@
  */
 #pragma once
 #include <d3d12.h>
+#include <DirectXMath.h>
 #include <wrl/client.h>
 #include <mutex>
 #include <vector>
@@ -27,7 +28,7 @@ public:
                  const float* viewProjInv,
                  const float* viewProj,
                  const float* camPos,
-                 const float2& resolution);
+                 const DirectX::XMFLOAT2& resolution);
 
 private:
     RayTracingPass() = default;

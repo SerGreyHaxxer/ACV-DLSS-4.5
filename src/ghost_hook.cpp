@@ -77,16 +77,22 @@ static int GetConditionBitPos(int slot) {
 }
 
 // Build Dr7 value for all active slots
+// Phase 3: Added explicit clearing of condition/length bits for
+// disabled/inactive slots as defense-in-depth against stale Dr7 state.
 static DWORD64 BuildDr7(const HookSlot* slots, int disabledSlot = -1) {
   DWORD64 dr7 = 0;
 
   for (int i = 0; i < static_cast<int>(kMaxHooks); i++) {
+    int pos = GetConditionBitPos(i);
     if (slots[i].active && i != disabledSlot) {
       dr7 |= GetEnableBit(i);
       // Set condition=execute (00), length=1 (00) at bits 16+i*4
-      int pos = GetConditionBitPos(i);
       dr7 &= ~(0xFULL << pos); // Clear condition/length bits
                                // 00 for execute, 00 for 1-byte (both zero, so nothing to OR)
+    } else {
+      // Defense-in-depth: explicitly clear condition/length bits for
+      // inactive/disabled slots to prevent stale Dr7 state from leaking.
+      dr7 &= ~(0xFULL << pos);
     }
   }
 
@@ -180,6 +186,7 @@ int HookManager::InstallHook(uintptr_t address, HookCallback callback, void* use
   m_Slots[slot].callback = std::move(callback);
   m_Slots[slot].userData = userData;
   m_Slots[slot].active = true;
+  m_DesiredAddr[slot].store(address, std::memory_order_release);
 
   LeaveCriticalSection(&m_Lock);
 
@@ -251,6 +258,43 @@ void HookManager::EnableHook(int hookId) {
   }
 }
 
+void HookManager::SwapRotatingSlots(int slotA, uintptr_t addrA, HookCallback cbA, int slotB, uintptr_t addrB,
+                                    HookCallback cbB) {
+  if (!m_Initialized) return;
+  if (slotA < 0 || slotA >= static_cast<int>(kMaxHooks)) return;
+  if (slotB < 0 || slotB >= static_cast<int>(kMaxHooks)) return;
+
+  EnterCriticalSection(&m_Lock);
+
+  // Update slot A
+  if (addrA != 0) {
+    m_Slots[slotA].address = addrA;
+    m_Slots[slotA].callback = std::move(cbA);
+    m_Slots[slotA].userData = nullptr;
+    m_Slots[slotA].active = true;
+  } else {
+    m_Slots[slotA] = {};
+  }
+
+  // Update slot B
+  if (addrB != 0) {
+    m_Slots[slotB].address = addrB;
+    m_Slots[slotB].callback = std::move(cbB);
+    m_Slots[slotB].userData = nullptr;
+    m_Slots[slotB].active = true;
+  } else {
+    m_Slots[slotB] = {};
+  }
+
+  LeaveCriticalSection(&m_Lock);
+
+  // Update atomic desired addresses for lazy propagation.
+  // The VEH handler will pick these up on the next breakpoint hit
+  // and update each thread's Dr registers — ZERO thread suspension.
+  m_DesiredAddr[slotA].store(addrA, std::memory_order_release);
+  m_DesiredAddr[slotB].store(addrB, std::memory_order_release);
+}
+
 HookManager::Stats HookManager::GetStats() const {
   return m_Stats;
 }
@@ -265,8 +309,26 @@ LONG WINAPI HookManager::VehHandler(PEXCEPTION_POINTERS exInfo) {
     return EXCEPTION_CONTINUE_SEARCH;
   }
 
-  // Prevent recursion
+  // Phase 0: Handle single-step resume (TF was set to re-enable a disabled slot)
+  if (tl_DisabledSlot >= 0) {
+    HookManager& mgr = Get();
+    if (mgr.m_Initialized) {
+      // Re-enable the previously disabled breakpoint
+      EnterCriticalSection(&mgr.m_Lock);
+      exInfo->ContextRecord->Dr7 = BuildDr7(mgr.m_Slots);
+      LeaveCriticalSection(&mgr.m_Lock);
+    }
+    tl_DisabledSlot = -1;
+    // Clear TF so we don't keep single-stepping
+    exInfo->ContextRecord->EFlags &= ~0x100;
+    exInfo->ContextRecord->Dr6 = 0;
+    return EXCEPTION_CONTINUE_EXECUTION;
+  }
+
+  // Prevent recursion — track blocked re-entries for diagnostics
   if (tl_InsideCallback) {
+    HookManager& mgrRef = Get();
+    mgrRef.m_Stats.recursionBlocked++;
     return EXCEPTION_CONTINUE_SEARCH;
   }
 
@@ -316,14 +378,45 @@ LONG WINAPI HookManager::VehHandler(PEXCEPTION_POINTERS exInfo) {
     mgr.m_Stats.skippedCalls++;
   }
 
+  // Phase 0: Full Dr6/Dr7 context sanitization
   // Clear the debug status register to acknowledge the exception
   exInfo->ContextRecord->Dr6 = 0;
 
-  // If continuing to original, we need to:
-  // 1. Temporarily disable the breakpoint
-  // 2. Set single-step flag (TF) to re-enable after one instruction
-  // This is complex - for now, we just disable during this thread's execution
-  // The callback can manually disable/enable as needed
+  // ---- Lazy propagation of rotating slots ----
+  // Update Dr0-Dr3 to match the desired addresses. This is how
+  // SwapRotatingSlots changes propagate to each thread WITHOUT
+  // ever suspending them. Each thread self-updates on its next
+  // breakpoint hit (Present/ExecuteCommandLists fire frequently).
+  {
+    uintptr_t d0 = mgr.m_DesiredAddr[0].load(std::memory_order_acquire);
+    uintptr_t d1 = mgr.m_DesiredAddr[1].load(std::memory_order_acquire);
+    uintptr_t d2 = mgr.m_DesiredAddr[2].load(std::memory_order_acquire);
+    uintptr_t d3 = mgr.m_DesiredAddr[3].load(std::memory_order_acquire);
+    exInfo->ContextRecord->Dr0 = d0;
+    exInfo->ContextRecord->Dr1 = d1;
+    exInfo->ContextRecord->Dr2 = d2;
+    exInfo->ContextRecord->Dr3 = d3;
+  }
+
+  if (continueToOriginal) {
+    // Temporarily disable the breakpoint for this hook and set TF (Trap Flag)
+    // so we get a single-step exception after executing the original instruction.
+    // On the single-step, we re-enable the breakpoint.
+    tl_DisabledSlot = hookId;
+
+    // Rebuild Dr7 with this slot disabled
+    EnterCriticalSection(&mgr.m_Lock);
+    exInfo->ContextRecord->Dr7 = BuildDr7(mgr.m_Slots, hookId);
+    LeaveCriticalSection(&mgr.m_Lock);
+
+    // Set Trap Flag (bit 8) for single-step
+    exInfo->ContextRecord->EFlags |= 0x100;
+  } else {
+    // Not continuing — still rebuild Dr7 to reflect current state
+    EnterCriticalSection(&mgr.m_Lock);
+    exInfo->ContextRecord->Dr7 = BuildDr7(mgr.m_Slots);
+    LeaveCriticalSection(&mgr.m_Lock);
+  }
 
   return EXCEPTION_CONTINUE_EXECUTION;
 }

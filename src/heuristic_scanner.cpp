@@ -280,6 +280,13 @@ bool HeuristicScanner::GetReadbackResult(ScanResult& outResult) {
         return false;
     }
 
+    // RAII guard ensures Unmap is called even if an exception occurs
+    struct UnmapGuard {
+        ID3D12Resource* res;
+        ~UnmapGuard() { if (res) res->Unmap(0, nullptr); }
+    };
+    UnmapGuard guard{ frame.readbackBuffer.Get() };
+
     struct float4 { float x, y, z, w; };
     float4* samples = reinterpret_cast<float4*>(pData);
 
@@ -306,8 +313,6 @@ bool HeuristicScanner::GetReadbackResult(ScanResult& outResult) {
         sumSqX += (x * x);
         sumSqY += (y * y);
     }
-
-    frame.readbackBuffer->Unmap(0, nullptr);
 
     float count = static_cast<float>(SCAN_SAMPLE_COUNT);
     float avgX = (float)(sumX / count);

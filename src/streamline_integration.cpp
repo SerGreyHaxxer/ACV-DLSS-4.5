@@ -163,6 +163,17 @@ void StreamlineIntegration::SetCameraData(const float *view, const float *proj,
                                           float jitterX, float jitterY) {
   if (!m_initialized || !m_frameToken)
     return;
+
+  // Phase 4.5: Validate jitter before passing to Streamline
+  if (!std::isfinite(jitterX) || !std::isfinite(jitterY)) {
+    jitterX = 0.0f;
+    jitterY = 0.0f;
+  }
+  if (std::fabs(jitterX) > 1.0f || std::fabs(jitterY) > 1.0f) {
+    jitterX = 0.0f;
+    jitterY = 0.0f;
+  }
+
   sl::Constants consts{};
   if (view)
     std::copy_n(view, 16, reinterpret_cast<float*>(&consts.cameraViewToClip));

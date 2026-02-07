@@ -31,6 +31,8 @@ enum class Device : size_t {
   CreateCommandQueue       = 8,
   CreateCommandAllocator   = 9,
   CreateCommandList        = 12,
+  CreateDescriptorHeap     = 14,
+  CreateConstantBufferView   = 17,
   CreateShaderResourceView   = 18,
   CreateUnorderedAccessView  = 19,
   CreateRenderTargetView     = 20,
@@ -51,6 +53,11 @@ enum class CommandList : size_t {
 
 enum class CommandQueue : size_t {
   ExecuteCommandLists = 10,
+};
+
+enum class SwapChain : size_t {
+  Present        = 8,
+  ResizeBuffers  = 13,
 };
 
 } // namespace vtable

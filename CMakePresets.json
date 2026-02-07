@@ -57,6 +57,19 @@
       "generator": "Visual Studio 17 2022",
       "architecture": { "value": "x64", "strategy": "set" },
       "binaryDir": "${sourceDir}/build/vs2022"
+    },
+    {
+      "name": "test",
+      "displayName": "Test (Debug + Catch2)",
+      "description": "Build with tests enabled",
+      "inherits": "vcpkg-base",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/test",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "TENSOR_CURIE_BUILD_TESTS": "ON",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
     }
   ],
 
@@ -82,6 +95,18 @@
       "name": "vs2022-release",
       "configurePreset": "vs2022",
       "configuration": "Release"
+    },
+    {
+      "name": "test",
+      "configurePreset": "test"
+    }
+  ],
+
+  "testPresets": [
+    {
+      "name": "test",
+      "configurePreset": "test",
+      "output": { "outputOnFailure": true }
     }
   ]
 }

@@ -16,9 +16,11 @@
  */
 #pragma once
 #include <d3d12.h>
+#include <cstdint>
 
-void SamplerInterceptor_NewFrame();
-void ApplySamplerLodBias(float bias);
-void RegisterSampler(const D3D12_SAMPLER_DESC& desc, D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Device* device);
-void ClearSamplers();
-
+// Lightweight resource state tracker fed by ResourceBarrier ghost hook.
+// Lock hierarchy level 3 (SwapChain=1 > Hooks=2 > Resources=3 > Config=4 > Logging=5).
+void ResourceStateTracker_RecordTransition(ID3D12Resource* pResource, D3D12_RESOURCE_STATES stateBefore, D3D12_RESOURCE_STATES stateAfter);
+bool ResourceStateTracker_GetCurrentState(ID3D12Resource* pResource, D3D12_RESOURCE_STATES& outState);
+void ResourceStateTracker_EvictStale(uint64_t currentFrame, uint64_t maxAge);
+void ResourceStateTracker_Clear();

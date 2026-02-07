@@ -14,81 +14,41 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-#include <MinHook.h>
-#include <atomic>
-#include <d3d12.h>
-#include <dxgi1_4.h>
-#include <mutex>
-#include <psapi.h>
-#include <unordered_map>
-#include <wchar.h>
-#include <windows.h>
-#include <winternl.h>
+#include "hooks.h"
 
+#include "camera_scanner.h"
 #include "d3d12_wrappers.h"
 #include "descriptor_tracker.h"
 #include "dlss4_config.h"
-#include "hooks.h"
+#include "ghost_hook.h"
 #include "imgui_overlay.h"
 #include "input_handler.h"
+#include "jitter_engine.h"
 #include "logger.h"
 #include "pattern_scanner.h"
+#include "render_passes/ray_tracing_pass.h"
 #include "resource_detector.h"
+#include "resource_state_tracker.h"
 #include "sampler_interceptor.h"
 #include "streamline_integration.h"
-#include "render_passes/ray_tracing_pass.h"
 #include "vtable_utils.h"
 
-// ============================================================================
-// HOOK MANAGER IMPLEMENTATION
-// ============================================================================
+#include <d3d12.h>
+#include <dxgi1_4.h>
+#include <windows.h>
 
-HookManager &HookManager::Get() {
-  static HookManager instance;
-  return instance;
-}
+#include <atomic>
+#include <cmath>
+#include <limits>
+#include <mutex>
+#include <psapi.h>
+#include <unordered_map>
+#include <vector>
+#include <wchar.h>
+#include <winternl.h>
 
-bool HookManager::Initialize() {
-  if (m_initialized)
-    return true;
-  if (MH_Initialize() != MH_OK) {
-    LOG_ERROR("Failed to initialize MinHook");
-    return false;
-  }
-  m_initialized = true;
-  LOG_INFO("MinHook initialized successfully");
-  return true;
-}
-
-void HookManager::Shutdown() {
-  if (!m_initialized)
-    return;
-  MH_Uninitialize();
-  m_initialized = false;
-  LOG_INFO("MinHook uninitialized");
-}
-
-HookResult HookManager::CreateHookInternal(void *target, void *detour,
-                                     void **original) {
-  if (!m_initialized && !Initialize())
-    return std::unexpected(MH_ERROR_NOT_INITIALIZED);
-
-  MH_STATUS status = MH_CreateHook(target, detour, original);
-  if (status != MH_OK && status != MH_ERROR_ALREADY_CREATED) {
-    LOG_ERROR("Failed to create hook for address {:p}, status: {}", target,
-              static_cast<int>(status));
-    return std::unexpected(status);
-  }
-
-  status = MH_EnableHook(target);
-  if (status != MH_OK) {
-    LOG_ERROR("Failed to enable hook for address {:p}", target);
-    return std::unexpected(status);
-  }
-
-  LOG_INFO("Successfully hooked address {:p} -> {:p}", target, detour);
-  return {};
-}
+// Forward declarations from dxgi_wrappers
+extern void OnPresentThread(IDXGISwapChain* pSwapChain);
 
 // ============================================================================
 // GLOBAL STATE
@@ -112,20 +72,24 @@ static std::atomic<bool> s_cmdListHooked{false};
 static std::atomic<bool> s_cmdQueueHooked{false};
 static std::atomic<bool> s_deviceHooked{false};
 
-extern "C" void LogStartup(const char *msg);
+extern "C" void LogStartup(const char* msg);
 
-void NotifyWrappedCommandListUsed() { g_WrappedCommandListUsed.store(true); }
+void NotifyWrappedCommandListUsed() {
+  g_WrappedCommandListUsed.store(true);
+}
 
-bool IsWrappedCommandListUsed() { return g_WrappedCommandListUsed.load(); }
+bool IsWrappedCommandListUsed() {
+  return g_WrappedCommandListUsed.load();
+}
 
 void SetPatternJitterAddress(uintptr_t address) {
   g_JitterAddress.store(address);
   g_JitterValid.store(address != 0);
 }
 
-// Isolated SEH helper â€” no C++ objects on stack (extern "C" avoids UB with destructors)
-extern "C" static bool SafeReadFloatPair(uintptr_t addr, float *outX, float *outY) {
-  const float *vals = reinterpret_cast<const float *>(addr);
+// Isolated SEH helper - no C++ objects on stack (extern "C" avoids UB with destructors)
+extern "C" static bool SafeReadFloatPair(uintptr_t addr, float* outX, float* outY) {
+  const float* vals = reinterpret_cast<const float*>(addr);
   __try {
     *outX = vals[0];
     *outY = vals[1];
@@ -135,24 +99,19 @@ extern "C" static bool SafeReadFloatPair(uintptr_t addr, float *outX, float *out
   return true;
 }
 
-bool TryGetPatternJitter(float &jitterX, float &jitterY) {
+bool TryGetPatternJitter(float& jitterX, float& jitterY) {
   uintptr_t addr = g_JitterAddress.load();
-  if (!addr)
-    return false;
+  if (!addr) return false;
 
   MEMORY_BASIC_INFORMATION mbi;
-  if (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == 0)
-    return false;
-  if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
-    return false;
+  if (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == 0) return false;
+  if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return false;
 
   float jx = 0.0f;
   float jy = 0.0f;
-  if (!SafeReadFloatPair(addr, &jx, &jy))
-    return false;
+  if (!SafeReadFloatPair(addr, &jx, &jy)) return false;
 
-  if (!std::isfinite(jx) || !std::isfinite(jy))
-    return false;
+  if (!std::isfinite(jx) || !std::isfinite(jy)) return false;
 
   jitterX = jx;
   jitterY = jy;
@@ -160,7 +119,7 @@ bool TryGetPatternJitter(float &jitterX, float &jitterY) {
 }
 
 // ============================================================================
-// D3D12 HOOKS
+// D3D12 ORIGINAL FUNCTION POINTERS - captured from vtables, called by hooks
 // ============================================================================
 
 PFN_ExecuteCommandLists g_OriginalExecuteCommandLists = nullptr;
@@ -168,20 +127,18 @@ PFN_CreateCommandQueue g_OriginalCreateCommandQueue = nullptr;
 PFN_CreateCommittedResource g_OriginalCreateCommittedResource = nullptr;
 PFN_D3D12CreateDevice g_OriginalD3D12CreateDevice = nullptr;
 
-typedef HRESULT(STDMETHODCALLTYPE *PFN_Close)(ID3D12GraphicsCommandList *);
-typedef void(STDMETHODCALLTYPE *PFN_ResourceBarrier)(
-    ID3D12GraphicsCommandList *, UINT, const D3D12_RESOURCE_BARRIER *);
-typedef void(STDMETHODCALLTYPE *PFN_SetGraphicsRootConstantBufferView)(
-    ID3D12GraphicsCommandList *, UINT, D3D12_GPU_VIRTUAL_ADDRESS);
-typedef void(STDMETHODCALLTYPE *PFN_SetComputeRootConstantBufferView)(
-    ID3D12GraphicsCommandList *, UINT, D3D12_GPU_VIRTUAL_ADDRESS);
+typedef HRESULT(STDMETHODCALLTYPE* PFN_Close)(ID3D12GraphicsCommandList*);
+typedef void(STDMETHODCALLTYPE* PFN_ResourceBarrier)(ID3D12GraphicsCommandList*, UINT, const D3D12_RESOURCE_BARRIER*);
+typedef void(STDMETHODCALLTYPE* PFN_SetGraphicsRootConstantBufferView)(ID3D12GraphicsCommandList*, UINT,
+                                                                       D3D12_GPU_VIRTUAL_ADDRESS);
+typedef void(STDMETHODCALLTYPE* PFN_SetComputeRootConstantBufferView)(ID3D12GraphicsCommandList*, UINT,
+                                                                      D3D12_GPU_VIRTUAL_ADDRESS);
 
 PFN_Close g_OriginalClose = nullptr;
 PFN_ResourceBarrier g_OriginalResourceBarrier = nullptr;
 PFN_SetGraphicsRootConstantBufferView g_OriginalSetGraphicsRootCbv = nullptr;
 PFN_SetComputeRootConstantBufferView g_OriginalSetComputeRootCbv = nullptr;
 
-// New hook function pointers
 PFN_CreatePlacedResource g_OriginalCreatePlacedResource = nullptr;
 PFN_CreateShaderResourceView g_OriginalCreateSRV = nullptr;
 PFN_CreateUnorderedAccessView g_OriginalCreateUAV = nullptr;
@@ -189,10 +146,109 @@ PFN_CreateRenderTargetView g_OriginalCreateRTV = nullptr;
 PFN_CreateDepthStencilView g_OriginalCreateDSV = nullptr;
 PFN_ClearDepthStencilView g_OriginalClearDSV = nullptr;
 PFN_ClearRenderTargetView g_OriginalClearRTV = nullptr;
+PFN_CreateConstantBufferView g_OriginalCreateCBV = nullptr;
+PFN_CreateSampler g_OriginalCreateSampler = nullptr;
+PFN_CreateDescriptorHeap g_OriginalCreateDescriptorHeap = nullptr;
+PFN_CreateCommandList g_OriginalCreateCommandList = nullptr;
 
-void STDMETHODCALLTYPE
-HookedExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
-                          ID3D12CommandList *const *ppCommandLists) noexcept {
+// ============================================================================
+// SLOT ROTATION SCHEDULER - shares 4 HW breakpoints across 14+ hooks
+// ============================================================================
+// Dr0: Present       (pinned - always active)
+// Dr1: ExecCmdLists  (pinned - always active)
+// Dr2: Rotating slot A
+// Dr3: Rotating slot B
+//
+// Each frame, slots A/B rotate through the remaining hooks:
+//   Device hooks:    CreateSRV, CreateUAV, CreateRTV, CreateDSV, CreateCBV
+//   CmdList hooks:   ResourceBarrier, Close, SetComputeRootCBV,
+//                    SetGraphicsRootCBV, ClearDSV, ClearRTV
+// ============================================================================
+
+struct RotatingHookEntry {
+  uintptr_t address;
+  Ghost::HookCallback callback;
+  const char* name;
+};
+
+static std::vector<RotatingHookEntry> g_RotatingHooks;
+static std::mutex g_RotationMutex;
+static std::atomic<uint32_t> g_RotationIndex{0};
+static int g_PinnedSlot0 = -1; // Present
+static int g_PinnedSlot1 = -1; // ExecuteCommandLists
+static int g_RotatingSlotA = -1;
+static int g_RotatingSlotB = -1;
+
+static void AdvanceSlotRotation() {
+  // Phase 3 perf: Throttle rotation — only swap every N frames.
+  // With 18 hooks and 2 slots, a full cycle takes 9*N frames.
+  // N=4 gives a ~36 frame cycle (~0.6s @ 60fps) which is fine since
+  // most rotating hooks (CreateSampler, CreateDescriptorHeap, etc.)
+  // don't need per-frame coverage.
+  constexpr uint32_t kRotateEveryNFrames = 4;
+  static std::atomic<uint32_t> s_frameCounter{0};
+  uint32_t frame = s_frameCounter.fetch_add(1, std::memory_order_relaxed);
+  if ((frame % kRotateEveryNFrames) != 0) return;
+
+  std::lock_guard<std::mutex> lock(g_RotationMutex);
+  if (g_RotatingHooks.empty()) return;
+
+  auto& ghost = Ghost::HookManager::Get();
+  uint32_t count = static_cast<uint32_t>(g_RotatingHooks.size());
+  uint32_t idx = g_RotationIndex.fetch_add(2, std::memory_order_relaxed);
+  uint32_t idxA = idx % count;
+  uint32_t idxB = (idx + 1) % count;
+
+  auto& entryA = g_RotatingHooks[idxA];
+  uintptr_t addrA = entryA.address;
+  Ghost::HookCallback cbA = entryA.callback;
+
+  uintptr_t addrB = 0;
+  Ghost::HookCallback cbB = nullptr;
+  if (idxA != idxB) {
+    auto& entryB = g_RotatingHooks[idxB];
+    addrB = entryB.address;
+    cbB = entryB.callback;
+  }
+
+  // Batched swap: ONE thread enumeration instead of FOUR
+  ghost.SwapRotatingSlots(2, addrA, std::move(cbA), 3, addrB, std::move(cbB));
+}
+
+static void RegisterRotatingHook(uintptr_t address, Ghost::HookCallback callback, const char* name) {
+  if (!address) return;
+  std::lock_guard<std::mutex> lock(g_RotationMutex);
+  for (auto& entry : g_RotatingHooks) {
+    if (entry.address == address) return;
+  }
+  g_RotatingHooks.push_back({address, std::move(callback), name});
+  LOG_INFO("[GHOST] Registered rotating hook: {} @ {:p}", name, reinterpret_cast<void*>(address));
+}
+
+// ============================================================================
+// GHOST HOOK CALLBACKS - executed from VEH on hardware breakpoint
+// ============================================================================
+
+// --- Present (pinned Dr0) ---
+static bool GhostCB_Present(CONTEXT* ctx, void* /*userData*/) {
+  auto* pSwapChain = reinterpret_cast<IDXGISwapChain*>(Ghost::GetArg1(ctx));
+  try {
+    OnPresentThread(pSwapChain);
+  } catch (...) {
+    static std::atomic<uint32_t> s_errs{0};
+    if (s_errs.fetch_add(1) % 300 == 0) LOG_ERROR("[GHOST] Exception in Present callback");
+  }
+  // Per-frame tick for Phase 3 subsystems
+  DescriptorTracker_NewFrame();
+  SamplerInterceptor_NewFrame();
+  AdvanceSlotRotation();
+  return true;
+}
+
+// --- ExecuteCommandLists (pinned Dr1) ---
+static bool GhostCB_ExecuteCommandLists(CONTEXT* ctx, void* /*userData*/) {
+  auto* pThis = reinterpret_cast<ID3D12CommandQueue*>(Ghost::GetArg1(ctx));
+
   try {
     if (!StreamlineIntegration::Get().IsInitialized()) {
       Microsoft::WRL::ComPtr<ID3D12Device> pDevice;
@@ -206,411 +262,629 @@ HookedExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
       ResourceDetector::Get().NewFrame();
       StreamlineIntegration::Get().SetCommandQueue(pThis);
 
-      // Tag detected resources to Streamline
-      ID3D12Resource *pColor = ResourceDetector::Get().GetBestColorCandidate();
-      ID3D12Resource *pDepth = ResourceDetector::Get().GetBestDepthCandidate();
-      ID3D12Resource *pMVs =
-          ResourceDetector::Get().GetBestMotionVectorCandidate();
+      ID3D12Resource* pColor = ResourceDetector::Get().GetBestColorCandidate();
+      ID3D12Resource* pDepth = ResourceDetector::Get().GetBestDepthCandidate();
+      ID3D12Resource* pMVs = ResourceDetector::Get().GetBestMotionVectorCandidate();
 
-      if (pColor)
-        StreamlineIntegration::Get().TagColorBuffer(pColor);
-      if (pDepth)
-        StreamlineIntegration::Get().TagDepthBuffer(pDepth);
-      if (pMVs)
-        StreamlineIntegration::Get().TagMotionVectors(pMVs);
+      if (pColor) StreamlineIntegration::Get().TagColorBuffer(pColor);
+      if (pDepth) StreamlineIntegration::Get().TagDepthBuffer(pDepth);
+      if (pMVs) StreamlineIntegration::Get().TagMotionVectors(pMVs);
 
-      // Phase 2.1: Initialize Ray Tracing Pass (Lazy Init)
-      // This ensures the Root Signature and PSO are ready for injection
-      RayTracingPass::Get().Initialize(pDevice.Get());
+      Microsoft::WRL::ComPtr<ID3D12Device> pDevice;
+      if (SUCCEEDED(pThis->GetDevice(IID_PPV_ARGS(&pDevice)))) {
+        RayTracingPass::Get().Initialize(pDevice.Get());
+      }
 
-      // Camera data: use jitter from pattern scan only (no invasive matrix scanning)
       float jitterX = 0.0f, jitterY = 0.0f;
       TryGetPatternJitter(jitterX, jitterY);
       StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
     }
   } catch (...) {
-    LOG_ERROR("[HOOK] Exception in HookedExecuteCommandLists");
+    LOG_ERROR("[GHOST] Exception in ExecuteCommandLists callback");
   }
-
-  if (g_OriginalExecuteCommandLists)
-    g_OriginalExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
+  return true;
 }
 
-void STDMETHODCALLTYPE
-HookedResourceBarrier(ID3D12GraphicsCommandList *pThis, UINT NumBarriers,
-                      const D3D12_RESOURCE_BARRIER *pBarriers) noexcept {
+// ============================================================================
+// PHASE 2: COMMAND LIST GHOST HOOK CALLBACKS (Rotating)
+// ============================================================================
+
+static bool GhostCB_ResourceBarrier(CONTEXT* ctx, void* /*userData*/) {
+  auto NumBarriers = static_cast<UINT>(Ghost::GetArg2(ctx));
+  auto* pBarriers = reinterpret_cast<const D3D12_RESOURCE_BARRIER*>(Ghost::GetArg3(ctx));
+
   try {
     if (pBarriers && NumBarriers > 0) {
-      // Scan ALL barrier calls per frame, not just the first one.
-      // Rate-limit: scan up to kBarrierScanMax barriers per call.
-      UINT scanCount = (std::min)(NumBarriers,
-                                  static_cast<UINT>(resource_config::kBarrierScanMax));
+      UINT scanCount = (std::min)(NumBarriers, static_cast<UINT>(resource_config::kBarrierScanMax));
       for (UINT i = 0; i < scanCount; i++) {
         if (pBarriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION) {
-          ID3D12Resource *pRes = pBarriers[i].Transition.pResource;
+          ID3D12Resource* pRes = pBarriers[i].Transition.pResource;
           if (pRes) {
             ResourceDetector::Get().RegisterResource(pRes, true);
-
-            // Barrier state transitions provide strong detection signals
             D3D12_RESOURCE_STATES after = pBarriers[i].Transition.StateAfter;
-            if (after == D3D12_RESOURCE_STATE_DEPTH_WRITE ||
-                after == D3D12_RESOURCE_STATE_DEPTH_READ) {
+            if (after == D3D12_RESOURCE_STATE_DEPTH_WRITE || after == D3D12_RESOURCE_STATE_DEPTH_READ) {
               ResourceDetector::Get().RegisterDepthFromView(pRes, DXGI_FORMAT_UNKNOWN);
             }
+            ResourceStateTracker_RecordTransition(pRes, pBarriers[i].Transition.StateBefore,
+                                                  pBarriers[i].Transition.StateAfter);
           }
         }
       }
     }
   } catch (...) {
-    LOG_ERROR("[HOOK] Exception in HookedResourceBarrier");
+    LOG_ERROR("[GHOST] Exception in ResourceBarrier callback");
   }
-  if (g_OriginalResourceBarrier)
-    g_OriginalResourceBarrier(pThis, NumBarriers, pBarriers);
+  return true;
 }
 
-HRESULT STDMETHODCALLTYPE HookedClose(ID3D12GraphicsCommandList *pThis) noexcept {
+static bool GhostCB_Close(CONTEXT* ctx, void* /*userData*/) {
   try {
-    float jitterX = 0.0f, jitterY = 0.0f;
-    TryGetPatternJitter(jitterX, jitterY);
+    float patternX = 0.0f, patternY = 0.0f;
+    bool hasPattern = TryGetPatternJitter(patternX, patternY);
 
     uint64_t currentFrame = ResourceDetector::Get().GetFrameCount();
     static std::atomic<uint64_t> s_lastScanFrame{0};
 
     uint64_t lastScan = s_lastScanFrame.load(std::memory_order_relaxed);
     if (currentFrame > lastScan &&
-        s_lastScanFrame.compare_exchange_strong(lastScan, currentFrame,
-                                                std::memory_order_relaxed)) {
+        s_lastScanFrame.compare_exchange_strong(lastScan, currentFrame, std::memory_order_relaxed)) {
       float view[16], proj[16], score = 0.0f;
       bool found = TryScanAllCbvsForCamera(view, proj, &score, false, true);
-      if (!found)
-        found = TryScanDescriptorCbvsForCamera(view, proj, &score, false);
-      if (!found)
-        found = TryScanRootCbvsForCamera(view, proj, &score, false);
+      if (!found) found = TryScanDescriptorCbvsForCamera(view, proj, &score, false);
+      if (!found) found = TryScanRootCbvsForCamera(view, proj, &score, false);
+
+      // Phase 4: Three-tier jitter with validation & smoothing
+      float pX = hasPattern ? patternX : std::numeric_limits<float>::quiet_NaN();
+      float pY = hasPattern ? patternY : std::numeric_limits<float>::quiet_NaN();
+      JitterResult jitter = JitterEngine_Update(pX, pY, found ? proj : nullptr);
 
       if (found) {
-        UpdateCameraCache(view, proj, jitterX, jitterY);
-        StreamlineIntegration::Get().SetCameraData(view, proj, jitterX, jitterY);
+        UpdateCameraCache(view, proj, jitter.x, jitter.y);
+        StreamlineIntegration::Get().SetCameraData(view, proj, jitter.x, jitter.y);
       } else {
-        StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX,
-                                                   jitterY);
+        StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitter.x, jitter.y);
       }
-    } else {
-      StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX,
-                                                 jitterY);
     }
-
-    StreamlineIntegration::Get().EvaluateDLSS(pThis);
   } catch (...) {
-    LOG_ERROR("[HOOK] Exception in HookedClose");
+    LOG_ERROR("[GHOST] Exception in Close callback");
   }
-  if (!g_OriginalClose)
-    return E_FAIL;
-  return g_OriginalClose(pThis);
+  return true;
 }
 
-void STDMETHODCALLTYPE HookedSetGraphicsRootCbv(
-    ID3D12GraphicsCommandList *pThis, UINT RootParameterIndex,
-    D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) noexcept {
+static bool GhostCB_SetGraphicsRootCbv(CONTEXT* ctx, void* /*userData*/) {
+  auto BufferLocation = static_cast<D3D12_GPU_VIRTUAL_ADDRESS>(Ghost::GetArg3(ctx));
   try {
     TrackRootCbvAddress(BufferLocation);
   } catch (...) {
-    LOG_ERROR("[HOOK] Exception in HookedSetGraphicsRootCbv");
+    LOG_ERROR("[GHOST] Exception in SetGraphicsRootCbv");
   }
-  if (g_OriginalSetGraphicsRootCbv)
-    g_OriginalSetGraphicsRootCbv(pThis, RootParameterIndex, BufferLocation);
+  return true;
 }
 
-void STDMETHODCALLTYPE HookedSetComputeRootCbv(
-    ID3D12GraphicsCommandList *pThis, UINT RootParameterIndex,
-    D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) noexcept {
+static bool GhostCB_SetComputeRootCbv(CONTEXT* ctx, void* /*userData*/) {
+  auto BufferLocation = static_cast<D3D12_GPU_VIRTUAL_ADDRESS>(Ghost::GetArg3(ctx));
   try {
     TrackRootCbvAddress(BufferLocation);
   } catch (...) {
-    LOG_ERROR("[HOOK] Exception in HookedSetComputeRootCbv");
+    LOG_ERROR("[GHOST] Exception in SetComputeRootCbv");
   }
-  if (g_OriginalSetComputeRootCbv)
-    g_OriginalSetComputeRootCbv(pThis, RootParameterIndex, BufferLocation);
+  return true;
 }
 
-// ============================================================================
-// CLEAR HOOKS â€” Highest-confidence resource identification
-// ============================================================================
-
-void STDMETHODCALLTYPE
-HookedClearDepthStencilView(ID3D12GraphicsCommandList *pThis,
-                            D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView,
-                            D3D12_CLEAR_FLAGS ClearFlags, FLOAT Depth,
-                            UINT8 Stencil, UINT NumRects,
-                            const D3D12_RECT *pRects) noexcept {
+static bool GhostCB_ClearDSV(CONTEXT* ctx, void* /*userData*/) {
+  D3D12_CPU_DESCRIPTOR_HANDLE dsv;
+  dsv.ptr = static_cast<SIZE_T>(Ghost::GetArg2(ctx));
   try {
-    // Resolve descriptor to resource via tracker
-    ID3D12Resource *pResource = nullptr;
+    ID3D12Resource* pResource = nullptr;
     DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
-    if (TryResolveDescriptorResource(DepthStencilView, &pResource, &fmt)) {
-      if (pResource) {
-        ResourceDetector::Get().RegisterDepthFromClear(pResource, Depth);
-      }
+    if (TryResolveDescriptorResource(dsv, &pResource, &fmt) && pResource) {
+      ResourceDetector::Get().RegisterDepthFromClear(pResource, 1.0f);
     }
   } catch (...) {
-    LOG_ERROR("[HOOK] Exception in HookedClearDepthStencilView");
+    LOG_ERROR("[GHOST] Exception in ClearDSV");
   }
-  if (g_OriginalClearDSV)
-    g_OriginalClearDSV(pThis, DepthStencilView, ClearFlags, Depth, Stencil,
-                       NumRects, pRects);
+  return true;
 }
 
-void STDMETHODCALLTYPE
-HookedClearRenderTargetView(ID3D12GraphicsCommandList *pThis,
-                            D3D12_CPU_DESCRIPTOR_HANDLE RenderTargetView,
-                            const FLOAT ColorRGBA[4], UINT NumRects,
-                            const D3D12_RECT *pRects) noexcept {
+static bool GhostCB_ClearRTV(CONTEXT* ctx, void* /*userData*/) {
+  D3D12_CPU_DESCRIPTOR_HANDLE rtv;
+  rtv.ptr = static_cast<SIZE_T>(Ghost::GetArg2(ctx));
   try {
-    ID3D12Resource *pResource = nullptr;
+    ID3D12Resource* pResource = nullptr;
     DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
-    if (TryResolveDescriptorResource(RenderTargetView, &pResource, &fmt)) {
-      if (pResource) {
-        ResourceDetector::Get().RegisterColorFromClear(pResource);
-      }
+    if (TryResolveDescriptorResource(rtv, &pResource, &fmt) && pResource) {
+      ResourceDetector::Get().RegisterColorFromClear(pResource);
     }
   } catch (...) {
-    LOG_ERROR("[HOOK] Exception in HookedClearRenderTargetView");
+    LOG_ERROR("[GHOST] Exception in ClearRTV");
   }
-  if (g_OriginalClearRTV)
-    g_OriginalClearRTV(pThis, RenderTargetView, ColorRGBA, NumRects, pRects);
+  return true;
 }
 
 // ============================================================================
-// DEVICE VIEW-CREATION HOOKS â€” Feed descriptor tracker for format resolution
+// DEVICE VIEW-CREATION GHOST CALLBACKS (Rotating)
 // ============================================================================
 
-void STDMETHODCALLTYPE
-HookedCreateShaderResourceView(ID3D12Device *pThis, ID3D12Resource *pResource,
-                               const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc,
-                               D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) noexcept {
-  if (g_OriginalCreateSRV)
-    g_OriginalCreateSRV(pThis, pResource, pDesc, DestDescriptor);
+static bool GhostCB_CreateSRV(CONTEXT* ctx, void* /*userData*/) {
+  auto* pResource = reinterpret_cast<ID3D12Resource*>(Ghost::GetArg2(ctx));
+  auto* pDesc = reinterpret_cast<const D3D12_SHADER_RESOURCE_VIEW_DESC*>(Ghost::GetArg3(ctx));
+  D3D12_CPU_DESCRIPTOR_HANDLE handle;
+  handle.ptr = static_cast<SIZE_T>(Ghost::GetArg4(ctx));
   try {
     if (pResource) {
       DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
-      TrackDescriptorResource(DestDescriptor, pResource, fmt);
+      TrackDescriptorResource(handle, pResource, fmt);
     }
   } catch (...) {
-    LOG_ERROR("[HOOK] Exception in HookedCreateShaderResourceView");
+    LOG_ERROR("[GHOST] Exception in CreateSRV");
   }
+  return true;
 }
 
-void STDMETHODCALLTYPE
-HookedCreateUnorderedAccessView(ID3D12Device *pThis, ID3D12Resource *pResource,
-                                ID3D12Resource *pCounterResource,
-                                const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc,
-                                D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) noexcept {
-  if (g_OriginalCreateUAV)
-    g_OriginalCreateUAV(pThis, pResource, pCounterResource, pDesc, DestDescriptor);
+static bool GhostCB_CreateUAV(CONTEXT* ctx, void* /*userData*/) {
+  auto* pResource = reinterpret_cast<ID3D12Resource*>(Ghost::GetArg2(ctx));
+  // UAV: pDesc is arg4 (R9), DestDescriptor is arg5 (stack RSP+0x28)
+  auto* pDesc = reinterpret_cast<const D3D12_UNORDERED_ACCESS_VIEW_DESC*>(Ghost::GetArg4(ctx));
+#ifdef _WIN64
+  D3D12_CPU_DESCRIPTOR_HANDLE handle;
+  handle.ptr = *reinterpret_cast<SIZE_T*>(ctx->Rsp + 0x28);
+#else
+  D3D12_CPU_DESCRIPTOR_HANDLE handle;
+  handle.ptr = *reinterpret_cast<SIZE_T*>(ctx->Esp + 0x18);
+#endif
   try {
     if (pResource) {
       DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
-      TrackDescriptorResource(DestDescriptor, pResource, fmt);
+      TrackDescriptorResource(handle, pResource, fmt);
     }
   } catch (...) {
-    LOG_ERROR("[HOOK] Exception in HookedCreateUnorderedAccessView");
+    LOG_ERROR("[GHOST] Exception in CreateUAV");
   }
+  return true;
 }
 
-void STDMETHODCALLTYPE
-HookedCreateRenderTargetView(ID3D12Device *pThis, ID3D12Resource *pResource,
-                             const D3D12_RENDER_TARGET_VIEW_DESC *pDesc,
-                             D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) noexcept {
-  if (g_OriginalCreateRTV)
-    g_OriginalCreateRTV(pThis, pResource, pDesc, DestDescriptor);
+static bool GhostCB_CreateRTV(CONTEXT* ctx, void* /*userData*/) {
+  auto* pResource = reinterpret_cast<ID3D12Resource*>(Ghost::GetArg2(ctx));
+  auto* pDesc = reinterpret_cast<const D3D12_RENDER_TARGET_VIEW_DESC*>(Ghost::GetArg3(ctx));
+  D3D12_CPU_DESCRIPTOR_HANDLE handle;
+  handle.ptr = static_cast<SIZE_T>(Ghost::GetArg4(ctx));
   try {
     if (pResource) {
       DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
-      TrackDescriptorResource(DestDescriptor, pResource, fmt);
-      // RTV creation is a strong signal: register as color candidate
+      TrackDescriptorResource(handle, pResource, fmt);
       ResourceDetector::Get().RegisterResource(pResource, true);
     }
   } catch (...) {
-    LOG_ERROR("[HOOK] Exception in HookedCreateRenderTargetView");
+    LOG_ERROR("[GHOST] Exception in CreateRTV");
   }
+  return true;
 }
 
-void STDMETHODCALLTYPE
-HookedCreateDepthStencilView(ID3D12Device *pThis, ID3D12Resource *pResource,
-                             const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc,
-                             D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) noexcept {
-  if (g_OriginalCreateDSV)
-    g_OriginalCreateDSV(pThis, pResource, pDesc, DestDescriptor);
+static bool GhostCB_CreateDSV(CONTEXT* ctx, void* /*userData*/) {
+  auto* pResource = reinterpret_cast<ID3D12Resource*>(Ghost::GetArg2(ctx));
+  auto* pDesc = reinterpret_cast<const D3D12_DEPTH_STENCIL_VIEW_DESC*>(Ghost::GetArg3(ctx));
+  D3D12_CPU_DESCRIPTOR_HANDLE handle;
+  handle.ptr = static_cast<SIZE_T>(Ghost::GetArg4(ctx));
   try {
     if (pResource) {
       DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
-      TrackDescriptorResource(DestDescriptor, pResource, fmt);
-      // DSV creation is a very strong signal: register as depth
+      TrackDescriptorResource(handle, pResource, fmt);
       ResourceDetector::Get().RegisterDepthFromView(pResource, fmt);
     }
   } catch (...) {
-    LOG_ERROR("[HOOK] Exception in HookedCreateDepthStencilView");
+    LOG_ERROR("[GHOST] Exception in CreateDSV");
   }
+  return true;
+}
+
+// Phase 2.5: NEW CreateConstantBufferView hook
+static bool GhostCB_CreateCBV(CONTEXT* ctx, void* /*userData*/) {
+  auto* pDesc = reinterpret_cast<const D3D12_CONSTANT_BUFFER_VIEW_DESC*>(Ghost::GetArg2(ctx));
+  D3D12_CPU_DESCRIPTOR_HANDLE handle;
+  handle.ptr = static_cast<SIZE_T>(Ghost::GetArg3(ctx));
+  try {
+    if (pDesc) {
+      TrackCbvDescriptor(handle, pDesc);
+    }
+  } catch (...) {
+    LOG_ERROR("[GHOST] Exception in CreateCBV");
+  }
+  return true;
 }
 
 // ============================================================================
-// CreatePlacedResource HOOK â€” captures pool-allocated resources
+// PHASE 3: NEW GHOST HOOK CALLBACKS - completing roadmap 0.2
 // ============================================================================
 
-HRESULT STDMETHODCALLTYPE Hooked_CreatePlacedResource(
-    ID3D12Device *pThis, ID3D12Heap *pHeap, UINT64 HeapOffset,
-    const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState,
-    const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riid,
-    void **ppvResource) noexcept {
-  HRESULT hr = g_OriginalCreatePlacedResource(
-      pThis, pHeap, HeapOffset, pDesc, InitialState, pOptimizedClearValue, riid,
-      ppvResource);
-  if (SUCCEEDED(hr) && ppvResource && *ppvResource) {
-    ResourceDetector::Get().RegisterResource(
-        static_cast<ID3D12Resource *>(*ppvResource));
+// --- CreateSampler (Rotating) ---
+static bool GhostCB_CreateSampler(CONTEXT* ctx, void* /*userData*/) {
+  auto* pDevice = reinterpret_cast<ID3D12Device*>(Ghost::GetArg1(ctx));
+  auto* pDesc = reinterpret_cast<const D3D12_SAMPLER_DESC*>(Ghost::GetArg2(ctx));
+  D3D12_CPU_DESCRIPTOR_HANDLE handle;
+  handle.ptr = static_cast<SIZE_T>(Ghost::GetArg3(ctx));
+  try {
+    if (pDesc && pDevice && handle.ptr) {
+      RegisterSampler(*pDesc, handle, pDevice);
+    }
+  } catch (...) {
+    LOG_ERROR("[GHOST] Exception in CreateSampler");
   }
-  return hr;
+  return true;
 }
 
-void EnsureCommandListHooks(ID3D12GraphicsCommandList * /*pList*/) {
-  // ====================================================================
-  // STEALTHY MODE: CommandList hooks REMOVED to avoid anti-cheat detection
-  // and crashes caused by hot-path hooks (Close, ResourceBarrier, CBV).
-  //
-  // Previously hooked: Close, ResourceBarrier, SetGraphics/ComputeRootCBV,
-  //                    ClearDSV, ClearRTV â€” all extremely hot paths that
-  //                    triggered access violations in game code.
-  //
-  // Camera data now comes from jitter pattern scan only.
-  // DLSS evaluation moved to Present thread via Streamline's internal cmd list.
-  // Resource detection relies on Device-level hooks (RTV/DSV creation).
-  // ====================================================================
+// --- CreateDescriptorHeap (Rotating) ---
+static bool GhostCB_CreateDescriptorHeap(CONTEXT* ctx, void* /*userData*/) {
+  // We intercept at entry. The heap is not created yet, but we can track
+  // descriptor heaps when they are used by view-creation hooks.
+  // This callback is a pre-call observer: we log the creation request.
+  auto* pDevice = reinterpret_cast<ID3D12Device*>(Ghost::GetArg1(ctx));
+  auto* pDesc = reinterpret_cast<const D3D12_DESCRIPTOR_HEAP_DESC*>(Ghost::GetArg2(ctx));
+  try {
+    if (pDesc && pDevice) {
+      static std::atomic<uint32_t> s_heapCount{0};
+      uint32_t count = s_heapCount.fetch_add(1, std::memory_order_relaxed);
+      if (count < 50) { // Log first 50 heaps
+        LOG_DEBUG("[GHOST] CreateDescriptorHeap: Type={}, NumDescriptors={}, Flags={}", static_cast<int>(pDesc->Type),
+                  pDesc->NumDescriptors, static_cast<int>(pDesc->Flags));
+      }
+    }
+  } catch (...) {
+    LOG_ERROR("[GHOST] Exception in CreateDescriptorHeap");
+  }
+  return true;
 }
 
-HRESULT STDMETHODCALLTYPE Hooked_CreateCommandQueue(
-    ID3D12Device *pThis, const D3D12_COMMAND_QUEUE_DESC *pDesc, REFIID riid,
-    void **ppCommandQueue) noexcept {
-  HRESULT hr = g_OriginalCreateCommandQueue(pThis, pDesc, riid, ppCommandQueue);
-  if (SUCCEEDED(hr) && ppCommandQueue && *ppCommandQueue && pDesc &&
-      pDesc->Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
-    if (!s_cmdQueueHooked.exchange(true)) {
-      void **vt = GetVTable(static_cast<IUnknown*>(*ppCommandQueue));
-      (void)HookManager::Get().CreateHook(
-          GetVTableEntry<void*, vtable::CommandQueue>(vt, vtable::CommandQueue::ExecuteCommandLists),
-          reinterpret_cast<void*>(HookedExecuteCommandLists),
-          &g_OriginalExecuteCommandLists);
+// --- CreateCommittedResource (Rotating) ---
+static bool GhostCB_CreateCommittedResource(CONTEXT* ctx, void* /*userData*/) {
+  // Pre-call observer: extract resource description for early classification.
+  // Arg1=pDevice, Arg2=pHeapProperties, Arg3=HeapFlags, Arg4=pDesc(R9)
+  auto* pDesc = reinterpret_cast<const D3D12_RESOURCE_DESC*>(Ghost::GetArg4(ctx));
+  try {
+    if (pDesc) {
+      // Early classification: log large render targets and depth buffers
+      bool isRT = (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0;
+      bool isDS = (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0;
+      bool isUAV = (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0;
+      if ((isRT || isDS || isUAV) && pDesc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+        static std::atomic<uint32_t> s_logCount{0};
+        if (s_logCount.fetch_add(1, std::memory_order_relaxed) < 100) {
+          LOG_DEBUG("[GHOST] CreateCommittedResource: {}x{} Fmt={} RT={} DS={} UAV={}",
+                    static_cast<uint32_t>(pDesc->Width), pDesc->Height, static_cast<int>(pDesc->Format), isRT, isDS,
+                    isUAV);
+        }
+      }
+    }
+  } catch (...) {
+    LOG_ERROR("[GHOST] Exception in CreateCommittedResource");
+  }
+  return true;
+}
+
+// --- CreatePlacedResource (Rotating) ---
+static bool GhostCB_CreatePlacedResource(CONTEXT* ctx, void* /*userData*/) {
+  // Pre-call observer: pDesc is arg4 (R9) for CreatePlacedResource
+  // Arg1=pDevice, Arg2=pHeap, Arg3=HeapOffset, Arg4=pDesc(R9)
+  auto* pDesc = reinterpret_cast<const D3D12_RESOURCE_DESC*>(Ghost::GetArg4(ctx));
+  try {
+    if (pDesc && pDesc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+      bool isRT = (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0;
+      bool isDS = (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0;
+      if (isRT || isDS) {
+        static std::atomic<uint32_t> s_logCount{0};
+        if (s_logCount.fetch_add(1, std::memory_order_relaxed) < 50) {
+          LOG_DEBUG("[GHOST] CreatePlacedResource: {}x{} Fmt={} RT={} DS={}", static_cast<uint32_t>(pDesc->Width),
+                    pDesc->Height, static_cast<int>(pDesc->Format), isRT, isDS);
+        }
+      }
+    }
+  } catch (...) {
+    LOG_ERROR("[GHOST] Exception in CreatePlacedResource");
+  }
+  return true;
+}
+
+// --- CreateCommandList (Rotating) ---
+static bool GhostCB_CreateCommandList(CONTEXT* /*ctx*/, void* /*userData*/) {
+  // Pre-call observer: command list vtables are already captured from
+  // the initial temporary object in EnsureD3D12VTableHooks. This hook
+  // serves as a diagnostic counter to track command list creation rate.
+  try {
+    static std::atomic<uint64_t> s_cmdListCreated{0};
+    uint64_t count = s_cmdListCreated.fetch_add(1, std::memory_order_relaxed);
+    if (count % 1000 == 0 && count > 0) {
+      LOG_DEBUG("[GHOST] CommandList creation milestone: {} total", count);
+    }
+  } catch (...) {
+    LOG_ERROR("[GHOST] Exception in CreateCommandList");
+  }
+  return true;
+}
+
+// --- CreateCommandQueue (Rotating) ---
+static bool GhostCB_CreateCommandQueue(CONTEXT* /*ctx*/, void* /*userData*/) {
+  // Pre-call observer: queue vtables are already captured from
+  // the initial temporary object in EnsureD3D12VTableHooks. This hook
+  // serves as a diagnostic counter.
+  try {
+    static std::atomic<uint64_t> s_queueCreated{0};
+    uint64_t count = s_queueCreated.fetch_add(1, std::memory_order_relaxed);
+    if (count > 0) {
+      LOG_DEBUG("[GHOST] CommandQueue created (total: {})", count);
+    }
+  } catch (...) {
+    LOG_ERROR("[GHOST] Exception in CreateCommandQueue");
+  }
+  return true;
+}
+
+// --- ResizeBuffers (Rotating) ---
+static bool GhostCB_ResizeBuffers(CONTEXT* ctx, void* /*userData*/) {
+  // Arg1=pSwapChain, Arg2=BufferCount, Arg3=Width, Arg4=Height
+  // Stack: NewFormat(RSP+0x28), Flags(RSP+0x30)
+  auto Width = static_cast<UINT>(Ghost::GetArg3(ctx));
+  auto Height = static_cast<UINT>(Ghost::GetArg4(ctx));
+  try {
+    // Notify overlay of pending resize
+    if (Width > 0 && Height > 0) {
+      ImGuiOverlay::Get().OnResize(Width, Height);
+      ResourceDetector::Get().SetExpectedDimensions(Width, Height);
+      LOG_INFO("[GHOST] ResizeBuffers: {}x{}", Width, Height);
+    } else {
+      LOG_DEBUG("[GHOST] ResizeBuffers: auto-size (0x0)");
+    }
+
+    // Reset camera scan cache on resolution change
+    ResetCameraScanCache();
+  } catch (...) {
+    LOG_ERROR("[GHOST] Exception in ResizeBuffers");
+  }
+  return true;
+}
+
+// ============================================================================
+// DEVICE HOOK INSTALLATION - captures vtable pointers + registers ghost hooks
+// ============================================================================
+
+static void CaptureDeviceVTablePointers(ID3D12Device* pDevice) {
+  void** devVt = GetVTable(pDevice);
+
+  g_OriginalCreateCommandQueue = reinterpret_cast<PFN_CreateCommandQueue>(
+      GetVTableEntry<void*, vtable::Device>(devVt, vtable::Device::CreateCommandQueue));
+  g_OriginalCreateCommittedResource = reinterpret_cast<PFN_CreateCommittedResource>(
+      GetVTableEntry<void*, vtable::Device>(devVt, vtable::Device::CreateCommittedResource));
+  g_OriginalCreatePlacedResource = reinterpret_cast<PFN_CreatePlacedResource>(
+      GetVTableEntry<void*, vtable::Device>(devVt, vtable::Device::CreatePlacedResource));
+  g_OriginalCreateSRV = reinterpret_cast<PFN_CreateShaderResourceView>(
+      GetVTableEntry<void*, vtable::Device>(devVt, vtable::Device::CreateShaderResourceView));
+  g_OriginalCreateUAV = reinterpret_cast<PFN_CreateUnorderedAccessView>(
+      GetVTableEntry<void*, vtable::Device>(devVt, vtable::Device::CreateUnorderedAccessView));
+  g_OriginalCreateRTV = reinterpret_cast<PFN_CreateRenderTargetView>(
+      GetVTableEntry<void*, vtable::Device>(devVt, vtable::Device::CreateRenderTargetView));
+  g_OriginalCreateDSV = reinterpret_cast<PFN_CreateDepthStencilView>(
+      GetVTableEntry<void*, vtable::Device>(devVt, vtable::Device::CreateDepthStencilView));
+  g_OriginalCreateCBV = reinterpret_cast<PFN_CreateConstantBufferView>(
+      GetVTableEntry<void*, vtable::Device>(devVt, vtable::Device::CreateConstantBufferView));
+  g_OriginalCreateCommandList = reinterpret_cast<PFN_CreateCommandList>(
+      GetVTableEntry<void*, vtable::Device>(devVt, vtable::Device::CreateCommandList));
+  g_OriginalCreateSampler =
+      reinterpret_cast<PFN_CreateSampler>(GetVTableEntry<void*, vtable::Device>(devVt, vtable::Device::CreateSampler));
+  g_OriginalCreateDescriptorHeap = reinterpret_cast<PFN_CreateDescriptorHeap>(
+      GetVTableEntry<void*, vtable::Device>(devVt, vtable::Device::CreateDescriptorHeap));
+
+  // Register as rotating ghost hooks (existing)
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateSRV), GhostCB_CreateSRV, "CreateSRV");
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateUAV), GhostCB_CreateUAV, "CreateUAV");
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateRTV), GhostCB_CreateRTV, "CreateRTV");
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateDSV), GhostCB_CreateDSV, "CreateDSV");
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateCBV), GhostCB_CreateCBV, "CreateCBV");
+
+  // Register new Phase 3 rotating hooks
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateSampler), GhostCB_CreateSampler, "CreateSampler");
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateDescriptorHeap), GhostCB_CreateDescriptorHeap,
+                       "CreateDescHeap");
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateCommittedResource), GhostCB_CreateCommittedResource,
+                       "CreateCommitted");
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreatePlacedResource), GhostCB_CreatePlacedResource,
+                       "CreatePlaced");
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateCommandList), GhostCB_CreateCommandList,
+                       "CreateCmdList");
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateCommandQueue), GhostCB_CreateCommandQueue,
+                       "CreateCmdQueue");
+
+  LOG_INFO("[GHOST] Device vtable pointers captured ({} rotating hooks)", g_RotatingHooks.size());
+}
+
+static void CaptureCommandQueueVTable(ID3D12CommandQueue* pQueue) {
+  if (s_cmdQueueHooked.exchange(true)) return;
+
+  void** queueVt = GetVTable(pQueue);
+  auto fnExecCmdLists = reinterpret_cast<uintptr_t>(
+      GetVTableEntry<void*, vtable::CommandQueue>(queueVt, vtable::CommandQueue::ExecuteCommandLists));
+  g_OriginalExecuteCommandLists = reinterpret_cast<PFN_ExecuteCommandLists>(fnExecCmdLists);
+
+  auto& ghost = Ghost::HookManager::Get();
+  g_PinnedSlot1 = ghost.InstallHook(fnExecCmdLists, GhostCB_ExecuteCommandLists);
+  if (g_PinnedSlot1 >= 0)
+    LOG_INFO("[GHOST] ExecuteCommandLists pinned to Dr{}", g_PinnedSlot1);
+  else
+    LOG_ERROR("[GHOST] Failed to pin ExecuteCommandLists");
+}
+
+static void CaptureCommandListVTable(ID3D12GraphicsCommandList* pList) {
+  if (s_cmdListHooked.exchange(true)) return;
+
+  void** cmdVt = GetVTable(pList);
+
+  g_OriginalClose =
+      reinterpret_cast<PFN_Close>(GetVTableEntry<void*, vtable::CommandList>(cmdVt, vtable::CommandList::Close));
+  g_OriginalResourceBarrier = reinterpret_cast<PFN_ResourceBarrier>(
+      GetVTableEntry<void*, vtable::CommandList>(cmdVt, vtable::CommandList::ResourceBarrier));
+  g_OriginalSetGraphicsRootCbv = reinterpret_cast<PFN_SetGraphicsRootConstantBufferView>(
+      GetVTableEntry<void*, vtable::CommandList>(cmdVt, vtable::CommandList::SetGraphicsRootConstantBufferView));
+  g_OriginalSetComputeRootCbv = reinterpret_cast<PFN_SetComputeRootConstantBufferView>(
+      GetVTableEntry<void*, vtable::CommandList>(cmdVt, vtable::CommandList::SetComputeRootConstantBufferView));
+  g_OriginalClearDSV = reinterpret_cast<PFN_ClearDepthStencilView>(
+      GetVTableEntry<void*, vtable::CommandList>(cmdVt, vtable::CommandList::ClearDepthStencilView));
+  g_OriginalClearRTV = reinterpret_cast<PFN_ClearRenderTargetView>(
+      GetVTableEntry<void*, vtable::CommandList>(cmdVt, vtable::CommandList::ClearRenderTargetView));
+
+  // Register ALL command list hooks as rotating
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalResourceBarrier), GhostCB_ResourceBarrier,
+                       "ResourceBarrier");
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalClose), GhostCB_Close, "Close");
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalSetGraphicsRootCbv), GhostCB_SetGraphicsRootCbv,
+                       "SetGfxRootCBV");
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalSetComputeRootCbv), GhostCB_SetComputeRootCbv,
+                       "SetCmpRootCBV");
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalClearDSV), GhostCB_ClearDSV, "ClearDSV");
+  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalClearRTV), GhostCB_ClearRTV, "ClearRTV");
+
+  LOG_INFO("[GHOST] CommandList vtable captured ({} total rotating hooks)", g_RotatingHooks.size());
+}
+
+// ============================================================================
+// DEVICE HOOKS ENTRY POINT
+// ============================================================================
+
+void EnsureD3D12VTableHooks(ID3D12Device* pDevice) {
+  if (!pDevice) return;
+  if (s_deviceHooked.exchange(true)) return;
+
+  Ghost::HookManager::Get().Initialize();
+  CaptureDeviceVTablePointers(pDevice);
+
+  // Create temporary objects to capture their vtables
+  D3D12_COMMAND_QUEUE_DESC queueDesc{};
+  queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+  Microsoft::WRL::ComPtr<ID3D12CommandQueue> tmpQueue;
+  if (SUCCEEDED(pDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&tmpQueue)))) {
+    CaptureCommandQueueVTable(tmpQueue.Get());
+  }
+
+  Microsoft::WRL::ComPtr<ID3D12CommandAllocator> tmpAlloc;
+  if (SUCCEEDED(pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&tmpAlloc)))) {
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> tmpList;
+    if (SUCCEEDED(pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, tmpAlloc.Get(), nullptr,
+                                             IID_PPV_ARGS(&tmpList)))) {
+      CaptureCommandListVTable(tmpList.Get());
+      tmpList->Close();
     }
   }
-  return hr;
-}
 
-HRESULT STDMETHODCALLTYPE Hooked_CreateCommittedResource(
-    ID3D12Device *pThis, const D3D12_HEAP_PROPERTIES *pHeapProperties,
-    D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC *pDesc,
-    D3D12_RESOURCE_STATES InitialResourceState,
-    const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riid,
-    void **ppvResource) noexcept {
-  HRESULT hr = g_OriginalCreateCommittedResource(
-      pThis, pHeapProperties, HeapFlags, pDesc, InitialResourceState,
-      pOptimizedClearValue, riid, ppvResource);
-  if (SUCCEEDED(hr) && ppvResource && *ppvResource) {
-    ResourceDetector::Get().RegisterResource(
-        static_cast<ID3D12Resource *>(*ppvResource));
-  }
-  return hr;
-}
-
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CreateCommandList)(
-    ID3D12Device *, UINT, D3D12_COMMAND_LIST_TYPE, ID3D12CommandAllocator *,
-    ID3D12PipelineState *, REFIID, void **);
-PFN_CreateCommandList g_OriginalCreateCommandList = nullptr;
-
-HRESULT STDMETHODCALLTYPE HookedCreateCommandList(
-    ID3D12Device *pThis, UINT nodeMask, D3D12_COMMAND_LIST_TYPE type,
-    ID3D12CommandAllocator *pCommandAllocator,
-    ID3D12PipelineState *pInitialState, REFIID riid, void **ppCommandList) noexcept {
-  HRESULT hr =
-      g_OriginalCreateCommandList(pThis, nodeMask, type, pCommandAllocator,
-                                  pInitialState, riid, ppCommandList);
-  if (SUCCEEDED(hr) && ppCommandList && *ppCommandList &&
-      type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
-    EnsureCommandListHooks(
-        static_cast<ID3D12GraphicsCommandList *>(*ppCommandList));
-  }
-  return hr;
-}
-
-void EnsureD3D12VTableHooks(ID3D12Device *pDevice) {
-  if (!pDevice)
-    return;
-  if (s_deviceHooked.exchange(true))
-    return;
-  // Stealth mode: NO vtable hooks on the device.
-  // All D3D12 inline/vtable hooks removed to prevent EasyAntiCheat detection.
-  // Device hooks (CreateCommandQueue, CreateCommittedResource, CreateRTV,
-  // CreateDSV) previously caused access violations when EAC detected the
-  // code modifications and corrupted game state.
-  //
-  // Resource detection now relies on:
-  //   - Backbuffer from swap chain (color)
-  //   - Streamline internal resource management
-  //   - Jitter from pattern scan
   StreamlineIntegration::Get().Initialize(pDevice);
-  LOG_INFO("[HOOK] Device registered (stealth â€” no vtable hooks)");
+  AdvanceSlotRotation();
+
+  LOG_INFO("[GHOST] All hooks installed - {} pinned, {} rotating",
+           (g_PinnedSlot0 >= 0 ? 1 : 0) + (g_PinnedSlot1 >= 0 ? 1 : 0), g_RotatingHooks.size());
 }
 
-void WrapCreatedD3D12Device(REFIID /*riid*/, void **ppDevice, bool /*takeOwnership*/) {
-  if (!ppDevice || !*ppDevice)
-    return;
+void WrapCreatedD3D12Device(REFIID /*riid*/, void** ppDevice, bool /*takeOwnership*/) {
+  if (!ppDevice || !*ppDevice) return;
   Microsoft::WRL::ComPtr<ID3D12Device> pRealDevice;
-  if (FAILED(
-          (reinterpret_cast<IUnknown*>(*ppDevice))->QueryInterface(IID_PPV_ARGS(&pRealDevice))))
-    return;
+  if (FAILED((reinterpret_cast<IUnknown*>(*ppDevice))->QueryInterface(IID_PPV_ARGS(&pRealDevice)))) return;
   EnsureD3D12VTableHooks(pRealDevice.Get());
   StreamlineIntegration::Get().Initialize(pRealDevice.Get());
 }
 
-extern "C" HRESULT WINAPI Hooked_D3D12CreateDevice(
-    IUnknown *pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REFIID riid,
-    void **ppDevice) {
-  if (!g_OriginalD3D12CreateDevice)
-    return E_FAIL;
-  HRESULT hr = g_OriginalD3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid,
-                                           ppDevice);
-  if (SUCCEEDED(hr) && ppDevice && *ppDevice)
-    WrapCreatedD3D12Device(riid, ppDevice);
+extern "C" HRESULT WINAPI Hooked_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel,
+                                                   REFIID riid, void** ppDevice) {
+  if (!g_OriginalD3D12CreateDevice) return E_FAIL;
+  HRESULT hr = g_OriginalD3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice);
+  if (SUCCEEDED(hr) && ppDevice && *ppDevice) WrapCreatedD3D12Device(riid, ppDevice);
   return hr;
 }
 
-typedef FARPROC(WINAPI *PFN_GetProcAddress)(HMODULE, LPCSTR);
+typedef FARPROC(WINAPI* PFN_GetProcAddress)(HMODULE, LPCSTR);
 PFN_GetProcAddress g_OriginalGetProcAddress = nullptr;
 
 FARPROC WINAPI Hooked_GetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
   if (HIWORD(lpProcName) != 0) {
-    if (strcmp(lpProcName, "D3D12CreateDevice") == 0)
-      return reinterpret_cast<FARPROC>(Hooked_D3D12CreateDevice);
+    if (strcmp(lpProcName, "D3D12CreateDevice") == 0) return reinterpret_cast<FARPROC>(Hooked_D3D12CreateDevice);
   }
   return g_OriginalGetProcAddress(hModule, lpProcName);
 }
 
+// ============================================================================
+// PRESENT HOOK INSTALLATION - via Ghost Hook (Dr0, pinned) with vtable fallback
+// ============================================================================
+
+// Fallback Present function pointer (Phase 1.6: shadow vtable approach)
+static PFN_Present g_OrigPresent_Fallback = nullptr;
+
+static HRESULT STDMETHODCALLTYPE HookedPresent_Fallback(IDXGISwapChain* pThis, UINT SyncInterval, UINT Flags) noexcept {
+  try {
+    OnPresentThread(pThis);
+  } catch (...) {
+    static std::atomic<uint32_t> s_errs{0};
+    if (s_errs.fetch_add(1) % 300 == 0) LOG_ERROR("[GHOST] Exception in fallback Present");
+  }
+  AdvanceSlotRotation();
+  if (!g_OrigPresent_Fallback) return E_FAIL;
+  return g_OrigPresent_Fallback(pThis, SyncInterval, Flags);
+}
+
+void InstallPresentGhostHook(IDXGISwapChain* pSwapChain) {
+  static std::atomic<bool> installed(false);
+  if (installed.exchange(true)) return;
+  if (!pSwapChain) return;
+
+  auto& ghost = Ghost::HookManager::Get();
+  if (!ghost.IsInitialized()) ghost.Initialize();
+
+  void** vt = GetVTable(pSwapChain);
+  auto fnPresent = reinterpret_cast<uintptr_t>(vt[static_cast<size_t>(vtable::SwapChain::Present)]);
+  g_OriginalPresent = reinterpret_cast<PFN_Present>(fnPresent);
+
+  // Phase 3: Capture ResizeBuffers vtable pointer and register as rotating hook
+  auto fnResizeBuffers = reinterpret_cast<uintptr_t>(vt[static_cast<size_t>(vtable::SwapChain::ResizeBuffers)]);
+  g_OriginalResizeBuffers = reinterpret_cast<PFN_ResizeBuffers>(fnResizeBuffers);
+  RegisterRotatingHook(fnResizeBuffers, GhostCB_ResizeBuffers, "ResizeBuffers");
+  LOG_INFO("[GHOST] ResizeBuffers registered as rotating hook ({:p})", reinterpret_cast<void*>(fnResizeBuffers));
+
+  g_PinnedSlot0 = ghost.InstallHook(fnPresent, GhostCB_Present);
+  if (g_PinnedSlot0 >= 0) {
+    LOG_INFO("[GHOST] Present pinned to Dr{} (address {:p})", g_PinnedSlot0, reinterpret_cast<void*>(fnPresent));
+  } else {
+    // Phase 1.6: Fallback to vtable swap if ghost hook fails
+    LOG_WARN("[GHOST] Present ghost hook failed - using vtable swap fallback");
+    void** realVt = *reinterpret_cast<void***>(pSwapChain);
+    DWORD oldProtect;
+    if (VirtualProtect(&realVt[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+      g_OrigPresent_Fallback = reinterpret_cast<PFN_Present>(realVt[8]);
+      realVt[8] = reinterpret_cast<void*>(HookedPresent_Fallback);
+      VirtualProtect(&realVt[8], sizeof(void*), oldProtect, &oldProtect);
+      LOG_WARN("[GHOST] Present installed via vtable swap fallback");
+    } else {
+      LOG_ERROR("[GHOST] Present hook failed entirely");
+      installed.store(false);
+    }
+  }
+}
+
+// ============================================================================
+// PUBLIC API
+// ============================================================================
+
 void InstallD3D12Hooks() {
   static std::atomic<bool> installed(false);
-  if (installed.exchange(true))
-    return;
-  // Stealth mode: Only initialize MinHook framework.
-  // NO inline hooks on D3D12 functions â€” these trigger EasyAntiCheat detection
-  // and cause access violations (0xC0000005) when EAC corrupts game state.
-  //
-  // The device and command queue are obtained safely through DXGI factory
-  // wrapping (WrappedIDXGIFactory::CreateSwapChain extracts the queue).
-  // Present hook uses direct vtable pointer swap (data-only, no code patching).
-  HookManager::Get().Initialize();
-  LOG_INFO("[HOOK] MinHook initialized (stealth mode â€” no D3D12 inline hooks)");
+  if (installed.exchange(true)) return;
+  // Initialize Ghost Hook system (VEH + hardware breakpoints).
+  // Zero code modification. Zero vtable patching. Invisible to integrity checks.
+  Ghost::HookManager::Get().Initialize();
+  LOG_INFO("[GHOST] Hook system initialized (hardware breakpoints only - no MinHook)");
 }
-bool InitializeHooks() { return true; }
+
+bool InitializeHooks() {
+  return true;
+}
+
 void CleanupHooks() {
-  HookManager::Get().Shutdown();
+  {
+    std::lock_guard<std::mutex> lock(g_RotationMutex);
+    g_RotatingHooks.clear();
+  }
+  Ghost::HookManager::Get().Shutdown();
   InputHandler::Get().UninstallHook();
   ImGuiOverlay::Get().Shutdown();
   StreamlineIntegration::Get().Shutdown();
 }
-

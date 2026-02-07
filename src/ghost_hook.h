@@ -17,6 +17,7 @@
 #pragma once
 #include <windows.h>
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 
@@ -102,11 +103,18 @@ public:
   void DisableHook(int hookId);
   void EnableHook(int hookId);
 
+  // Batched slot swap for rotating hooks — updates slots and applies
+  // breakpoints to all threads in a SINGLE pass instead of 4 separate
+  // remove+install operations. slotA/slotB are the slot indices (2,3).
+  // Pass address=0 to deactivate a slot, or a valid address+callback to activate.
+  void SwapRotatingSlots(int slotA, uintptr_t addrA, HookCallback cbA, int slotB, uintptr_t addrB, HookCallback cbB);
+
   // Get statistics
   struct Stats {
     uint64_t totalHits;         // Total times any hook was triggered
     uint64_t callbacksExecuted; // Callbacks that ran
     uint64_t skippedCalls;      // Original calls that were skipped
+    uint64_t recursionBlocked;  // Times recursion guard prevented re-entry
   };
   Stats GetStats() const;
 
@@ -137,6 +145,11 @@ private:
   PVOID m_VehHandle = nullptr;
   bool m_Initialized = false;
   Stats m_Stats{};
+
+  // Lazy propagation: desired addresses updated atomically.
+  // VEH handler reads these to update each thread's Dr registers
+  // on-the-fly, eliminating the need for thread suspension during rotation.
+  std::atomic<uintptr_t> m_DesiredAddr[kMaxHooks]{};
 
   // For thread-safe access
   CRITICAL_SECTION m_Lock{};

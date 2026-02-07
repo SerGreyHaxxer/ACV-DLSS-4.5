@@ -59,4 +59,21 @@ std::wstring FindGameDirectory();
 // Get current directory (where TensorBoot.exe is located)
 std::wstring GetBootDirectory();
 
+// Safe Mode
+bool EnterSafeMode();
+bool IsSafeMode();
+
+// Configuration backup/restore
+bool BackupConfig(const std::wstring& gameDir);
+bool RestoreConfig(const std::wstring& gameDir);
+bool HasConfigBackup(const std::wstring& gameDir);
+
+// Auto-repair
+struct RepairResult {
+    bool success;
+    std::wstring message;
+    int filesRepaired;
+};
+RepairResult AutoRepairMissingDlls(const std::wstring& gameDir);
+
 } // namespace Integrity

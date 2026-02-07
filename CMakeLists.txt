@@ -48,7 +48,6 @@ if(DEFINED ENV{VCPKG_ROOT} AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 # Find Dependencies
-find_package(minhook CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(tomlplusplus CONFIG REQUIRED)
@@ -78,6 +77,10 @@ set(SRC_FILES
     src/resource_detector.cpp
     src/sampler_interceptor.cpp
     src/streamline_integration.cpp
+    # Phase 3.5: Resource State Tracking
+    src/resource_state_tracker.cpp
+    # Phase 4: Jitter Extraction Engine
+    src/jitter_engine.cpp
 )
 
 # Includes — target-scoped to avoid polluting consumers
@@ -99,7 +102,6 @@ target_link_directories(${PROJECT_NAME} PRIVATE
 
 # Link Libraries — includes psapi and dbghelp (previously in #pragma comment)
 target_link_libraries(${PROJECT_NAME} PRIVATE 
-    minhook::minhook
     spdlog::spdlog
     nlohmann_json::nlohmann_json
     tomlplusplus::tomlplusplus
@@ -138,9 +140,22 @@ endif()
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     UNICODE _UNICODE
     WIN32_LEAN_AND_MEAN
+    NOMINMAX
     _CRT_SECURE_NO_WARNINGS
     TENSOR_CURIE_VERSION="${PROJECT_VERSION}"
 )
+
+# ============================================================================
+# Phase 0: Dependency Hardening
+# ============================================================================
+# Strip debug info from Release builds for smaller DLL and security
+if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_CONFIGURATION_TYPES)
+    target_link_options(${PROJECT_NAME} PRIVATE
+        $<$<CONFIG:Release>:/DEBUG:NONE>
+        $<$<CONFIG:Release>:/OPT:REF>
+        $<$<CONFIG:Release>:/OPT:ICF>
+    )
+endif()
 
 # ============================================================================
 # Install target — for packaging and deployment scripts
@@ -154,3 +169,12 @@ install(TARGETS ${PROJECT_NAME}
 # Phase 0: Safe Mode Bootstrapper (TensorBoot.exe)
 # ============================================================================
 add_subdirectory(tools/TensorBoot)
+
+# ============================================================================
+# Phase 1: Testing Infrastructure (Catch2)
+# ============================================================================
+option(TENSOR_CURIE_BUILD_TESTS "Build the unit test suite" OFF)
+if(TENSOR_CURIE_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

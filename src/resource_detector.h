@@ -119,6 +119,7 @@ private:
     uint64_t lastCheckFrame = 0;
   };
   std::unordered_map<ID3D12Resource*, HeuristicData> m_heuristics;
+  std::unordered_map<ID3D12Resource*, uint64_t> m_seenGeneration;
 
   Microsoft::WRL::ComPtr<ID3D12Resource> m_lastAnalyzedCandidate;
   Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_cmdAlloc;

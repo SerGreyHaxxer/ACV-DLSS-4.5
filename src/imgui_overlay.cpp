@@ -286,6 +286,58 @@ void ImGuiOverlay::OnResize(UINT width, UINT height) {
   }
 }
 
+void ImGuiOverlay::Render() {
+  if (!m_initialized) return;
+  if (!m_swapChain || !m_renderer.IsValid()) return;
+
+  UINT backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
+  if (!m_renderer.BeginFrame(backBufferIndex)) return;
+
+  // Update timing
+  float now = GetTimeSec();
+  float dt = m_firstFrame ? (1.0f / 60.0f) : (now - m_lastFrameTime);
+  dt = std::clamp(dt, 0.0001f, 0.1f);
+  m_lastFrameTime = now;
+  m_time = now;
+  m_firstFrame = false;
+
+  // Update animations
+  m_panelSlide.Update(m_time);
+  m_panelAlpha.Update(m_time);
+
+  // Smooth FPS interpolation
+  if (ConfigManager::Get().Data().customization.smoothFPS) {
+    float target = m_fpsHistory[(m_fpsHistoryIndex + kFpsHistorySize - 1) % kFpsHistorySize];
+    m_smoothFPS = vanim::SmoothDamp(m_smoothFPS, target, 8.0f, dt);
+  } else {
+    m_smoothFPS = m_fpsHistory[(m_fpsHistoryIndex + kFpsHistorySize - 1) % kFpsHistorySize];
+  }
+
+  // Update GPU metrics
+  UpdateMetrics(m_device);
+
+  // Begin widget frame (poll mouse, manage cursor)
+  BeginWidgetFrame();
+
+  // --- Render layers ---
+  BuildVignette();
+  BuildBackgroundDim();
+  BuildMiniMode();
+
+  if (m_visible) {
+    BuildMainPanel();
+  }
+
+  BuildFPSOverlay();
+
+  // Draw custom Valhalla cursor when overlay is active
+  if (m_visible || m_showSetupWizard) {
+    m_renderer.DrawValhallaCursor(m_input.mouseX, m_input.mouseY, 1.0f, m_accent, vtheme::hex(0x000000, 0.6f));
+  }
+
+  m_renderer.EndFrame();
+}
+
 void ImGuiOverlay::SetFPS(float gameFps, float totalFps) {
   m_cachedTotalFPS = totalFps;
   m_fpsHistory[m_fpsHistoryIndex] = gameFps;
@@ -499,6 +551,139 @@ void ImGuiOverlay::BuildMiniMode() {
   if (hovered && m_input.mouseClicked) {
     ToggleVisibility();
   }
+}
+
+// ============================================================================
+// FPS Overlay — Valhalla-themed FPS counter (F6)
+// ============================================================================
+
+void ImGuiOverlay::BuildFPSOverlay() {
+  if (!m_showFPS) return;
+
+  auto& cust = ConfigManager::Get().Data().customization;
+  float screenW = static_cast<float>(m_width);
+  float screenH = static_cast<float>(m_height);
+  float opacity = std::clamp(cust.fpsOpacity, 0.1f, 1.0f);
+  float scale = std::clamp(cust.fpsScale, 0.5f, 2.0f);
+  auto fpsPos = static_cast<FPSPosition>(std::clamp(cust.fpsPosition, 0, 3));
+  auto fpsStyle = static_cast<FPSStyle>(std::clamp(cust.fpsStyle, 0, 2));
+
+  // Compute FPS color — green/gold/red gradient based on performance
+  D2D1_COLOR_F fpsColor;
+  if (m_smoothFPS >= 55.0f) {
+    fpsColor = vtheme::rgba(0.46f, 0.72f, 0.0f, opacity); // NVIDIA green — good
+  } else if (m_smoothFPS >= 30.0f) {
+    float t = (m_smoothFPS - 30.0f) / 25.0f;
+    fpsColor = vtheme::rgba(
+      vanim::Lerp(0.83f, 0.46f, t),
+      vanim::Lerp(0.69f, 0.72f, t),
+      vanim::Lerp(0.22f, 0.0f, t), opacity); // Gold to green
+  } else {
+    fpsColor = vtheme::rgba(0.97f, 0.32f, 0.29f, opacity); // Red — bad
+  }
+
+  if (fpsStyle == FPSStyle::Minimal) {
+    // Minimal: just the FPS number, no background
+    float fontSize = 24.0f * scale;
+    float textW = 90.0f * scale;
+    float textH = 30.0f * scale;
+    float x = 0, y = 0;
+    switch (fpsPos) {
+      case FPSPosition::TopRight:    x = screenW - textW - 16; y = 16; break;
+      case FPSPosition::TopLeft:     x = 16; y = 16; break;
+      case FPSPosition::BottomRight: x = screenW - textW - 16; y = screenH - textH - 16; break;
+      case FPSPosition::BottomLeft:  x = 16; y = screenH - textH - 16; break;
+      default: x = screenW - textW - 16; y = 16; break;
+    }
+    std::string fpsStr = std::format("{:.0f}", m_smoothFPS);
+    m_renderer.DrawTextA(fpsStr.c_str(), x, y, textW, textH, fpsColor, fontSize, ValhallaRenderer::TextAlign::Right, true);
+    return;
+  }
+
+  // Standard / Detailed — Valhalla-themed panel
+  float panelW = (fpsStyle == FPSStyle::Detailed) ? 180.0f * scale : 130.0f * scale;
+  float panelH = (fpsStyle == FPSStyle::Detailed) ? 90.0f * scale : 54.0f * scale;
+  float margin = 16.0f;
+  float x = 0, y = 0;
+  switch (fpsPos) {
+    case FPSPosition::TopRight:    x = screenW - panelW - margin; y = margin; break;
+    case FPSPosition::TopLeft:     x = margin; y = margin; break;
+    case FPSPosition::BottomRight: x = screenW - panelW - margin; y = screenH - panelH - margin; break;
+    case FPSPosition::BottomLeft:  x = margin; y = screenH - panelH - margin; break;
+    default: x = screenW - panelW - margin; y = margin; break;
+  }
+
+  // Norse-inspired dark panel with gold accent border
+  D2D1_COLOR_F panelBg = vtheme::hex(0x0D1117, 0.82f * opacity);
+  m_renderer.FillRoundedRect(x, y, panelW, panelH, 6.0f * scale, panelBg);
+
+  // Top accent stripe — gold Norse line
+  D2D1_COLOR_F accentLine = vtheme::rgba(m_accent.r, m_accent.g, m_accent.b, 0.7f * opacity);
+  m_renderer.FillRect(x + 8.0f * scale, y + 1.0f, panelW - 16.0f * scale, 2.0f, accentLine);
+
+  // Subtle outer border
+  m_renderer.OutlineRoundedRect(x, y, panelW, panelH, 6.0f * scale, vtheme::hex(0x30363D, 0.25f * opacity), 1.0f);
+
+  // Norse diamond ornament on left
+  float diamondX = x + 12.0f * scale;
+  float diamondY = y + panelH * 0.5f - (fpsStyle == FPSStyle::Detailed ? 10.0f * scale : 0.0f);
+  m_renderer.DrawDiamond(diamondX, diamondY, 4.0f * scale, accentLine);
+
+  // FPS value — large bold
+  float fpsNumX = x + 24.0f * scale;
+  float fpsNumY = y + 6.0f * scale;
+  float fpsNumW = panelW - 30.0f * scale;
+  float fpsNumH = 32.0f * scale;
+  std::string fpsStr = std::format("{:.0f}", m_smoothFPS);
+  m_renderer.DrawTextA(fpsStr.c_str(), fpsNumX, fpsNumY, fpsNumW, fpsNumH,
+                       fpsColor, vtheme::kFontFPS * scale, ValhallaRenderer::TextAlign::Left, true);
+
+  // "FPS" label — muted gold, smaller
+  D2D1_COLOR_F labelColor = vtheme::rgba(m_accent.r, m_accent.g, m_accent.b, 0.5f * opacity);
+  float labelX = fpsNumX + m_renderer.MeasureTextA(fpsStr, vtheme::kFontFPS * scale, true).width + 4.0f * scale;
+  m_renderer.DrawTextA("FPS", labelX, fpsNumY + 10.0f * scale, 40.0f * scale, 20.0f * scale,
+                       labelColor, vtheme::kFontFPSLabel * scale, ValhallaRenderer::TextAlign::Left);
+
+  if (fpsStyle == FPSStyle::Detailed) {
+    // Thin separator
+    float sepY = y + 48.0f * scale;
+    m_renderer.DrawLine(x + 10.0f * scale, sepY, x + panelW - 10.0f * scale, sepY, vtheme::hex(0x30363D, 0.4f * opacity), 1.0f);
+
+    // Frame time
+    float frameMs = m_smoothFPS > 0.1f ? 1000.0f / m_smoothFPS : 0.0f;
+    std::string ftStr = std::format("{:.1f} ms", frameMs);
+    m_renderer.DrawTextA(ftStr.c_str(), x + 24.0f * scale, sepY + 4.0f * scale, 80.0f * scale, 16.0f * scale,
+                         vtheme::kTextSecondary, 11.0f * scale);
+
+    // GPU usage if available
+    if (g_metricsCache.gpuOk.load(std::memory_order_relaxed)) {
+      uint32_t gpuPct = g_metricsCache.gpuPercent.load(std::memory_order_relaxed);
+      std::string gpuStr = std::format("GPU {}%", gpuPct);
+      D2D1_COLOR_F gpuColor = gpuPct > 95 ? vtheme::kStatusWarn : vtheme::kTextSecondary;
+      gpuColor.a *= opacity;
+      m_renderer.DrawTextA(gpuStr.c_str(), x + 24.0f * scale, sepY + 20.0f * scale, 80.0f * scale, 16.0f * scale,
+                           gpuColor, 11.0f * scale);
+    }
+
+    // Norse diamond ornament bottom-right
+    m_renderer.DrawDiamond(x + panelW - 12.0f * scale, y + panelH - 12.0f * scale, 3.0f * scale, accentLine);
+  }
+}
+
+// ============================================================================
+// Vignette Overlay (F7)
+// ============================================================================
+
+void ImGuiOverlay::BuildVignette() {
+  if (!m_showVignette) return;
+
+  auto& ui = ConfigManager::Get().Data().ui;
+  float screenW = static_cast<float>(m_width);
+  float screenH = static_cast<float>(m_height);
+
+  m_renderer.DrawVignette(screenW, screenH,
+                          ui.vignetteColorR, ui.vignetteColorG, ui.vignetteColorB,
+                          ui.vignetteIntensity, ui.vignetteRadius, ui.vignetteSoftness);
 }
 
 // ============================================================================
@@ -1395,6 +1580,33 @@ void ImGuiOverlay::BuildMainPanel() {
     m_sectionOpen[VGuiHash("overlay_section")] = open;
     if (open) {
       if (AutoUI::DrawStruct(*this, cfg.ui)) ConfigManager::Get().MarkDirty();
+      Spacing();
+    }
+  }
+
+  // ---- VIGNETTE ----
+  {
+    bool open = m_sectionOpen[VGuiHash("vignette_section")];
+    SectionHeader("Vignette (F7)", &open);
+    m_sectionOpen[VGuiHash("vignette_section")] = open;
+    if (open) {
+      bool vigOn = cfg.ui.showVignette;
+      if (Checkbox("Enable Vignette", &vigOn)) {
+        cfg.ui.showVignette = vigOn; m_showVignette = vigOn; ConfigManager::Get().MarkDirty();
+      }
+      bool vigActive = cfg.ui.showVignette;
+      if (SliderFloat("Intensity", &cfg.ui.vignetteIntensity, 0.0f, 1.0f, "%.2f", vigActive)) {
+        ConfigManager::Get().MarkDirty();
+      }
+      if (SliderFloat("Radius", &cfg.ui.vignetteRadius, 0.0f, 1.0f, "%.2f", vigActive)) {
+        ConfigManager::Get().MarkDirty();
+      }
+      if (SliderFloat("Softness", &cfg.ui.vignetteSoftness, 0.0f, 1.0f, "%.2f", vigActive)) {
+        ConfigManager::Get().MarkDirty();
+      }
+      if (ColorEdit3("Vignette Color", &cfg.ui.vignetteColorR, &cfg.ui.vignetteColorG, &cfg.ui.vignetteColorB)) {
+        ConfigManager::Get().MarkDirty();
+      }
       Spacing();
     }
   }

@@ -200,7 +200,7 @@ void RayTracingPass::Execute(ID3D12GraphicsCommandList* cmdList,
                              const float* viewProjInv,
                              const float* viewProj,
                              const float* camPos,
-                             const float2& resolution) {
+                             const DirectX::XMFLOAT2& resolution) {
     if (!m_initialized || !cmdList) return;
 
     cmdList->SetComputeRootSignature(m_rootSignature.Get());

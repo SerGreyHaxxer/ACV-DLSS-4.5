@@ -16,7 +16,6 @@
  */
 #pragma once
 
-#include <MinHook.h>
 #include <cstdint>
 #include <expected>
 #include <string_view>
@@ -24,6 +23,25 @@
 // ============================================================================
 // Typed Error Enums for std::expected Returns
 // ============================================================================
+
+enum class HookError {
+  NotInitialized,
+  NoFreeSlots,
+  AlreadyHooked,
+  BreakpointFailed,
+  InvalidAddress,
+};
+
+constexpr std::string_view to_string(HookError e) {
+  switch (e) {
+  case HookError::NotInitialized:   return "Ghost hook system not initialized";
+  case HookError::NoFreeSlots:      return "No free hardware breakpoint slots";
+  case HookError::AlreadyHooked:    return "Address already hooked";
+  case HookError::BreakpointFailed: return "Failed to apply hardware breakpoint";
+  case HookError::InvalidAddress:   return "Invalid target address";
+  }
+  return "Unknown hook error";
+}
 
 enum class ProxyError {
   DXGILoadFailed,
@@ -61,7 +79,7 @@ constexpr std::string_view to_string(ScanError e) {
 // Convenience Aliases
 // ============================================================================
 
-using HookResult = std::expected<void, MH_STATUS>;
+using HookResult = std::expected<void, HookError>;
 
 template<typename T>
 using PatternScanResult = std::expected<T, ScanError>;

@@ -553,4 +553,140 @@ bool RunAllChecks(std::vector<CheckResult>& results) {
   return allPassed;
 }
 
+// ============================================================================
+// SAFE MODE
+// ============================================================================
+
+static constexpr wchar_t kSafeModeFlag[] = L"tensorboot_safemode.flag";
+
+bool EnterSafeMode() {
+    fs::path flagPath = fs::path(GetBootDirectory()) / kSafeModeFlag;
+    std::wofstream file(flagPath);
+    if (file.is_open()) {
+        file << L"safe_mode_active\n";
+        return true;
+    }
+    return false;
+}
+
+bool IsSafeMode() {
+    fs::path flagPath = fs::path(GetBootDirectory()) / kSafeModeFlag;
+    return fs::exists(flagPath);
+}
+
+// ============================================================================
+// CONFIGURATION BACKUP/RESTORE
+// ============================================================================
+
+static constexpr wchar_t kConfigFileName[] = L"dlss_settings.toml";
+static constexpr wchar_t kConfigBackupName[] = L"dlss_settings.toml.backup";
+static constexpr wchar_t kLegacyConfigName[] = L"dlss_settings.ini";
+static constexpr wchar_t kLegacyBackupName[] = L"dlss_settings.ini.backup";
+
+bool BackupConfig(const std::wstring& gameDir) {
+    bool anyBacked = false;
+    
+    // Backup TOML config
+    fs::path configPath = fs::path(gameDir) / kConfigFileName;
+    fs::path backupPath = fs::path(gameDir) / kConfigBackupName;
+    if (fs::exists(configPath)) {
+        std::error_code ec;
+        fs::copy_file(configPath, backupPath, fs::copy_options::overwrite_existing, ec);
+        if (!ec) anyBacked = true;
+    }
+    
+    // Backup legacy INI config
+    fs::path iniPath = fs::path(gameDir) / kLegacyConfigName;
+    fs::path iniBackup = fs::path(gameDir) / kLegacyBackupName;
+    if (fs::exists(iniPath)) {
+        std::error_code ec;
+        fs::copy_file(iniPath, iniBackup, fs::copy_options::overwrite_existing, ec);
+        if (!ec) anyBacked = true;
+    }
+    
+    return anyBacked;
+}
+
+bool RestoreConfig(const std::wstring& gameDir) {
+    bool anyRestored = false;
+    
+    fs::path backupPath = fs::path(gameDir) / kConfigBackupName;
+    fs::path configPath = fs::path(gameDir) / kConfigFileName;
+    if (fs::exists(backupPath)) {
+        std::error_code ec;
+        fs::copy_file(backupPath, configPath, fs::copy_options::overwrite_existing, ec);
+        if (!ec) anyRestored = true;
+    }
+    
+    fs::path iniBackup = fs::path(gameDir) / kLegacyBackupName;
+    fs::path iniPath = fs::path(gameDir) / kLegacyConfigName;
+    if (fs::exists(iniBackup)) {
+        std::error_code ec;
+        fs::copy_file(iniBackup, iniPath, fs::copy_options::overwrite_existing, ec);
+        if (!ec) anyRestored = true;
+    }
+    
+    return anyRestored;
+}
+
+bool HasConfigBackup(const std::wstring& gameDir) {
+    return fs::exists(fs::path(gameDir) / kConfigBackupName) ||
+           fs::exists(fs::path(gameDir) / kLegacyBackupName);
+}
+
+// ============================================================================
+// AUTO-REPAIR
+// ============================================================================
+
+RepairResult AutoRepairMissingDlls(const std::wstring& gameDir) {
+    RepairResult result{true, L"", 0};
+    
+    // Check for proxy DLL
+    fs::path proxyDll = fs::path(gameDir) / kProxyDllName;
+    if (!fs::exists(proxyDll)) {
+        // Check if it's in the TensorBoot directory
+        fs::path bootDir = GetBootDirectory();
+        fs::path sourceDll = fs::path(bootDir) / kProxyDllName;
+        if (fs::exists(sourceDll)) {
+            std::error_code ec;
+            fs::copy_file(sourceDll, proxyDll, ec);
+            if (!ec) {
+                result.filesRepaired++;
+                result.message += L"Copied dxgi.dll from TensorBoot directory. ";
+            } else {
+                result.success = false;
+                result.message += L"Failed to copy dxgi.dll: " + 
+                    std::wstring(ec.message().begin(), ec.message().end()) + L". ";
+            }
+        } else {
+            result.success = false;
+            result.message += L"dxgi.dll not found in TensorBoot directory. ";
+        }
+    }
+    
+    // Check for required Streamline DLLs - look in common locations
+    fs::path bootDir = GetBootDirectory();
+    for (int i = 0; kStreamlineDlls[i]; i++) {
+        fs::path targetDll = fs::path(gameDir) / kStreamlineDlls[i];
+        if (!fs::exists(targetDll)) {
+            // Try to find it next to TensorBoot
+            fs::path sourceDll = fs::path(bootDir) / kStreamlineDlls[i];
+            if (fs::exists(sourceDll)) {
+                std::error_code ec;
+                fs::copy_file(sourceDll, targetDll, ec);
+                if (!ec) {
+                    result.filesRepaired++;
+                    result.message += std::wstring(L"Copied ") + kStreamlineDlls[i] + L". ";
+                }
+            }
+        }
+    }
+    
+    if (result.filesRepaired == 0 && result.success) {
+        result.message = L"All required files are present. No repairs needed.";
+    }
+    
+    return result;
+}
+
 } // namespace Integrity

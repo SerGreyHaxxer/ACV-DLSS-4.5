@@ -186,44 +186,9 @@ void OnPresentThread(IDXGISwapChain *pSwapChain) {
 // ============================================================================
 // PRESENT HOOK â€” runs OnPresentThread on the GPU submission thread
 // ============================================================================
-static PFN_Present g_OrigPresent = nullptr;
-
-static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *pThis, UINT SyncInterval, UINT Flags) noexcept {
-  try {
-    OnPresentThread(pThis);
-  } catch (...) {
-    static std::atomic<uint32_t> s_presentErrors{0};
-    if (s_presentErrors.fetch_add(1) % 300 == 0)
-      LOG_ERROR("[HOOK] Exception in HookedPresent (count: {})", s_presentErrors.load());
-  }
-  if (!g_OrigPresent)
-    return E_FAIL;
-  return g_OrigPresent(pThis, SyncInterval, Flags);
-}
-
-static void InstallPresentHook(IDXGISwapChain *pSwapChain) {
-  static std::atomic<bool> installed(false);
-  if (installed.exchange(true))
-    return;
-  if (!pSwapChain)
-    return;
-
-  // Direct vtable pointer swap â€” modifies a data pointer, NOT executable code.
-  // Much stealthier than MinHook inline hooks: anti-cheat monitors code sections
-  // for JMP patches, but vtable pointers live in data sections.
-  // Pointer-sized writes on x64 are naturally atomic.
-  void **vt = *reinterpret_cast<void***>(pSwapChain);
-  DWORD oldProtect;
-  if (VirtualProtect(&vt[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-    g_OrigPresent = reinterpret_cast<PFN_Present>(vt[8]);
-    vt[8] = reinterpret_cast<void*>(HookedPresent);
-    VirtualProtect(&vt[8], sizeof(void*), oldProtect, &oldProtect);
-    LOG_INFO("[HOOK] IDXGISwapChain::Present hook installed (vtable swap)");
-  } else {
-    LOG_ERROR("[HOOK] Failed to VirtualProtect Present vtable entry");
-    installed.store(false); // allow retry
-  }
-}
+// Present hook is now installed via Ghost Hook (hardware breakpoint) from hooks.cpp.
+// Forward declaration of the ghost-hook-based installer.
+extern void InstallPresentGhostHook(IDXGISwapChain *pSwapChain);
 
 void StartFrameTimer() {
   if (g_timerRunning.exchange(true, std::memory_order_acq_rel))
@@ -326,7 +291,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChain(
       std::lock_guard<std::mutex> lock(g_swapChainMutex);
       g_pRealSwapChain = *ppSwapChain;
     }
-    InstallPresentHook(*ppSwapChain);
+    InstallPresentGhostHook(*ppSwapChain);
     StartFrameTimer();
   }
   return hr;
@@ -409,7 +374,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChainForHwnd(
       std::lock_guard<std::mutex> lock(g_swapChainMutex);
       g_pRealSwapChain = *s;
     }
-    InstallPresentHook(*s);
+    InstallPresentGhostHook(*s);
     StartFrameTimer();
   }
   return hr;
@@ -438,7 +403,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChainForCoreWindow(
       std::lock_guard<std::mutex> lock(g_swapChainMutex);
       g_pRealSwapChain = *s;
     }
-    InstallPresentHook(*s);
+    InstallPresentGhostHook(*s);
     StartFrameTimer();
   }
   return hr;
@@ -512,7 +477,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGIFactory::CreateSwapChainForComposition(
       std::lock_guard<std::mutex> lock(g_swapChainMutex);
       g_pRealSwapChain = *s;
     }
-    InstallPresentHook(*s);
+    InstallPresentGhostHook(*s);
     StartFrameTimer();
   }
   return hr;

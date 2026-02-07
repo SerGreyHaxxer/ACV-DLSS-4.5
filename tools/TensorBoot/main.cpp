@@ -116,6 +116,9 @@ void PrintUsage() {
   std::cout << "  --silent    Skip pre-flight checks and launch immediately\n";
   std::cout << "  --check     Run checks only, don't launch the game\n";
   std::cout << "  --clear     Clear startup loop history\n";
+  std::cout << "  --repair    Auto-repair missing DLLs\n";
+  std::cout << "  --backup    Backup current configuration\n";
+  std::cout << "  --restore   Restore configuration from backup\n";
   std::cout << "  --help      Show this help message\n";
 }
 
@@ -125,6 +128,9 @@ int wmain(int argc, wchar_t* argv[]) {
   bool silentMode = false;
   bool checkOnly = false;
   bool clearHistory = false;
+  bool repairMode = false;
+  bool backupMode = false;
+  bool restoreMode = false;
 
   // Parse arguments
   for (int i = 1; i < argc; i++) {
@@ -135,6 +141,12 @@ int wmain(int argc, wchar_t* argv[]) {
       checkOnly = true;
     } else if (arg == L"--clear") {
       clearHistory = true;
+    } else if (arg == L"--repair" || arg == L"-r") {
+      repairMode = true;
+    } else if (arg == L"--backup") {
+      backupMode = true;
+    } else if (arg == L"--restore") {
+      restoreMode = true;
     } else if (arg == L"--help" || arg == L"-h") {
       PrintBanner();
       PrintUsage();
@@ -147,6 +159,46 @@ int wmain(int argc, wchar_t* argv[]) {
     Integrity::ClearStartupHistory();
     std::cout << Color::Green << "[OK] Startup history cleared.\n" << Color::Reset;
     if (argc == 2) return 0; // Only --clear was passed
+  }
+
+  // Repair mode
+  if (repairMode) {
+    std::wstring gameDir = Integrity::FindGameDirectory();
+    if (gameDir.empty()) {
+      std::cout << Color::Red << "[ERROR] Cannot find game directory for repair.\n" << Color::Reset;
+      return 1;
+    }
+    auto result = Integrity::AutoRepairMissingDlls(gameDir);
+    char msgBuf[1024] = {0};
+    WideCharToMultiByte(CP_UTF8, 0, result.message.c_str(), -1, msgBuf, sizeof(msgBuf), NULL, NULL);
+    if (result.success) {
+      std::cout << Color::Green << "[OK] Repair: " << msgBuf << " (" << result.filesRepaired << " files)\n" << Color::Reset;
+    } else {
+      std::cout << Color::Red << "[ERROR] Repair: " << msgBuf << "\n" << Color::Reset;
+    }
+    if (argc == 2) return result.success ? 0 : 1;
+  }
+
+  // Backup mode
+  if (backupMode) {
+    std::wstring gameDir = Integrity::FindGameDirectory();
+    if (!gameDir.empty() && Integrity::BackupConfig(gameDir)) {
+      std::cout << Color::Green << "[OK] Configuration backed up.\n" << Color::Reset;
+    } else {
+      std::cout << Color::Yellow << "[!!] No configuration found to backup.\n" << Color::Reset;
+    }
+    if (argc == 2) return 0;
+  }
+
+  // Restore mode
+  if (restoreMode) {
+    std::wstring gameDir = Integrity::FindGameDirectory();
+    if (!gameDir.empty() && Integrity::RestoreConfig(gameDir)) {
+      std::cout << Color::Green << "[OK] Configuration restored from backup.\n" << Color::Reset;
+    } else {
+      std::cout << Color::Yellow << "[!!] No backup found to restore.\n" << Color::Reset;
+    }
+    if (argc == 2) return 0;
   }
 
   PrintBanner();
@@ -209,6 +261,16 @@ int wmain(int argc, wchar_t* argv[]) {
     std::cout << "Proceeding anyway...\n";
   } else {
     std::cout << Color::Green << "\n[OK] All checks passed!\n" << Color::Reset;
+  }
+
+  // Check for safe mode
+  if (Integrity::IsInStartupLoop()) {
+    std::cout << Color::Yellow << "\n[!!] Startup loop detected! Entering safe mode...\n" << Color::Reset;
+    Integrity::EnterSafeMode();
+    // Backup config before potentially resetting
+    Integrity::BackupConfig(gameDir);
+    std::cout << "     Configuration backed up. You may need to reset settings.\n";
+    std::cout << "     Use --restore to recover your configuration.\n";
   }
 
   // Check only mode - don't launch
