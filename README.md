@@ -455,7 +455,13 @@ Delete these files from the game folder:
 
 ## 📄 License
 
-GNU General Public License v3.0 - See [LICENSE](LICENSE) for details.
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
+
+This project is licensed under the **GNU General Public License v3.0 or later** (GPL-3.0+).
+
+- You can redistribute it and/or modify it under the terms of the GNU General Public License
+- See the full license text in [LICENSE](LICENSE)
+- For more information, visit <https://www.gnu.org/licenses/gpl-3.0.html>
 
 ---
 
