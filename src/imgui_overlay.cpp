@@ -31,6 +31,70 @@
 #include <format>
 #include <limits>
 
+// ============================================================================
+// printf-to-std::format converter
+// Converts printf-style format specifiers ("%.2f") to std::format style ("{:.2f}")
+// so that std::vformat works correctly with our slider format strings.
+// ============================================================================
+namespace {
+std::string PrintfToStdFormat(const char* pf) {
+  // Fast path: already std::format style
+  if (pf && pf[0] == '{') return pf;
+  // Convert common printf patterns: %d, %f, %.Nf, %.Nd, %i, %u
+  std::string s(pf ? pf : "{}");
+  // Replace %% with escaped brace first (rare, but handle it)
+  // Replace %.Nf -> {:.Nf}
+  std::string result;
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (s[i] == '%' && i + 1 < s.size()) {
+      if (s[i + 1] == '%') {
+        result += '%';
+        ++i;
+        continue;
+      }
+      // Parse: %[flags][width][.precision][length]specifier
+      std::string spec = "{:";
+      ++i; // skip %
+      // Optional flags: -, +, 0, space
+      while (i < s.size() && (s[i] == '-' || s[i] == '+' || s[i] == '0' || s[i] == ' ')) {
+        spec += s[i++];
+      }
+      // Optional width
+      while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
+        spec += s[i++];
+      }
+      // Optional .precision
+      if (i < s.size() && s[i] == '.') {
+        spec += s[i++];
+        while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
+          spec += s[i++];
+        }
+      }
+      // Specifier
+      if (i < s.size()) {
+        char c = s[i];
+        if (c == 'f' || c == 'F')
+          spec += c;
+        else if (c == 'e' || c == 'E')
+          spec += c;
+        else if (c == 'g' || c == 'G')
+          spec += c;
+        else if (c == 'd' || c == 'i')
+          spec += 'd';
+        else if (c == 'u')
+          spec += 'd';
+        else
+          spec += c; // fallback
+      }
+      spec += '}';
+      result += spec;
+    } else {
+      result += s[i];
+    }
+  }
+  return result;
+}
+} // anonymous namespace
 
 // ============================================================================
 // NvAPI Metrics (reused from original — independent of GUI library)
@@ -336,6 +400,10 @@ void ImGuiOverlay::Render() {
 
   if (m_visible) {
     BuildMainPanel();
+  }
+
+  if (m_showSetupWizard) {
+    BuildSetupWizard();
   }
 
   BuildFPSOverlay();
@@ -1016,7 +1084,8 @@ bool ImGuiOverlay::SliderFloat(const char* label, float* value, float vmin, floa
   float labelH = 22.0f;
 
   // --- Format the numeric value ---
-  std::string valStr = std::vformat(fmt, std::make_format_args(*value));
+  std::string fmtConverted = PrintfToStdFormat(fmt);
+  std::string valStr = std::vformat(fmtConverted, std::make_format_args(*value));
 
   // --- Label row: label on left, value in accent pill on right ---
   D2D1_COLOR_F labelColor = enabled ? vtheme::kTextSecondary : vtheme::hex(0x484F58, 1.0f);
@@ -1140,7 +1209,7 @@ bool ImGuiOverlay::SliderFloat(const char* label, float* value, float vmin, floa
 
   // --- Floating tooltip during drag ---
   if (isDragging && enabled) {
-    std::string tipStr = std::vformat(fmt, std::make_format_args(*value));
+    std::string tipStr = std::vformat(fmtConverted, std::make_format_args(*value));
     auto tipSize = m_renderer.MeasureTextA(tipStr, vtheme::kFontSmall, true);
     float tipW = tipSize.width + 14.0f;
     float tipH = 20.0f;
@@ -1331,6 +1400,83 @@ bool ImGuiOverlay::ColorEdit3(const char* label, float* r, float* g, float* b) {
   return changed;
 }
 
+// ============================================================================
+// ButtonGroup — Row of mutually exclusive pill buttons
+// ============================================================================
+bool ImGuiOverlay::ButtonGroup(const char* label, int* selectedIndex, const char* const* items, int itemCount,
+                               bool enabled) {
+  uint32_t id = VGuiHash(label);
+  float x = m_cursorX;
+  float y = m_cursorY;
+  float w = m_contentWidth;
+
+  // Label
+  D2D1_COLOR_F labelColor = enabled ? vtheme::kTextSecondary : vtheme::hex(0x484F58, 1.0f);
+  m_renderer.DrawTextA(label, x + 4.0f, y, w * 0.95f, 18.0f, labelColor, vtheme::kFontSmall);
+  y += 20.0f;
+
+  // Calculate button sizes
+  float gap = 4.0f;
+  float totalGap = gap * (itemCount - 1);
+  float btnW = (w - totalGap) / static_cast<float>(itemCount);
+  float btnH = 28.0f;
+  bool changed = false;
+
+  for (int i = 0; i < itemCount; ++i) {
+    float bx = x + i * (btnW + gap);
+    bool selected = (*selectedIndex == i);
+    bool hovered = enabled && PointInRect(m_input.mouseX, m_input.mouseY, bx, y, btnW, btnH);
+
+    // Animate hover
+    uint32_t btnId = id + static_cast<uint32_t>(i) + 1;
+    float& anim = m_hoverAnim[btnId];
+    float animTarget = hovered ? 1.0f : 0.0f;
+    anim = vanim::Lerp(anim, animTarget, 0.2f);
+
+    // Background
+    D2D1_COLOR_F bg;
+    D2D1_COLOR_F border;
+    D2D1_COLOR_F textCol;
+    if (!enabled) {
+      bg = vtheme::hex(0x161B22, 0.5f);
+      border = vtheme::hex(0x21262D, 0.3f);
+      textCol = vtheme::hex(0x484F58, 0.6f);
+    } else if (selected) {
+      bg = m_accent;
+      bg.a = 0.9f + anim * 0.1f;
+      border = m_accentBright;
+      textCol = vtheme::hex(0x0D1117, 1.0f);
+    } else {
+      float h = anim * 0.3f;
+      bg = vtheme::hex(0x21262D, 0.7f + h * 0.3f);
+      border = vtheme::hex(0x30363D, 0.4f + h * 0.3f);
+      textCol = vtheme::hex(0xE6EDF3, 0.7f + h * 0.3f);
+    }
+
+    // Rounded corners: leftmost gets left rounding, rightmost gets right rounding
+    float r = 6.0f;
+    m_renderer.FillRoundedRect(bx, y, btnW, btnH, r, bg);
+    if (selected) {
+      m_renderer.OutlineRoundedRect(bx, y, btnW, btnH, r, border, 1.5f);
+    } else {
+      m_renderer.OutlineRoundedRect(bx, y, btnW, btnH, r, border, 1.0f);
+    }
+
+    // Text
+    m_renderer.DrawTextA(items[i], bx, y, btnW, btnH, textCol, vtheme::kFontSmall, ValhallaRenderer::TextAlign::Center,
+                         selected);
+
+    // Click
+    if (enabled && hovered && m_input.mouseClicked && !selected) {
+      *selectedIndex = i;
+      changed = true;
+    }
+  }
+
+  m_cursorY = y + btnH + vtheme::kSpacing;
+  return changed;
+}
+
 void ImGuiOverlay::PlotLines(const char* label, const float* values, int count, int offset, float vmin, float vmax,
                              float graphH) {
   float x = m_cursorX + 4.0f;
@@ -1384,7 +1530,7 @@ void ImGuiOverlay::BuildMainPanel() {
 
   float screenW = static_cast<float>(m_width);
   float screenH = static_cast<float>(m_height);
-  float panelW = std::clamp(cust.panelWidth, 360.0f, 720.0f);
+  float panelW = std::clamp(cust.panelWidth, 360.0f, 1000.0f);
   float panelH = screenH;
   // cornerRadius is available via cust.cornerRadius if ever needed for sub-panels
   float panelOpacity = std::clamp(cust.panelOpacity, 0.3f, 1.0f);
@@ -1481,34 +1627,36 @@ void ImGuiOverlay::BuildMainPanel() {
   float statusH = vtheme::kStatusBarHeight;
   float dotX = panelDrawX + vtheme::kPadding;
 
-  bool dlssOk = sli.IsDLSSSupported() && sli.GetDLSSModeIndex() > 0;
-  bool dlssWarn = sli.IsDLSSSupported() && sli.GetDLSSModeIndex() == 0;
-  bool fgDisabled = sli.IsFrameGenDisabledDueToInvalidParam();
-  bool fgOk = sli.IsFrameGenSupported() && !fgDisabled && sli.GetFrameGenMultiplier() >= 2 &&
-              !sli.IsSmartFGTemporarilyDisabled() && sli.GetFrameGenStatus() == sl::DLSSGStatus::eOk;
-  bool fgWarn = sli.IsFrameGenSupported() && !fgDisabled &&
-                (sli.GetFrameGenMultiplier() < 2 || sli.IsSmartFGTemporarilyDisabled());
+  // Status dots — use config values as primary source, Streamline as bonus
+  // This ensures dots reflect what the user has CONFIGURED, not just runtime state
+  bool dlssSupported = sli.IsDLSSSupported();
+  bool dlssOk = dlssSupported && (cfg.dlss.mode > 0 || sli.GetDLSSModeIndex() > 0);
+  bool dlssWarn = dlssSupported && !dlssOk;
+  bool fgSupported = sli.IsFrameGenSupported();
+  bool fgOk = fgSupported && cfg.fg.multiplier >= 2;
+  bool fgWarn = fgSupported && cfg.fg.multiplier < 2;
   bool camOk = sli.HasCameraData();
-  bool dvcOk = sli.IsDeepDVCSupported() && sli.IsDeepDVCEnabled();
-  bool dvcWarn = sli.IsDeepDVCSupported() && !sli.IsDeepDVCEnabled();
-  bool hdrOk = sli.IsHDRSupported() && sli.IsHDRActive();
-  bool hdrWarn = sli.IsHDRSupported() && !sli.IsHDRActive() && sli.IsHDREnabled();
+  bool dvcOk = sli.IsDeepDVCSupported() && cfg.dvc.enabled;
+  bool dvcWarn = sli.IsDeepDVCSupported() && !cfg.dvc.enabled;
+  bool hdrOk = sli.IsHDRSupported() && cfg.hdr.enabled;
+  bool hdrWarn = sli.IsHDRSupported() && !cfg.hdr.enabled;
 
-  // Backup cursor for status dots inline
+  // Backup cursor for status dots inline — proportional spacing
+  float dotSpacing = (panelW - vtheme::kPadding * 2) / 5.0f;
   m_cursorX = dotX;
   m_cursorY = statusY;
-  m_contentWidth = 90.0f;
+  m_contentWidth = dotSpacing;
   StatusDot("DLSS", dlssOk ? vtheme::kStatusOk : (dlssWarn ? vtheme::kStatusWarn : vtheme::kStatusBad));
-  m_cursorX = dotX + 85.0f;
+  m_cursorX = dotX + dotSpacing;
   m_cursorY = statusY;
   StatusDot("FG", fgOk ? vtheme::kStatusOk : (fgWarn ? vtheme::kStatusWarn : vtheme::kStatusBad));
-  m_cursorX = dotX + 155.0f;
+  m_cursorX = dotX + dotSpacing * 2.0f;
   m_cursorY = statusY;
   StatusDot("Camera", camOk ? vtheme::kStatusOk : vtheme::kStatusWarn);
-  m_cursorX = dotX + 250.0f;
+  m_cursorX = dotX + dotSpacing * 3.0f;
   m_cursorY = statusY;
   StatusDot("DVC", dvcOk ? vtheme::kStatusOk : (dvcWarn ? vtheme::kStatusWarn : vtheme::kStatusBad));
-  m_cursorX = dotX + 330.0f;
+  m_cursorX = dotX + dotSpacing * 4.0f;
   m_cursorY = statusY;
   StatusDot("HDR", hdrOk ? vtheme::kStatusOk : (hdrWarn ? vtheme::kStatusWarn : vtheme::kStatusBad));
 
@@ -1658,8 +1806,13 @@ void ImGuiOverlay::BuildMainPanel() {
         cfg.dlss.preset = preset;
         ConfigManager::Get().MarkDirty();
       }
-      // Auto-UI for other general settings
-      if (AutoUI::DrawStruct(*this, cfg.dlss)) ConfigManager::Get().MarkDirty();
+      // Auto-UI for other general settings (sharpness, LOD bias)
+      if (AutoUI::DrawStruct(*this, cfg.dlss)) {
+        sli.SetSharpness(cfg.dlss.sharpness);
+        sli.SetLODBias(cfg.dlss.lodBias);
+        ApplySamplerLodBias(cfg.dlss.lodBias);
+        ConfigManager::Get().MarkDirty();
+      }
       Spacing();
     }
   }
@@ -1687,9 +1840,19 @@ void ImGuiOverlay::BuildMainPanel() {
         ConfigManager::Get().MarkDirty();
       }
       float rrStr = cfg.rr.denoiserStrength;
-      if (SliderFloat("RR Denoiser Strength", &rrStr, 0.0f, 1.0f, "%.2f", rrActive)) {
-        cfg.rr.denoiserStrength = rrStr;
-        sli.SetRRDenoiserStrength(rrStr);
+      // Button group for common denoiser strength levels
+      const char* rrStrLevels[] = {"Off", "Low", "Medium", "High", "Max"};
+      float rrStrValues[] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+      int rrStrIdx = 2; // default medium
+      for (int i = 0; i < 5; ++i) {
+        if (std::abs(rrStr - rrStrValues[i]) < 0.13f) {
+          rrStrIdx = i;
+          break;
+        }
+      }
+      if (ButtonGroup("Denoiser Strength", &rrStrIdx, rrStrLevels, 5, rrActive)) {
+        cfg.rr.denoiserStrength = rrStrValues[rrStrIdx];
+        sli.SetRRDenoiserStrength(cfg.rr.denoiserStrength);
         ConfigManager::Get().MarkDirty();
       }
       Spacing();
@@ -1702,7 +1865,77 @@ void ImGuiOverlay::BuildMainPanel() {
     SectionHeader("DeepDVC (RTX Dynamic Vibrance)", &open);
     m_sectionOpen[VGuiHash("dvc_section")] = open;
     if (open) {
-      if (AutoUI::DrawStruct(*this, cfg.dvc)) ConfigManager::Get().MarkDirty();
+      // Enable toggle
+      bool dvcOn = cfg.dvc.enabled;
+      if (Checkbox("Enable DeepDVC", &dvcOn, sli.IsDeepDVCSupported())) {
+        cfg.dvc.enabled = dvcOn;
+        sli.SetDeepDVCEnabled(dvcOn);
+        ConfigManager::Get().MarkDirty();
+      }
+      bool dvcActive = sli.IsDeepDVCSupported() && cfg.dvc.enabled;
+
+      // Intensity — button group
+      const char* intLevels[] = {"Subtle", "Low", "Medium", "High", "Max"};
+      float intValues[] = {0.15f, 0.3f, 0.5f, 0.75f, 1.0f};
+      int intIdx = 2;
+      for (int i = 0; i < 5; ++i) {
+        if (std::abs(cfg.dvc.intensity - intValues[i]) < 0.1f) {
+          intIdx = i;
+          break;
+        }
+      }
+      if (ButtonGroup("Intensity", &intIdx, intLevels, 5, dvcActive)) {
+        cfg.dvc.intensity = intValues[intIdx];
+        sli.SetDeepDVCIntensity(cfg.dvc.intensity);
+        ConfigManager::Get().MarkDirty();
+      }
+
+      // Saturation — slider (truly continuous)
+      if (SliderFloat("Saturation", &cfg.dvc.saturation, 0.0f, 1.0f, "%.2f", dvcActive)) {
+        sli.SetDeepDVCSaturation(cfg.dvc.saturation);
+        ConfigManager::Get().MarkDirty();
+      }
+
+      NorseSeparator();
+
+      // Adaptive mode
+      bool adOn = cfg.dvc.adaptiveEnabled;
+      if (Checkbox("Adaptive Mode", &adOn, dvcActive)) {
+        cfg.dvc.adaptiveEnabled = adOn;
+        sli.SetDeepDVCAdaptiveEnabled(adOn);
+        ConfigManager::Get().MarkDirty();
+      }
+      bool adActive = dvcActive && cfg.dvc.adaptiveEnabled;
+
+      // Adaptive strength — button group
+      const char* adStrLevels[] = {"Low", "Medium", "High"};
+      float adStrValues[] = {0.3f, 0.6f, 0.9f};
+      int adStrIdx = 1;
+      for (int i = 0; i < 3; ++i) {
+        if (std::abs(cfg.dvc.adaptiveStrength - adStrValues[i]) < 0.16f) {
+          adStrIdx = i;
+          break;
+        }
+      }
+      if (ButtonGroup("Adaptive Strength", &adStrIdx, adStrLevels, 3, adActive)) {
+        cfg.dvc.adaptiveStrength = adStrValues[adStrIdx];
+        sli.SetDeepDVCAdaptiveStrength(cfg.dvc.adaptiveStrength);
+        ConfigManager::Get().MarkDirty();
+      }
+
+      // Min/Max/Smoothing — sliders (advanced fine-tuning)
+      if (SliderFloat("Adaptive Min", &cfg.dvc.adaptiveMin, 0.0f, 1.0f, "%.2f", adActive)) {
+        sli.SetDeepDVCAdaptiveMin(cfg.dvc.adaptiveMin);
+        ConfigManager::Get().MarkDirty();
+      }
+      if (SliderFloat("Adaptive Max", &cfg.dvc.adaptiveMax, 0.0f, 1.0f, "%.2f", adActive)) {
+        sli.SetDeepDVCAdaptiveMax(cfg.dvc.adaptiveMax);
+        ConfigManager::Get().MarkDirty();
+      }
+      if (SliderFloat("Smoothing", &cfg.dvc.adaptiveSmoothing, 0.0f, 1.0f, "%.2f", adActive)) {
+        sli.SetDeepDVCAdaptiveSmoothing(cfg.dvc.adaptiveSmoothing);
+        ConfigManager::Get().MarkDirty();
+      }
       Spacing();
     }
   }
@@ -1713,17 +1946,104 @@ void ImGuiOverlay::BuildMainPanel() {
     SectionHeader("Frame Generation", &open);
     m_sectionOpen[VGuiHash("fg_section")] = open;
     if (open) {
-      const char* fgModes[] = {"Off",         "2x (DLSS-G)", "3x (DLSS-G)", "4x (DLSS-G)",
-                               "5x (DLSS-G)", "6x (DLSS-G)", "7x (DLSS-G)", "8x (DLSS-G)"};
+      // FG multiplier — button group instead of dropdown
+      const char* fgBtns[] = {"Off", "2x", "3x", "4x"};
       int fgMult = sli.GetFrameGenMultiplier();
-      int fgIndex = (fgMult >= 2 && fgMult <= 8) ? (fgMult - 1) : 0;
-      if (Combo("Frame Generation", &fgIndex, fgModes, 8, sli.IsFrameGenSupported())) {
-        int mult = fgIndex > 0 ? (fgIndex + 1) : 0;
+      int fgBtnIdx = (fgMult >= 2 && fgMult <= 4) ? (fgMult - 1) : 0;
+      if (ButtonGroup("Multiplier", &fgBtnIdx, fgBtns, 4, sli.IsFrameGenSupported())) {
+        int mult = fgBtnIdx > 0 ? (fgBtnIdx + 1) : 0;
         sli.SetFrameGenMultiplier(mult);
         cfg.fg.multiplier = mult;
         ConfigManager::Get().MarkDirty();
       }
-      if (AutoUI::DrawStruct(*this, cfg.fg)) ConfigManager::Get().MarkDirty();
+
+      // Higher multipliers via dropdown for power users
+      if (fgMult >= 5) {
+        const char* fgHigh[] = {"5x", "6x", "7x", "8x"};
+        int hiIdx = fgMult - 5;
+        if (Combo("High Multiplier", &hiIdx, fgHigh, 4, sli.IsFrameGenSupported())) {
+          int mult = hiIdx + 5;
+          sli.SetFrameGenMultiplier(mult);
+          cfg.fg.multiplier = mult;
+          ConfigManager::Get().MarkDirty();
+        }
+      }
+
+      NorseSeparator();
+
+      // Smart FG — manual controls with button groups
+      bool smartOn = cfg.fg.smartEnabled;
+      if (Checkbox("Smart Frame Gen", &smartOn, sli.IsFrameGenSupported())) {
+        cfg.fg.smartEnabled = smartOn;
+        sli.SetSmartFGEnabled(smartOn);
+        ConfigManager::Get().MarkDirty();
+      }
+      bool smartActive = sli.IsFrameGenSupported() && cfg.fg.smartEnabled;
+
+      bool autoOff = cfg.fg.autoDisable;
+      if (Checkbox("Auto-Disable at FPS Target", &autoOff, smartActive)) {
+        cfg.fg.autoDisable = autoOff;
+        sli.SetSmartFGAutoDisable(autoOff);
+        ConfigManager::Get().MarkDirty();
+      }
+
+      // Auto disable FPS target — button group
+      const char* fpsTargets[] = {"60", "90", "120", "144", "240"};
+      float fpsVals[] = {60.0f, 90.0f, 120.0f, 144.0f, 240.0f};
+      int fpsIdx = 2; // default 120
+      for (int i = 0; i < 5; ++i) {
+        if (std::abs(cfg.fg.autoDisableFps - fpsVals[i]) < 10.0f) {
+          fpsIdx = i;
+          break;
+        }
+      }
+      bool fpsActive = smartActive && cfg.fg.autoDisable;
+      if (ButtonGroup("FPS Target", &fpsIdx, fpsTargets, 5, fpsActive)) {
+        cfg.fg.autoDisableFps = fpsVals[fpsIdx];
+        sli.SetSmartFGAutoDisableThreshold(cfg.fg.autoDisableFps);
+        ConfigManager::Get().MarkDirty();
+      }
+
+      bool sceneOn = cfg.fg.sceneChangeEnabled;
+      if (Checkbox("Scene Change Detection", &sceneOn, smartActive)) {
+        cfg.fg.sceneChangeEnabled = sceneOn;
+        sli.SetSmartFGSceneChangeEnabled(sceneOn);
+        ConfigManager::Get().MarkDirty();
+      }
+
+      // Scene change threshold — button group
+      const char* scThresh[] = {"Low", "Medium", "High"};
+      float scVals[] = {0.10f, 0.25f, 0.50f};
+      int scIdx = 1;
+      for (int i = 0; i < 3; ++i) {
+        if (std::abs(cfg.fg.sceneChangeThreshold - scVals[i]) < 0.08f) {
+          scIdx = i;
+          break;
+        }
+      }
+      bool scActive = smartActive && cfg.fg.sceneChangeEnabled;
+      if (ButtonGroup("Scene Sensitivity", &scIdx, scThresh, 3, scActive)) {
+        cfg.fg.sceneChangeThreshold = scVals[scIdx];
+        sli.SetSmartFGSceneChangeThreshold(cfg.fg.sceneChangeThreshold);
+        ConfigManager::Get().MarkDirty();
+      }
+
+      // Interpolation quality — button group
+      const char* qualLevels[] = {"Fast", "Balanced", "Quality"};
+      float qualVals[] = {0.2f, 0.5f, 0.85f};
+      int qualIdx = 1;
+      for (int i = 0; i < 3; ++i) {
+        if (std::abs(cfg.fg.interpolationQuality - qualVals[i]) < 0.16f) {
+          qualIdx = i;
+          break;
+        }
+      }
+      if (ButtonGroup("Interpolation Quality", &qualIdx, qualLevels, 3, smartActive)) {
+        cfg.fg.interpolationQuality = qualVals[qualIdx];
+        sli.SetSmartFGInterpolationQuality(cfg.fg.interpolationQuality);
+        ConfigManager::Get().MarkDirty();
+      }
+
       Spacing();
     }
   }
@@ -1745,7 +2065,10 @@ void ImGuiOverlay::BuildMainPanel() {
     SectionHeader("Quality", &open);
     m_sectionOpen[VGuiHash("quality_section")] = open;
     if (open) {
-      if (AutoUI::DrawStruct(*this, cfg.mvec)) ConfigManager::Get().MarkDirty();
+      if (AutoUI::DrawStruct(*this, cfg.mvec)) {
+        sli.SetMVecScale(cfg.mvec.scaleX, cfg.mvec.scaleY);
+        ConfigManager::Get().MarkDirty();
+      }
       Spacing();
     }
   }
@@ -1756,7 +2079,80 @@ void ImGuiOverlay::BuildMainPanel() {
     SectionHeader("HDR", &open);
     m_sectionOpen[VGuiHash("hdr_section")] = open;
     if (open) {
-      if (AutoUI::DrawStruct(*this, cfg.hdr)) ConfigManager::Get().MarkDirty();
+      // HDR enable toggle
+      bool hdrOn = cfg.hdr.enabled;
+      if (Checkbox("Enable HDR", &hdrOn, sli.IsHDRSupported())) {
+        cfg.hdr.enabled = hdrOn;
+        sli.SetHDREnabled(hdrOn);
+        ConfigManager::Get().MarkDirty();
+      }
+      bool hdrActive = sli.IsHDRSupported() && cfg.hdr.enabled;
+
+      // Peak Nits — button group with common display values
+      const char* peakLabels[] = {"400", "600", "1000", "1500", "2000", "4000"};
+      float peakVals[] = {400.0f, 600.0f, 1000.0f, 1500.0f, 2000.0f, 4000.0f};
+      int peakIdx = 2; // default 1000
+      for (int i = 0; i < 6; ++i) {
+        if (std::abs(cfg.hdr.peakNits - peakVals[i]) < 100.0f) {
+          peakIdx = i;
+          break;
+        }
+      }
+      if (ButtonGroup("Peak Brightness (nits)", &peakIdx, peakLabels, 6, hdrActive)) {
+        cfg.hdr.peakNits = peakVals[peakIdx];
+        sli.SetHDRPeakNits(cfg.hdr.peakNits);
+        ConfigManager::Get().MarkDirty();
+      }
+
+      // Paper White — button group
+      const char* pwLabels[] = {"80", "120", "200", "300"};
+      float pwVals[] = {80.0f, 120.0f, 200.0f, 300.0f};
+      int pwIdx = 2; // default 200
+      for (int i = 0; i < 4; ++i) {
+        if (std::abs(cfg.hdr.paperWhiteNits - pwVals[i]) < 25.0f) {
+          pwIdx = i;
+          break;
+        }
+      }
+      if (ButtonGroup("Paper White (nits)", &pwIdx, pwLabels, 4, hdrActive)) {
+        cfg.hdr.paperWhiteNits = pwVals[pwIdx];
+        sli.SetHDRPaperWhiteNits(cfg.hdr.paperWhiteNits);
+        ConfigManager::Get().MarkDirty();
+      }
+
+      // Gamma — button group with standard values
+      const char* gammaLabels[] = {"1.8", "2.0", "2.2", "2.4"};
+      float gammaVals[] = {1.8f, 2.0f, 2.2f, 2.4f};
+      int gammaIdx = 2; // default 2.2
+      for (int i = 0; i < 4; ++i) {
+        if (std::abs(cfg.hdr.gamma - gammaVals[i]) < 0.05f) {
+          gammaIdx = i;
+          break;
+        }
+      }
+      if (ButtonGroup("Gamma", &gammaIdx, gammaLabels, 4, hdrActive)) {
+        cfg.hdr.gamma = gammaVals[gammaIdx];
+        sli.SetHDRGamma(cfg.hdr.gamma);
+        ConfigManager::Get().MarkDirty();
+      }
+
+      NorseSeparator();
+
+      // Exposure — slider (continuous fine-tuning)
+      if (SliderFloat("Exposure", &cfg.hdr.exposure, 0.1f, 10.0f, "%.1f", hdrActive)) {
+        sli.SetHDRExposure(cfg.hdr.exposure);
+        ConfigManager::Get().MarkDirty();
+      }
+      // Tonemap Curve — slider
+      if (SliderFloat("Tonemap Curve", &cfg.hdr.tonemapCurve, -1.0f, 1.0f, "%.2f", hdrActive)) {
+        sli.SetHDRTonemapCurve(cfg.hdr.tonemapCurve);
+        ConfigManager::Get().MarkDirty();
+      }
+      // Saturation — slider
+      if (SliderFloat("Saturation", &cfg.hdr.saturation, 0.0f, 2.0f, "%.2f", hdrActive)) {
+        sli.SetHDRSaturation(cfg.hdr.saturation);
+        ConfigManager::Get().MarkDirty();
+      }
       Spacing();
     }
   }
@@ -2055,6 +2451,385 @@ void ImGuiOverlay::BuildMainPanel() {
     float maxScroll = m_contentHeight - m_visibleHeight;
     m_scrollOffset -= m_input.scrollDelta;
     m_scrollOffset = std::clamp(m_scrollOffset, 0.0f, maxScroll);
+  }
+}
+// ============================================================================
+// Setup Wizard — Multi-step guided configuration wizard
+// ============================================================================
+
+void ImGuiOverlay::BuildSetupWizard() {
+  ModConfig& cfg = ConfigManager::Get().Data();
+  StreamlineIntegration& sli = StreamlineIntegration::Get();
+
+  float screenW = static_cast<float>(m_width);
+  float screenH = static_cast<float>(m_height);
+
+  // --- Background dim ---
+  m_renderer.FillRect(0, 0, screenW, screenH, vtheme::hex(0x000000, 0.7f));
+
+  // --- Wizard modal panel ---
+  float wizW = std::clamp(screenW * 0.4f, 420.0f, 560.0f);
+  float wizH = std::clamp(screenH * 0.55f, 380.0f, 520.0f);
+  float wizX = (screenW - wizW) * 0.5f;
+  float wizY = (screenH - wizH) * 0.5f;
+
+  // Shadow
+  m_renderer.FillRoundedRect(wizX + 4, wizY + 4, wizW, wizH, 12.0f, vtheme::hex(0x000000, 0.5f));
+  // Background
+  D2D1_COLOR_F wizBg = vtheme::hex(0x161B22, 0.98f);
+  m_renderer.FillRoundedRect(wizX, wizY, wizW, wizH, 12.0f, wizBg);
+  // Border
+  m_renderer.OutlineRoundedRect(wizX, wizY, wizW, wizH, 12.0f, m_accentDim, 1.0f);
+
+  // --- Title bar ---
+  float titleH = 44.0f;
+  m_renderer.FillRoundedRect(wizX, wizY, wizW, titleH, 12.0f, vtheme::hex(0x0D1117, 0.98f));
+  // Mask bottom corners of title rounded rect to make them square
+  m_renderer.FillRect(wizX, wizY + titleH - 12.0f, wizW, 12.0f, vtheme::hex(0x0D1117, 0.98f));
+  m_renderer.DrawTextA("Setup Wizard", wizX + 16, wizY, wizW * 0.5f, titleH, m_accent, vtheme::kFontTitle,
+                       ValhallaRenderer::TextAlign::Left, true);
+  // Step indicator
+  std::string stepStr = std::format("Step {} of 5", m_wizardStep + 1);
+  m_renderer.DrawTextA(stepStr, wizX, wizY, wizW - 16, titleH, vtheme::kTextSecondary, vtheme::kFontSmall,
+                       ValhallaRenderer::TextAlign::Right);
+  // Title separator
+  m_renderer.DrawLine(wizX, wizY + titleH, wizX + wizW, wizY + titleH, vtheme::hex(0x30363D, 0.5f), 1.0f);
+
+  // --- Progress bar ---
+  float progY = wizY + titleH + 1;
+  float progH = 3.0f;
+  float progFill = (m_wizardStep + 1.0f) / 5.0f;
+  m_renderer.FillRect(wizX, progY, wizW, progH, vtheme::hex(0x21262D, 1.0f));
+  m_renderer.FillRect(wizX, progY, wizW * progFill, progH, m_accent);
+
+  // --- Content area ---
+  float contentX = wizX + 24.0f;
+  float contentY = wizY + titleH + progH + 18.0f;
+  float contentW = wizW - 48.0f;
+  float lineH = 22.0f;
+  m_cursorX = contentX;
+  m_cursorY = contentY;
+  m_contentWidth = contentW;
+
+  // Define button dimensions (shared across steps)
+  float btnW = 110.0f;
+  float btnH = 34.0f;
+  float btnY = wizY + wizH - btnH - 18.0f;
+
+  switch (m_wizardStep) {
+    case 0: { // Welcome
+      m_renderer.DrawTextA("Welcome to DLSS 4.5 for AC Valhalla", contentX, contentY, contentW, lineH * 1.5f,
+                           vtheme::kTextPrimary, 14.0f, ValhallaRenderer::TextAlign::Left, true);
+      contentY += lineH * 2.0f;
+
+      m_renderer.DrawTextA("This wizard will help you configure the", contentX, contentY, contentW, lineH,
+                           vtheme::kTextSecondary, vtheme::kFontBody);
+      contentY += lineH;
+      m_renderer.DrawTextA("optimal DLSS settings for your system.", contentX, contentY, contentW, lineH,
+                           vtheme::kTextSecondary, vtheme::kFontBody);
+      contentY += lineH * 2.0f;
+
+      // GPU info
+      m_renderer.DrawTextA("DETECTED GPU", contentX, contentY, contentW, lineH, m_accent, vtheme::kFontSmall,
+                           ValhallaRenderer::TextAlign::Left, true);
+      contentY += lineH + 4.0f;
+
+      // GPU name pill
+      EnsureDxgiName(m_device);
+      const char* gpuName = g_nvapiMetrics.dxgiNameReady
+                                ? g_nvapiMetrics.dxgiName
+                                : (g_nvapiMetrics.hasGpu ? g_nvapiMetrics.gpuName : "Unknown GPU");
+      auto gpuSize = m_renderer.MeasureTextA(gpuName, vtheme::kFontBody, true);
+      float gpuPillW = gpuSize.width + 24.0f;
+      float gpuPillH = 28.0f;
+      m_renderer.FillRoundedRect(contentX, contentY, gpuPillW, gpuPillH, gpuPillH * 0.5f, vtheme::hex(0x21262D, 1.0f));
+      m_renderer.OutlineRoundedRect(contentX, contentY, gpuPillW, gpuPillH, gpuPillH * 0.5f, m_accentDim, 1.0f);
+      m_renderer.DrawTextA(gpuName, contentX, contentY, gpuPillW, gpuPillH, vtheme::kTextPrimary, vtheme::kFontBody,
+                           ValhallaRenderer::TextAlign::Center, true);
+      contentY += gpuPillH + 16.0f;
+
+      // Feature support badges
+      m_renderer.DrawTextA("FEATURE SUPPORT", contentX, contentY, contentW, lineH, m_accent, vtheme::kFontSmall,
+                           ValhallaRenderer::TextAlign::Left, true);
+      contentY += lineH + 4.0f;
+
+      struct Badge {
+        const char* name;
+        bool ok;
+      };
+      Badge badges[] = {
+          {"DLSS", sli.IsDLSSSupported()},
+          {"Frame Gen", sli.IsFrameGenSupported()},
+          {"DeepDVC", sli.IsDeepDVCSupported()},
+          {"HDR", sli.IsHDRSupported()},
+          {"Ray Recon", sli.IsRayReconstructionSupported()},
+      };
+      float badgeX = contentX;
+      for (auto& b : badges) {
+        D2D1_COLOR_F col = b.ok ? vtheme::kStatusOk : vtheme::kStatusBad;
+        D2D1_COLOR_F bg = b.ok ? vtheme::hex(0x3FB950, 0.1f) : vtheme::hex(0xF85149, 0.1f);
+        auto sz = m_renderer.MeasureTextA(b.name, vtheme::kFontSmall, true);
+        float bw = sz.width + 30.0f;
+        float bh = 24.0f;
+        // Wrap to next line if exceeds content width
+        if (badgeX + bw > contentX + contentW) {
+          badgeX = contentX;
+          contentY += bh + 4.0f;
+        }
+        m_renderer.FillRoundedRect(badgeX, contentY, bw, bh, bh * 0.5f, bg);
+        m_renderer.OutlineRoundedRect(badgeX, contentY, bw, bh, bh * 0.5f, col, 1.0f);
+        // Status dot
+        m_renderer.DrawCircle(badgeX + 10, contentY + bh * 0.5f, 3.5f, col);
+        m_renderer.DrawTextA(b.name, badgeX + 18, contentY, bw - 22, bh, col, vtheme::kFontSmall,
+                             ValhallaRenderer::TextAlign::Left, true);
+        badgeX += bw + 6.0f;
+      }
+      break;
+    }
+
+    case 1: { // DLSS Quality
+      m_renderer.DrawTextA("DLSS Quality Mode", contentX, contentY, contentW, lineH * 1.5f, vtheme::kTextPrimary, 14.0f,
+                           ValhallaRenderer::TextAlign::Left, true);
+      contentY += lineH * 2.0f;
+      m_renderer.DrawTextA("Choose the upscaling quality. Higher quality", contentX, contentY, contentW, lineH,
+                           vtheme::kTextSecondary, vtheme::kFontBody);
+      contentY += lineH;
+      m_renderer.DrawTextA("means sharper image but lower base FPS.", contentX, contentY, contentW, lineH,
+                           vtheme::kTextSecondary, vtheme::kFontBody);
+      contentY += lineH * 2.0f;
+
+      struct QualityOption {
+        const char* name;
+        const char* desc;
+        int mode;
+      };
+      QualityOption opts[] = {
+          {"DLAA", "No upscaling, just anti-aliasing", 5},     {"Max Quality", "Minimal upscaling, best image", 4},
+          {"Quality", "Good balance of sharpness + perf", 3},  {"Balanced", "Recommended for most setups", 2},
+          {"Max Performance", "Maximum FPS, softer image", 1},
+      };
+      for (auto& o : opts) {
+        bool selected = (m_wizardDlssChoice == o.mode);
+        float optH = 38.0f;
+        D2D1_COLOR_F optBg =
+            selected ? vtheme::hex(m_accent.r > 0.3f ? 0x1B2B08 : 0x0B2B3B, 0.9f) : vtheme::hex(0x21262D, 0.6f);
+        D2D1_COLOR_F border = selected ? m_accent : vtheme::hex(0x30363D, 0.4f);
+        m_renderer.FillRoundedRect(contentX, contentY, contentW, optH, 8.0f, optBg);
+        m_renderer.OutlineRoundedRect(contentX, contentY, contentW, optH, 8.0f, border, selected ? 2.0f : 1.0f);
+        // Radio dot
+        float dotCx = contentX + 18.0f;
+        float dotCy = contentY + optH * 0.5f;
+        m_renderer.DrawCircle(dotCx, dotCy, 7.0f, border);
+        if (selected) m_renderer.DrawCircle(dotCx, dotCy, 4.0f, m_accent);
+        // Label
+        m_renderer.DrawTextA(o.name, contentX + 34, contentY, contentW * 0.4f, optH,
+                             selected ? vtheme::kTextPrimary : vtheme::kTextSecondary, vtheme::kFontBody,
+                             ValhallaRenderer::TextAlign::Left, true);
+        m_renderer.DrawTextA(o.desc, contentX + 34 + contentW * 0.3f, contentY, contentW * 0.55f, optH,
+                             vtheme::hex(0x8B949E, 0.8f), vtheme::kFontSmall);
+        // Click
+        if (PointInRect(m_input.mouseX, m_input.mouseY, contentX, contentY, contentW, optH) && m_input.mouseClicked) {
+          m_wizardDlssChoice = o.mode;
+        }
+        contentY += optH + 4.0f;
+      }
+      break;
+    }
+
+    case 2: { // Frame Generation
+      m_renderer.DrawTextA("Frame Generation", contentX, contentY, contentW, lineH * 1.5f, vtheme::kTextPrimary, 14.0f,
+                           ValhallaRenderer::TextAlign::Left, true);
+      contentY += lineH * 2.0f;
+      m_renderer.DrawTextA("DLSS-G generates extra frames for", contentX, contentY, contentW, lineH,
+                           vtheme::kTextSecondary, vtheme::kFontBody);
+      contentY += lineH;
+      m_renderer.DrawTextA("ultra-smooth gameplay. Higher = more FPS.", contentX, contentY, contentW, lineH,
+                           vtheme::kTextSecondary, vtheme::kFontBody);
+      contentY += lineH * 2.0f;
+
+      struct FGOption {
+        const char* name;
+        const char* desc;
+        int mult;
+      };
+      FGOption opts[] = {
+          {"Off", "No frame generation", 0},
+          {"2x", "One extra frame (recommended)", 2},
+          {"3x", "Two extra frames", 3},
+          {"4x", "Three extra (high-end GPU)", 4},
+      };
+      for (auto& o : opts) {
+        bool selected = (m_wizardFgChoice == o.mult);
+        float optH = 38.0f;
+        D2D1_COLOR_F optBg =
+            selected ? vtheme::hex(m_accent.r > 0.3f ? 0x1B2B08 : 0x0B2B3B, 0.9f) : vtheme::hex(0x21262D, 0.6f);
+        D2D1_COLOR_F border = selected ? m_accent : vtheme::hex(0x30363D, 0.4f);
+        m_renderer.FillRoundedRect(contentX, contentY, contentW, optH, 8.0f, optBg);
+        m_renderer.OutlineRoundedRect(contentX, contentY, contentW, optH, 8.0f, border, selected ? 2.0f : 1.0f);
+        float dotCx = contentX + 18.0f;
+        float dotCy = contentY + optH * 0.5f;
+        m_renderer.DrawCircle(dotCx, dotCy, 7.0f, border);
+        if (selected) m_renderer.DrawCircle(dotCx, dotCy, 4.0f, m_accent);
+        m_renderer.DrawTextA(o.name, contentX + 34, contentY, contentW * 0.25f, optH,
+                             selected ? vtheme::kTextPrimary : vtheme::kTextSecondary, vtheme::kFontBody,
+                             ValhallaRenderer::TextAlign::Left, true);
+        m_renderer.DrawTextA(o.desc, contentX + 34 + contentW * 0.2f, contentY, contentW * 0.6f, optH,
+                             vtheme::hex(0x8B949E, 0.8f), vtheme::kFontSmall);
+        if (PointInRect(m_input.mouseX, m_input.mouseY, contentX, contentY, contentW, optH) && m_input.mouseClicked) {
+          m_wizardFgChoice = o.mult;
+        }
+        contentY += optH + 4.0f;
+      }
+      break;
+    }
+
+    case 3: { // Visual Extras
+      m_renderer.DrawTextA("Visual Enhancements", contentX, contentY, contentW, lineH * 1.5f, vtheme::kTextPrimary,
+                           14.0f, ValhallaRenderer::TextAlign::Left, true);
+      contentY += lineH * 2.0f;
+      m_renderer.DrawTextA("Optional visual features you can enable.", contentX, contentY, contentW, lineH,
+                           vtheme::kTextSecondary, vtheme::kFontBody);
+      contentY += lineH * 2.0f;
+
+      // DeepDVC toggle
+      m_cursorX = contentX;
+      m_cursorY = contentY;
+      m_contentWidth = contentW;
+      bool dvcBefore = m_wizardDvcEnabled;
+      Checkbox("DeepDVC (RTX Dynamic Vibrance)", &m_wizardDvcEnabled, sli.IsDeepDVCSupported());
+      if (!sli.IsDeepDVCSupported()) {
+        m_renderer.DrawTextA("  (Not supported on this GPU)", contentX + 24.0f, contentY + 4.0f, contentW, lineH,
+                             vtheme::kStatusWarn, vtheme::kFontSmall);
+      }
+      contentY = m_cursorY + 4.0f;
+      m_renderer.DrawTextA("  AI-powered color and vibrance enhancement.", contentX, contentY, contentW, lineH,
+                           vtheme::hex(0x8B949E, 0.8f), vtheme::kFontSmall);
+      contentY += lineH * 2.0f;
+
+      // HDR toggle
+      m_cursorX = contentX;
+      m_cursorY = contentY;
+      m_contentWidth = contentW;
+      Checkbox("HDR Output", &m_wizardHdrEnabled, sli.IsHDRSupported());
+      if (!sli.IsHDRSupported()) {
+        m_renderer.DrawTextA("  (Not supported on this display)", contentX + 24.0f, contentY + 4.0f, contentW, lineH,
+                             vtheme::kStatusWarn, vtheme::kFontSmall);
+      }
+      contentY = m_cursorY + 4.0f;
+      m_renderer.DrawTextA("  High Dynamic Range output for supported displays.", contentX, contentY, contentW, lineH,
+                           vtheme::hex(0x8B949E, 0.8f), vtheme::kFontSmall);
+      break;
+    }
+
+    case 4: { // Summary & Apply
+      m_renderer.DrawTextA("Setup Complete!", contentX, contentY, contentW, lineH * 1.5f, m_accent, 14.0f,
+                           ValhallaRenderer::TextAlign::Left, true);
+      contentY += lineH * 2.0f;
+      m_renderer.DrawTextA("Your settings will be applied:", contentX, contentY, contentW, lineH,
+                           vtheme::kTextSecondary, vtheme::kFontBody);
+      contentY += lineH * 2.0f;
+
+      // Summary items
+      struct SummaryItem {
+        const char* label;
+        std::string value;
+      };
+      const char* dlssNames[] = {"Off", "Max Performance", "Balanced", "Max Quality", "Ultra Quality", "DLAA"};
+      const char* fgNames[] = {"Off", "", "2x", "3x", "4x"};
+      SummaryItem items[] = {
+          {"DLSS Quality", dlssNames[std::clamp(m_wizardDlssChoice, 0, 5)]},
+          {"Frame Generation", fgNames[std::clamp(m_wizardFgChoice, 0, 4)]},
+          {"DeepDVC", m_wizardDvcEnabled ? "Enabled" : "Disabled"},
+          {"HDR", m_wizardHdrEnabled ? "Enabled" : "Disabled"},
+      };
+      for (auto& item : items) {
+        float rowH = 28.0f;
+        m_renderer.FillRoundedRect(contentX, contentY, contentW, rowH, 6.0f, vtheme::hex(0x21262D, 0.6f));
+        m_renderer.DrawTextA(item.label, contentX + 12, contentY, contentW * 0.5f, rowH, vtheme::kTextSecondary,
+                             vtheme::kFontBody);
+        m_renderer.DrawTextA(item.value, contentX, contentY, contentW - 12, rowH, vtheme::kTextPrimary,
+                             vtheme::kFontBody, ValhallaRenderer::TextAlign::Right, true);
+        contentY += rowH + 4.0f;
+      }
+      contentY += lineH;
+      m_renderer.DrawTextA("Press F5 to reopen the panel anytime.", contentX, contentY, contentW, lineH,
+                           vtheme::hex(0x8B949E, 0.7f), vtheme::kFontSmall);
+      break;
+    }
+  }
+
+  // --- Navigation buttons ---
+  // Back button (except on step 0)
+  if (m_wizardStep > 0) {
+    float backX = wizX + 24.0f;
+    bool backHover = PointInRect(m_input.mouseX, m_input.mouseY, backX, btnY, btnW, btnH);
+    D2D1_COLOR_F backBg = backHover ? vtheme::hex(0x30363D, 0.9f) : vtheme::hex(0x21262D, 0.9f);
+    m_renderer.FillRoundedRect(backX, btnY, btnW, btnH, 8.0f, backBg);
+    m_renderer.OutlineRoundedRect(backX, btnY, btnW, btnH, 8.0f, vtheme::hex(0x484F58, 0.6f), 1.0f);
+    m_renderer.DrawTextA("Back", backX, btnY, btnW, btnH, vtheme::kTextSecondary, vtheme::kFontBody,
+                         ValhallaRenderer::TextAlign::Center, true);
+    if (backHover && m_input.mouseClicked) {
+      m_wizardStep--;
+    }
+  }
+
+  // Next / Finish button
+  float nextX = wizX + wizW - btnW - 24.0f;
+  bool isLast = (m_wizardStep == 4);
+  const char* nextLabel = isLast ? "Finish" : "Next";
+  bool nextHover = PointInRect(m_input.mouseX, m_input.mouseY, nextX, btnY, btnW, btnH);
+  D2D1_COLOR_F nextBg = nextHover ? m_accentBright : m_accent;
+  nextBg.a = nextHover ? 1.0f : 0.9f;
+  m_renderer.FillRoundedRect(nextX, btnY, btnW, btnH, 8.0f, nextBg);
+  m_renderer.DrawTextA(nextLabel, nextX, btnY, btnW, btnH, vtheme::hex(0x0D1117, 1.0f), vtheme::kFontBody,
+                       ValhallaRenderer::TextAlign::Center, true);
+  if (nextHover && m_input.mouseClicked) {
+    if (isLast) {
+      // Apply all wizard settings
+      cfg.dlss.mode = m_wizardDlssChoice;
+      cfg.dlss.preset = 0;
+      cfg.dlss.sharpness = 0.35f;
+      cfg.dlss.lodBias = -1.0f;
+      cfg.fg.multiplier = m_wizardFgChoice;
+      cfg.dvc.enabled = m_wizardDvcEnabled;
+      cfg.hdr.enabled = m_wizardHdrEnabled;
+      cfg.rr.enabled = true;
+
+      sli.SetDLSSModeIndex(cfg.dlss.mode);
+      sli.SetDLSSPreset(cfg.dlss.preset);
+      sli.SetSharpness(cfg.dlss.sharpness);
+      sli.SetLODBias(cfg.dlss.lodBias);
+      ApplySamplerLodBias(cfg.dlss.lodBias);
+      sli.SetFrameGenMultiplier(cfg.fg.multiplier);
+      sli.SetDeepDVCEnabled(cfg.dvc.enabled);
+      sli.SetHDREnabled(cfg.hdr.enabled);
+      sli.SetReflexEnabled(cfg.rr.enabled);
+      sli.SetRayReconstructionEnabled(cfg.rr.enabled);
+
+      cfg.system.setupWizardCompleted = true;
+      cfg.system.setupWizardForceShow = false;
+      ConfigManager::Get().MarkDirty();
+      m_showSetupWizard = false;
+      m_wizardStep = 0;
+      m_visible = true; // Open main panel after wizard
+    } else {
+      m_wizardStep++;
+    }
+  }
+
+  // Skip button (top right)
+  float skipW = 50.0f;
+  float skipX = wizX + wizW - skipW - 16.0f;
+  float skipY = wizY + 10.0f;
+  bool skipHover = PointInRect(m_input.mouseX, m_input.mouseY, skipX, skipY, skipW, 24.0f);
+  m_renderer.DrawTextA("Skip", skipX, skipY, skipW, 24.0f, skipHover ? vtheme::kStatusBad : vtheme::hex(0x8B949E, 0.5f),
+                       vtheme::kFontSmall, ValhallaRenderer::TextAlign::Center);
+  if (skipHover && m_input.mouseClicked) {
+    cfg.system.setupWizardCompleted = true;
+    cfg.system.setupWizardForceShow = false;
+    ConfigManager::Get().MarkDirty();
+    m_showSetupWizard = false;
+    m_wizardStep = 0;
   }
 }
 

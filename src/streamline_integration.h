@@ -247,18 +247,37 @@ private:
   bool m_initialized = false;
   Microsoft::WRL::ComPtr<ID3D12Device> m_pDevice;
   Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_pCommandQueue;
-  Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_pCommandAllocator;
-  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_pCommandList;
   Microsoft::WRL::ComPtr<IDXGISwapChain> m_pSwapChain;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_backBuffer;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_colorBuffer;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_depthBuffer;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_motionVectors;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_hudLessBuffer; // Phase 1.5: pre-UI render target
 
-  // GPU synchronization fence for command allocator reuse
+  // Phase 1.2: Per-feature GPU resources — eliminates 3x WaitForGpu stalling
+  enum class FeatureSlot : int { DLSS = 0, FrameGen = 1, DeepDVC = 2, Count = 3 };
+  static constexpr int kFeatureSlotCount = 3;
+  struct PerFeatureGPU {
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> cmdList;
+    Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+    HANDLE fenceEvent = nullptr;
+    UINT64 fenceValue = 0;
+  };
+  PerFeatureGPU m_featureGPU[kFeatureSlotCount]{};
+
+  // Legacy single allocator (kept for backward compat, unused in new path)
+  Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_pCommandAllocator;
+  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_pCommandList;
   Microsoft::WRL::ComPtr<ID3D12Fence> m_gpuFence;
   HANDLE m_gpuFenceEvent = nullptr;
   UINT64 m_gpuFenceValue = 0;
+
+  // Phase 1.4: Cached camera data for fallback when scanner misses
+  float m_cachedViewMatrix[16]{};
+  float m_cachedProjMatrix[16]{};
+  bool m_hasCachedCamera = false;
+  uint64_t m_lastCameraUpdateFrame = 0;
 
   sl::FrameToken *m_frameToken = nullptr;
   uint32_t m_frameIndex = 0;
@@ -334,7 +353,18 @@ private:
   void UpdateSwapChain(IDXGISwapChain *pSwapChain);
   void TagResources();
   bool EnsureCommandList();
+  bool EnsureFeatureCommandList(FeatureSlot slot);
+  void WaitForFeature(FeatureSlot slot);
   void UpdateOptions();
   void UpdateSmartFrameGen();
   void WaitForGpu();
+
+public:
+  // Phase 1.5: HUD-less buffer management
+  void SetHUDLessBuffer(ID3D12Resource *pResource) { m_hudLessBuffer = pResource; }
+  ID3D12Resource* GetHUDLessBuffer() const { return m_hudLessBuffer.Get(); }
+
+  // Phase 1.4: Camera data caching
+  void CacheCameraData(const float *view, const float *proj);
+  bool GetCachedCameraData(float *view, float *proj) const;
 };

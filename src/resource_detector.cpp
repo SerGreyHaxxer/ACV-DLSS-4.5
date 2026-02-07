@@ -25,7 +25,6 @@
 #include <iomanip>
 #include <sstream>
 
-
 ResourceDetector& ResourceDetector::Get() {
   static ResourceDetector instance;
   return instance;
@@ -205,6 +204,11 @@ void ResourceDetector::NewFrame() {
       }
     }
   }
+
+  // Phase 3.3: Prune dead resources every 60 frames
+  if (currentFrame % 60 == 0) {
+    ValidateAndPruneDead();
+  }
 }
 
 void ResourceDetector::Clear() {
@@ -231,7 +235,6 @@ void ResourceDetector::SetExpectedDimensions(uint32_t width, uint32_t height) {
   m_expectedWidth = width;
   m_expectedHeight = height;
 }
-
 
 void ResourceDetector::RegisterResource(ID3D12Resource* pResource) {
   RegisterResource(pResource, false);
@@ -317,8 +320,7 @@ void ResourceDetector::RegisterExposure(ID3D12Resource* pResource) {
 
   // For textures larger than 4x4, only accept UAV-flagged R32_FLOAT or R16_FLOAT
   if (desc.Width > 4 || desc.Height > 4) {
-    if (!isUAV || (desc.Format != DXGI_FORMAT_R32_FLOAT && desc.Format != DXGI_FORMAT_R16_FLOAT))
-      return;
+    if (!isUAV || (desc.Format != DXGI_FORMAT_R32_FLOAT && desc.Format != DXGI_FORMAT_R16_FLOAT)) return;
   } else {
     // Only HDR formats for exposure
     if (desc.Format != DXGI_FORMAT_R32_FLOAT && desc.Format != DXGI_FORMAT_R16_FLOAT &&
@@ -335,11 +337,9 @@ void ResourceDetector::RegisterExposure(ID3D12Resource* pResource) {
     D3D12_RESOURCE_DESC curDesc = m_exposureResource->GetDesc();
     bool curIs1x1 = (curDesc.Width == 1 && curDesc.Height == 1);
     bool newIs1x1 = (desc.Width == 1 && desc.Height == 1);
-    if (curIs1x1 && !newIs1x1)
-      return; // Keep existing 1x1 over larger
+    if (curIs1x1 && !newIs1x1) return; // Keep existing 1x1 over larger
     if (curIs1x1 && newIs1x1) {
-      if (curDesc.Format == DXGI_FORMAT_R32_FLOAT)
-        return; // Keep existing 1x1 R32_FLOAT (best)
+      if (curDesc.Format == DXGI_FORMAT_R32_FLOAT) return; // Keep existing 1x1 R32_FLOAT (best)
       if (curDesc.Format == DXGI_FORMAT_R16_FLOAT && desc.Format != DXGI_FORMAT_R32_FLOAT)
         return; // Keep existing 1x1 R16_FLOAT unless new is R32_FLOAT
     }
@@ -347,8 +347,7 @@ void ResourceDetector::RegisterExposure(ID3D12Resource* pResource) {
       // Both are larger; prefer smaller UAV-flagged R32_FLOAT
       UINT64 curSize = curDesc.Width * curDesc.Height;
       UINT64 newSize = desc.Width * desc.Height;
-      if (curSize <= newSize)
-        return; // Keep existing smaller or equal
+      if (curSize <= newSize) return; // Keep existing smaller or equal
     }
   }
   m_exposureResource = pResource;
@@ -419,14 +418,20 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDup
   // Ignore small buffers (likely UI icons or constant buffers)
   if (desc.Width < 64 || desc.Height < 64) return;
 
-  // Score for Motion Vectors
-  float mvScore = ScoreMotionVector(desc);
+  // Phase 3.2: Format validation fast-path — reject before expensive scoring
+  bool validMV = IsValidFormatFor(desc.Format, ResourceType::MotionVector);
+  bool validDepth = IsValidFormatFor(desc.Format, ResourceType::Depth);
+  bool validColor = IsValidFormatFor(desc.Format, ResourceType::Color);
+  if (!validMV && !validDepth && !validColor) return; // No valid type at all
+
+  // Score for Motion Vectors (skip scoring if format not valid)
+  float mvScore = validMV ? ScoreMotionVector(desc) : 0.0f;
 
   // Score for Depth
-  float depthScore = ScoreDepth(desc);
+  float depthScore = validDepth ? ScoreDepth(desc) : 0.0f;
 
   // Score for Color (Input)
-  float colorScore = ScoreColor(desc);
+  float colorScore = validColor ? ScoreColor(desc) : 0.0f;
 
   if (mvScore < 0.5f && depthScore < 0.5f && colorScore < 0.5f) {
     static uint32_t s_rejectLog = 0;
@@ -508,12 +513,36 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDup
                                               static_cast<float>(resource_config::kFrequencyHitCap));
     }
     if (adjusted >= m_bestMotionScore) {
-      m_bestMotionScore = adjusted;
-      m_bestMotion = pResource;
-      if (!quietScan) {
-        LOG_INFO("[DLSSG] New BEST MV: {}x{} Fmt:{} Score:{:.2f} Ptr:{:p}", desc.Width, desc.Height,
-                 static_cast<int>(desc.Format), adjusted, static_cast<void*>(pResource));
+      // Phase 3.1: Consensus tracking
+      if (pResource != m_bestMotion.Get()) {
+        // New contender — increment consensus counter
+        if (target) target->consecutiveFrames++;
+        // Only promote if consensus threshold met AND hysteresis exceeded
+        bool lockedBest = false;
+        for (const auto& c : m_motionCandidates) {
+          if (c.pResource == m_bestMotion && c.consensusLocked) {
+            lockedBest = true;
+            break;
+          }
+        }
+        if (target && target->consecutiveFrames >= resource_config::kConsensusThreshold &&
+            (!lockedBest || adjusted >= m_bestMotionScore + resource_config::kConsensusHysteresis)) {
+          m_bestMotionScore = adjusted;
+          m_bestMotion = pResource;
+          target->consensusLocked = true;
+          if (!quietScan) {
+            LOG_INFO("[DLSSG] New BEST MV (consensus {}): {}x{} Fmt:{} Score:{:.2f} Ptr:{:p}",
+                     target->consecutiveFrames, desc.Width, desc.Height, static_cast<int>(desc.Format), adjusted,
+                     static_cast<void*>(pResource));
+          }
+        }
+      } else {
+        // Same resource — update score, maintain lock
+        m_bestMotionScore = adjusted;
       }
+    } else {
+      // Not the best — reset consecutive counter
+      if (target) target->consecutiveFrames = 0;
     }
   }
 
@@ -548,12 +577,32 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDup
                                               static_cast<float>(resource_config::kFrequencyHitCap));
     }
     if (adjusted >= m_bestDepthScore) {
-      m_bestDepthScore = adjusted;
-      m_bestDepth = pResource;
-      if (!quietScan) {
-        LOG_INFO("[DLSSG] New BEST Depth: {}x{} Fmt:{} Score:{:.2f} Ptr:{:p}", desc.Width, desc.Height,
-                 static_cast<int>(desc.Format), adjusted, static_cast<void*>(pResource));
+      // Phase 3.1: Consensus tracking
+      if (pResource != m_bestDepth.Get()) {
+        if (target) target->consecutiveFrames++;
+        bool lockedBest = false;
+        for (const auto& c : m_depthCandidates) {
+          if (c.pResource == m_bestDepth && c.consensusLocked) {
+            lockedBest = true;
+            break;
+          }
+        }
+        if (target && target->consecutiveFrames >= resource_config::kConsensusThreshold &&
+            (!lockedBest || adjusted >= m_bestDepthScore + resource_config::kConsensusHysteresis)) {
+          m_bestDepthScore = adjusted;
+          m_bestDepth = pResource;
+          target->consensusLocked = true;
+          if (!quietScan) {
+            LOG_INFO("[DLSSG] New BEST Depth (consensus {}): {}x{} Fmt:{} Score:{:.2f} Ptr:{:p}",
+                     target->consecutiveFrames, desc.Width, desc.Height, static_cast<int>(desc.Format), adjusted,
+                     static_cast<void*>(pResource));
+          }
+        }
+      } else {
+        m_bestDepthScore = adjusted;
       }
+    } else {
+      if (target) target->consecutiveFrames = 0;
     }
   }
 
@@ -588,12 +637,32 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDup
                                               static_cast<float>(resource_config::kFrequencyHitCap));
     }
     if (adjusted >= m_bestColorScore) {
-      m_bestColorScore = adjusted;
-      m_bestColor = pResource;
-      if (!quietScan) {
-        LOG_INFO("[DLSSG] New BEST Color: {}x{} Fmt:{} Score:{:.2f} Ptr:{:p}", desc.Width, desc.Height,
-                 static_cast<int>(desc.Format), adjusted, static_cast<void*>(pResource));
+      // Phase 3.1: Consensus tracking
+      if (pResource != m_bestColor.Get()) {
+        if (target) target->consecutiveFrames++;
+        bool lockedBest = false;
+        for (const auto& c : m_colorCandidates) {
+          if (c.pResource == m_bestColor && c.consensusLocked) {
+            lockedBest = true;
+            break;
+          }
+        }
+        if (target && target->consecutiveFrames >= resource_config::kConsensusThreshold &&
+            (!lockedBest || adjusted >= m_bestColorScore + resource_config::kConsensusHysteresis)) {
+          m_bestColorScore = adjusted;
+          m_bestColor = pResource;
+          target->consensusLocked = true;
+          if (!quietScan) {
+            LOG_INFO("[DLSSG] New BEST Color (consensus {}): {}x{} Fmt:{} Score:{:.2f} Ptr:{:p}",
+                     target->consecutiveFrames, desc.Width, desc.Height, static_cast<int>(desc.Format), adjusted,
+                     static_cast<void*>(pResource));
+          }
+        }
+      } else {
+        m_bestColorScore = adjusted;
       }
+    } else {
+      if (target) target->consecutiveFrames = 0;
     }
   }
 }
@@ -769,11 +838,15 @@ float ResourceDetector::ScoreColor(const D3D12_RESOURCE_DESC& desc) {
 
 ID3D12Resource* ResourceDetector::GetBestMotionVectorCandidate() {
   std::shared_lock<std::shared_mutex> lock(m_mutex);
+  // Phase 3.3: Validate before returning
+  if (m_bestMotion && !IsResourceAlive(m_bestMotion.Get())) return nullptr;
   return m_bestMotion.Get();
 }
 
 ID3D12Resource* ResourceDetector::GetBestDepthCandidate() {
   std::shared_lock<std::shared_mutex> lock(m_mutex);
+  // Phase 3.3: Validate before returning
+  if (m_bestDepth && !IsResourceAlive(m_bestDepth.Get())) return nullptr;
   return m_bestDepth.Get();
 }
 
@@ -790,7 +863,7 @@ ID3D12Resource* ResourceDetector::GetBestColorCandidate() {
 
     for (const auto& cand : m_colorCandidates) {
       if (cand.desc.Width == mvDesc.Width && cand.desc.Height == mvDesc.Height) {
-        if (cand.score > bestMatchScore && cand.score > 0.6f) {
+        if (cand.score > bestMatchScore && cand.score > 0.6f && IsResourceAlive(cand.pResource.Get())) {
           bestMatchScore = cand.score;
           bestMatch = cand.pResource.Get();
         }
@@ -808,7 +881,7 @@ ID3D12Resource* ResourceDetector::GetBestColorCandidate() {
       float ratioH = static_cast<float>(cand.desc.Height) / static_cast<float>(m_expectedHeight);
       if (ratioW >= resource_config::kExpectedMinRatio && ratioW <= resource_config::kExpectedMaxRatio &&
           ratioH >= resource_config::kExpectedMinRatio && ratioH <= resource_config::kExpectedMaxRatio) {
-        if (cand.score > bestMatchScore) {
+        if (cand.score > bestMatchScore && IsResourceAlive(cand.pResource.Get())) {
           bestMatchScore = cand.score;
           bestMatch = cand.pResource.Get();
         }
@@ -817,6 +890,8 @@ ID3D12Resource* ResourceDetector::GetBestColorCandidate() {
     if (bestMatch) return bestMatch;
   }
 
+  // Phase 3.3: Validate fallback before returning
+  if (m_bestColor && !IsResourceAlive(m_bestColor.Get())) return nullptr;
   return m_bestColor.Get();
 }
 
@@ -856,5 +931,225 @@ void ResourceDetector::LogDebugInfo() {
   std::string line;
   while (std::getline(ss, line)) {
     if (!line.empty()) LOG_INFO("[MEM] {}", line);
+  }
+}
+
+// Phase 1.5: HUD-less pass detection
+// Pre-UI render targets are identified as large color-format RTs
+// that were active before UI/HUD drawing begins.
+void ResourceDetector::RegisterHUDLessCandidate(ID3D12Resource* pResource) {
+  if (!pResource) return;
+
+  D3D12_RESOURCE_DESC desc = pResource->GetDesc();
+
+  // Must be a 2D texture with render target capability
+  if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return;
+  if (!(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)) return;
+
+  // Must be reasonably large (at least 720p)
+  if (desc.Width < 1280 || desc.Height < 720) return;
+
+  // Must be a color format (HDR or standard)
+  float colorScore = ScoreColor(desc);
+  if (colorScore < 0.4f) return;
+
+  // Resolution matching: should be near expected resolution
+  if (m_expectedWidth > 0 && m_expectedHeight > 0) {
+    float ratioW = static_cast<float>(desc.Width) / static_cast<float>(m_expectedWidth);
+    float ratioH = static_cast<float>(desc.Height) / static_cast<float>(m_expectedHeight);
+    if (ratioW < 0.5f || ratioW > 2.0f || ratioH < 0.5f || ratioH > 2.0f) return;
+  }
+
+  std::unique_lock<std::shared_mutex> lock(m_mutex);
+  uint64_t currentFrame = m_frameCount.load(std::memory_order_relaxed);
+
+  // Score based on: resolution match + color format quality + RT flag
+  float score = colorScore;
+  // Prefer exact resolution match
+  if (m_expectedWidth > 0 && desc.Width == m_expectedWidth && desc.Height == m_expectedHeight) {
+    score += 0.5f;
+  }
+  // Prefer HDR formats (common for pre-UI scene buffers)
+  if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT || desc.Format == DXGI_FORMAT_R11G11B10_FLOAT ||
+      desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM) {
+    score += 0.3f;
+  }
+
+  if (score > m_bestHUDLessScore || currentFrame - m_hudLessLastFrameSeen > 60) {
+    m_bestHUDLessScore = score;
+    m_bestHUDLess = pResource;
+    m_hudLessLastFrameSeen = currentFrame;
+
+    bool quietScan = ConfigManager::Get().Data().system.quietResourceScan;
+    if (!quietScan) {
+      LOG_INFO("[DLSSG] HUD-less candidate: {}x{} Fmt:{} Score:{:.2f} Ptr:{:p}", desc.Width, desc.Height,
+               static_cast<int>(desc.Format), score, static_cast<void*>(pResource));
+    }
+  }
+}
+
+ID3D12Resource* ResourceDetector::GetBestHUDLessCandidate() {
+  std::shared_lock<std::shared_mutex> lock(m_mutex);
+  // Only return if recently seen (within 120 frames)
+  uint64_t currentFrame = m_frameCount.load(std::memory_order_relaxed);
+  if (currentFrame - m_hudLessLastFrameSeen > 120) return nullptr;
+  // Phase 3.3: Validate before returning
+  if (m_bestHUDLess && !IsResourceAlive(m_bestHUDLess.Get())) return nullptr;
+  return m_bestHUDLess.Get();
+}
+
+// ============================================================================
+// Phase 3.2: Format Validation Pipeline
+// ============================================================================
+// Fast-path whitelist validation. Returns true if the format is valid for the
+// given resource type. This is called BEFORE the scoring functions to reject
+// obviously wrong formats early, avoiding unnecessary scoring overhead.
+bool ResourceDetector::IsValidFormatFor(DXGI_FORMAT format, ResourceType type) {
+  switch (type) {
+    case ResourceType::Depth:
+      switch (format) {
+        // Primary depth formats
+        case DXGI_FORMAT_D32_FLOAT:
+        case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+        case DXGI_FORMAT_D24_UNORM_S8_UINT:
+        case DXGI_FORMAT_D16_UNORM:
+        // Read-only depth copies
+        case DXGI_FORMAT_R32_FLOAT:
+        case DXGI_FORMAT_R16_UNORM:
+        // Typeless variants (modern engines)
+        case DXGI_FORMAT_R32_TYPELESS:
+        case DXGI_FORMAT_R32G8X24_TYPELESS:
+        case DXGI_FORMAT_R24G8_TYPELESS:
+        case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:
+        case DXGI_FORMAT_R16_TYPELESS:
+        // SRV-compatible depth
+        case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
+        case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT:
+        case DXGI_FORMAT_X24_TYPELESS_G8_UINT: return true;
+        default: return false;
+      }
+
+    case ResourceType::MotionVector:
+      switch (format) {
+        // Primary MV formats
+        case DXGI_FORMAT_R16G16_FLOAT:
+        case DXGI_FORMAT_R16G16_SNORM:
+        case DXGI_FORMAT_R32G32_FLOAT:
+        case DXGI_FORMAT_R16G16_UNORM:
+        case DXGI_FORMAT_R16G16_TYPELESS:
+        case DXGI_FORMAT_R32G32_TYPELESS:
+        // AnvilNext packed MVs
+        case DXGI_FORMAT_R16G16B16A16_SNORM:
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        case DXGI_FORMAT_R16G16_SINT:
+        case DXGI_FORMAT_R16G16_UINT:
+        case DXGI_FORMAT_R32G32_SINT:
+        case DXGI_FORMAT_R32G32_UINT:
+        case DXGI_FORMAT_R11G11B10_FLOAT:
+        // Low-precision MVs
+        case DXGI_FORMAT_R8G8_SNORM:
+        case DXGI_FORMAT_R8G8_UNORM:
+        // Full-precision
+        case DXGI_FORMAT_R32G32B32A32_FLOAT:
+        case DXGI_FORMAT_R16G16B16A16_UINT:
+        case DXGI_FORMAT_R16G16B16A16_SINT:
+        case DXGI_FORMAT_R16G16B16A16_UNORM:
+        case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+        case DXGI_FORMAT_R32G32B32A32_TYPELESS: return true;
+        default: return false;
+      }
+
+    case ResourceType::Color:
+      switch (format) {
+        // HDR Float formats
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        case DXGI_FORMAT_R11G11B10_FLOAT:
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
+        case DXGI_FORMAT_R32G32B32A32_FLOAT:
+        // Standard backbuffer
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        // Extended
+        case DXGI_FORMAT_R16G16B16A16_UNORM:
+        case DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM:
+        // Typeless
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+        case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+        case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+        case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+        case DXGI_FORMAT_R32G32B32A32_TYPELESS: return true;
+        default: return false;
+      }
+  }
+  return false;
+}
+
+// ============================================================================
+// Phase 3.3: Resource Lifetime Tracking
+// ============================================================================
+// Uses AddRef/Release to check if a COM resource is still alive.
+// A destroyed resource will crash on AddRef, so we use SEH on Windows
+// to catch access violations. If the resource is dead, return false.
+bool ResourceDetector::IsResourceAlive(ID3D12Resource* pResource) {
+  if (!pResource) return false;
+  __try {
+    // AddRef + Release: if the object is dead, the vtable pointer is garbage
+    // and this will trigger an access violation.
+    ULONG refBefore = pResource->AddRef();
+    pResource->Release();
+    // Sanity: refcount must be >= 2 (us + at least one other holder)
+    // If refBefore was 1, we were the last reference — resource was about
+    // to die. Still alive for now though.
+    return refBefore >= 1;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
+void ResourceDetector::ValidateAndPruneDead() {
+  // Called under unique_lock from NewFrame()
+  // Check each candidate list + best pointers for dead resources
+
+  auto pruneList = [](auto& list, const char* name) {
+    size_t before = list.size();
+    list.erase(std::remove_if(list.begin(), list.end(),
+                              [](const ResourceCandidate& c) { return !IsResourceAlive(c.pResource.Get()); }),
+               list.end());
+    size_t removed = before - list.size();
+    if (removed > 0) {
+      LOG_INFO("[Phase3] Pruned {} dead {} candidates", removed, name);
+    }
+  };
+
+  pruneList(m_motionCandidates, "MV");
+  pruneList(m_depthCandidates, "Depth");
+  pruneList(m_colorCandidates, "Color");
+
+  // Validate best pointers
+  if (m_bestMotion && !IsResourceAlive(m_bestMotion.Get())) {
+    LOG_INFO("[Phase3] Best MV resource invalidated (destroyed)");
+    m_bestMotion = nullptr;
+    m_bestMotionScore = 0.0f;
+  }
+  if (m_bestDepth && !IsResourceAlive(m_bestDepth.Get())) {
+    LOG_INFO("[Phase3] Best Depth resource invalidated (destroyed)");
+    m_bestDepth = nullptr;
+    m_bestDepthScore = 0.0f;
+  }
+  if (m_bestColor && !IsResourceAlive(m_bestColor.Get())) {
+    LOG_INFO("[Phase3] Best Color resource invalidated (destroyed)");
+    m_bestColor = nullptr;
+    m_bestColorScore = 0.0f;
+  }
+  if (m_bestHUDLess && !IsResourceAlive(m_bestHUDLess.Get())) {
+    LOG_INFO("[Phase3] Best HUD-less resource invalidated (destroyed)");
+    m_bestHUDLess = nullptr;
+    m_bestHUDLessScore = 0.0f;
+  }
+  if (m_exposureResource && !IsResourceAlive(m_exposureResource.Get())) {
+    LOG_INFO("[Phase3] Exposure resource invalidated (destroyed)");
+    m_exposureResource = nullptr;
   }
 }

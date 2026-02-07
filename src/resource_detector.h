@@ -33,6 +33,9 @@ struct ResourceCandidate {
   D3D12_RESOURCE_DESC desc;
   uint64_t lastFrameSeen;
   uint32_t seenCount;
+  // Phase 3.1: Multi-frame consensus tracking
+  uint32_t consecutiveFrames = 0; // How many consecutive frames this was the top scorer
+  bool consensusLocked = false;   // True when consensus threshold met
 };
 
 #include <atomic> // Added
@@ -57,6 +60,10 @@ public:
   void RegisterColorFromClear(ID3D12Resource* pResource);
   void RegisterExposure(ID3D12Resource* pResource);
 
+  // Phase 1.5: HUD-less pass detection
+  void RegisterHUDLessCandidate(ID3D12Resource* pResource);
+  ID3D12Resource* GetBestHUDLessCandidate();
+
   bool IsDepthInverted() const { return m_depthInverted; }
   DXGI_FORMAT GetDepthFormatOverride(ID3D12Resource* pResource);
   ID3D12Resource* GetExposureResource() { return m_exposureResource.Get(); }
@@ -76,6 +83,14 @@ public:
 
   // New: Trigger dynamic analysis using a compute shader
   void UpdateHeuristics(ID3D12CommandQueue* pQueue);
+
+  // Phase 3.2: Format validation
+  enum class ResourceType { Color, Depth, MotionVector };
+  static bool IsValidFormatFor(DXGI_FORMAT format, ResourceType type);
+
+  // Phase 3.3: Resource lifetime tracking
+  static bool IsResourceAlive(ID3D12Resource* pResource);
+  void ValidateAndPruneDead();
 
 private:
   ResourceDetector() = default;
@@ -127,6 +142,11 @@ private:
   Microsoft::WRL::ComPtr<ID3D12Fence> m_fence;
   UINT64 m_fenceVal = 0;
   HANDLE m_fenceEvent = nullptr;
+
+  // Phase 1.5: HUD-less candidate tracking
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_bestHUDLess;
+  float m_bestHUDLessScore = 0.0f;
+  uint64_t m_hudLessLastFrameSeen = 0;
 
   bool InitCommandList(ID3D12Device* pDevice);
 };

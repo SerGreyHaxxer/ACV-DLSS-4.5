@@ -7,13 +7,14 @@
  * (at your option) any later version.
  */
 #pragma once
+#include "cpp26/reflection.h"
+
 #include <chrono>
 #include <filesystem>
 #include <mutex>
 #include <string>
 #include <type_traits>
 
-#include "cpp26/reflection.h"
 
 // ============================================================================
 // CONFIGURATION STRUCTURES
@@ -70,7 +71,7 @@ struct HDRConfig {
 };
 
 struct UIConfig {
-  bool visible = false;     // Control panel hidden on startup; use hotkey to open
+  bool visible = false; // Control panel hidden on startup; use hotkey to open
   bool showFPS = false;
   bool showVignette = false;
   int menuHotkey = 0x74;     // F5
@@ -86,21 +87,21 @@ struct UIConfig {
 
 struct CustomizationConfig {
   // Panel animation
-  int animationType = 0;         // 0=SlideLeft,1=SlideRight,2=SlideTop,3=SlideBottom,4=Fade,5=Scale,6=Bounce,7=Elastic
-  float animSpeed = 1.0f;        // 0.25x - 3.0x multiplier
+  int animationType = 0;  // 0=SlideLeft,1=SlideRight,2=SlideTop,3=SlideBottom,4=Fade,5=Scale,6=Bounce,7=Elastic
+  float animSpeed = 1.0f; // 0.25x - 3.0x multiplier
   // Panel appearance
-  float panelOpacity = 0.94f;    // 0.3 - 1.0
-  float panelWidth = 520.0f;     // 360 - 720
-  float cornerRadius = 6.0f;    // 0 - 20
+  float panelOpacity = 0.94f; // 0.3 - 1.0
+  float panelWidth = 520.0f;  // 360 - 720
+  float cornerRadius = 6.0f;  // 0 - 20
   bool panelShadow = true;
   // Panel position (drag)
-  float panelX = -1.0f;         // -1 = default (left edge)
-  float panelY = -1.0f;         // -1 = default (top)
+  float panelX = -1.0f; // -1 = default (left edge)
+  float panelY = -1.0f; // -1 = default (top)
   bool snapToEdges = true;
   float snapDistance = 20.0f;
   // FPS counter
-  int fpsPosition = 0;           // 0=TopRight,1=TopLeft,2=BottomRight,3=BottomLeft
-  int fpsStyle = 0;              // 0=Standard,1=Minimal,2=Detailed
+  int fpsPosition = 0; // 0=TopRight,1=TopLeft,2=BottomRight,3=BottomLeft
+  int fpsStyle = 0;    // 0=Standard,1=Minimal,2=Detailed
   float fpsOpacity = 0.85f;
   float fpsScale = 1.0f;
   // Accent color
@@ -114,8 +115,8 @@ struct CustomizationConfig {
   bool statusPulse = true;
   bool smoothFPS = true;
   // Layout
-  int layoutMode = 1;            // 0=Compact, 1=Normal, 2=Expanded
-  float fontScale = 1.0f;        // 0.75 - 1.5
+  int layoutMode = 1;     // 0=Compact, 1=Normal, 2=Expanded
+  float fontScale = 1.0f; // 0.75 - 1.5
   // Mini mode
   bool miniMode = false;
 };
@@ -148,105 +149,105 @@ struct ModConfig {
 namespace cpp26::reflect {
 
 REFLECT_STRUCT_BEGIN(DLSSConfig)
-  REFLECT_FIELD(int, mode, 5, ui::dropdown(nullptr, 0), "General") // Dropdown handled by custom UI for now
-  REFLECT_FIELD(int, preset, 0, ui::dropdown(nullptr, 0), "General")
-  REFLECT_FIELD(float, sharpness, 0.5f, ui::slider_float(0.0f, 1.0f), "Quality")
-  REFLECT_FIELD(float, lodBias, -1.0f, ui::slider_float(-3.0f, 3.0f), "Quality")
+REFLECT_FIELD(int, mode, 5, ui::hidden(), "")   // Manually drawn as Combo
+REFLECT_FIELD(int, preset, 0, ui::hidden(), "") // Manually drawn as Combo
+REFLECT_FIELD(float, sharpness, 0.5f, ui::slider_float(0.0f, 1.0f), "Quality")
+REFLECT_FIELD(float, lodBias, -1.0f, ui::slider_float(-3.0f, 3.0f), "Quality")
 REFLECT_STRUCT_END()
 
 REFLECT_STRUCT_BEGIN(FrameGenConfig)
-  REFLECT_FIELD(int, multiplier, 4, ui::dropdown(nullptr, 0), "Frame Generation")
-  REFLECT_FIELD(bool, smartEnabled, false, ui::checkbox(), "Smart FG")
-  REFLECT_FIELD(bool, autoDisable, true, ui::checkbox(), "Smart FG")
-  REFLECT_FIELD(float, autoDisableFps, 120.0f, ui::slider_float(30.0f, 300.0f), "Smart FG")
-  REFLECT_FIELD(bool, sceneChangeEnabled, true, ui::checkbox(), "Smart FG")
-  REFLECT_FIELD(float, sceneChangeThreshold, 0.25f, ui::slider_float(0.0f, 1.0f), "Smart FG")
-  REFLECT_FIELD(float, interpolationQuality, 0.5f, ui::slider_float(0.0f, 1.0f), "Smart FG")
+REFLECT_FIELD(int, multiplier, 4, ui::hidden(), "") // Manually drawn as ButtonGroup
+REFLECT_FIELD(bool, smartEnabled, false, ui::checkbox(), "Smart FG")
+REFLECT_FIELD(bool, autoDisable, true, ui::checkbox(), "Smart FG")
+REFLECT_FIELD(float, autoDisableFps, 120.0f, ui::slider_float(30.0f, 300.0f), "Smart FG")
+REFLECT_FIELD(bool, sceneChangeEnabled, true, ui::checkbox(), "Smart FG")
+REFLECT_FIELD(float, sceneChangeThreshold, 0.25f, ui::slider_float(0.0f, 1.0f), "Smart FG")
+REFLECT_FIELD(float, interpolationQuality, 0.5f, ui::slider_float(0.0f, 1.0f), "Smart FG")
 REFLECT_STRUCT_END()
 
 REFLECT_STRUCT_BEGIN(MotionVectorsConfig)
-  REFLECT_FIELD(bool, autoScale, true, ui::checkbox(), "Quality")
-  REFLECT_FIELD(float, scaleX, 1.0f, ui::slider_float(0.1f, 3.0f), "Quality")
-  REFLECT_FIELD(float, scaleY, 1.0f, ui::slider_float(0.1f, 3.0f), "Quality")
+REFLECT_FIELD(bool, autoScale, true, ui::checkbox(), "Quality")
+REFLECT_FIELD(float, scaleX, 1.0f, ui::slider_float(0.1f, 3.0f), "Quality")
+REFLECT_FIELD(float, scaleY, 1.0f, ui::slider_float(0.1f, 3.0f), "Quality")
 REFLECT_STRUCT_END()
 
 REFLECT_STRUCT_BEGIN(RayReconstructionConfig)
-  REFLECT_FIELD(bool, enabled, true, ui::checkbox(), "Ray Reconstruction")
-  REFLECT_FIELD(int, preset, 0, ui::dropdown(nullptr, 0), "Ray Reconstruction")
-  REFLECT_FIELD(float, denoiserStrength, 0.5f, ui::slider_float(0.0f, 1.0f), "Ray Reconstruction")
+REFLECT_FIELD(bool, enabled, true, ui::checkbox(), "Ray Reconstruction")
+REFLECT_FIELD(int, preset, 0, ui::dropdown(nullptr, 0), "Ray Reconstruction")
+REFLECT_FIELD(float, denoiserStrength, 0.5f, ui::slider_float(0.0f, 1.0f), "Ray Reconstruction")
 REFLECT_STRUCT_END()
 
 REFLECT_STRUCT_BEGIN(DeepDVCConfig)
-  REFLECT_FIELD(bool, enabled, false, ui::checkbox(), "DeepDVC")
-  REFLECT_FIELD(float, intensity, 0.5f, ui::slider_float(0.0f, 1.0f), "DeepDVC")
-  REFLECT_FIELD(float, saturation, 0.25f, ui::slider_float(0.0f, 1.0f), "DeepDVC")
-  REFLECT_FIELD(bool, adaptiveEnabled, false, ui::checkbox(), "DeepDVC")
-  REFLECT_FIELD(float, adaptiveStrength, 0.6f, ui::slider_float(0.0f, 1.0f), "DeepDVC")
-  REFLECT_FIELD(float, adaptiveMin, 0.2f, ui::slider_float(0.0f, 1.0f), "DeepDVC")
-  REFLECT_FIELD(float, adaptiveMax, 0.9f, ui::slider_float(0.0f, 1.0f), "DeepDVC")
-  REFLECT_FIELD(float, adaptiveSmoothing, 0.15f, ui::slider_float(0.0f, 1.0f), "DeepDVC")
+REFLECT_FIELD(bool, enabled, false, ui::checkbox(), "DeepDVC")
+REFLECT_FIELD(float, intensity, 0.5f, ui::slider_float(0.0f, 1.0f), "DeepDVC")
+REFLECT_FIELD(float, saturation, 0.25f, ui::slider_float(0.0f, 1.0f), "DeepDVC")
+REFLECT_FIELD(bool, adaptiveEnabled, false, ui::checkbox(), "DeepDVC")
+REFLECT_FIELD(float, adaptiveStrength, 0.6f, ui::slider_float(0.0f, 1.0f), "DeepDVC")
+REFLECT_FIELD(float, adaptiveMin, 0.2f, ui::slider_float(0.0f, 1.0f), "DeepDVC")
+REFLECT_FIELD(float, adaptiveMax, 0.9f, ui::slider_float(0.0f, 1.0f), "DeepDVC")
+REFLECT_FIELD(float, adaptiveSmoothing, 0.15f, ui::slider_float(0.0f, 1.0f), "DeepDVC")
 REFLECT_STRUCT_END()
 
 REFLECT_STRUCT_BEGIN(HDRConfig)
-  REFLECT_FIELD(bool, enabled, false, ui::checkbox(), "HDR")
-  REFLECT_FIELD(float, peakNits, 1000.0f, ui::slider_float(100.0f, 10000.0f), "HDR")
-  REFLECT_FIELD(float, paperWhiteNits, 200.0f, ui::slider_float(50.0f, 1000.0f), "HDR")
-  REFLECT_FIELD(float, exposure, 1.0f, ui::slider_float(0.1f, 10.0f), "HDR")
-  REFLECT_FIELD(float, gamma, 2.2f, ui::slider_float(1.0f, 3.0f), "HDR")
-  REFLECT_FIELD(float, tonemapCurve, 0.0f, ui::slider_float(-1.0f, 1.0f), "HDR")
-  REFLECT_FIELD(float, saturation, 1.0f, ui::slider_float(0.0f, 2.0f), "HDR")
+REFLECT_FIELD(bool, enabled, false, ui::checkbox(), "HDR")
+REFLECT_FIELD(float, peakNits, 1000.0f, ui::slider_float(100.0f, 10000.0f), "HDR")
+REFLECT_FIELD(float, paperWhiteNits, 200.0f, ui::slider_float(50.0f, 1000.0f), "HDR")
+REFLECT_FIELD(float, exposure, 1.0f, ui::slider_float(0.1f, 10.0f), "HDR")
+REFLECT_FIELD(float, gamma, 2.2f, ui::slider_float(1.0f, 3.0f), "HDR")
+REFLECT_FIELD(float, tonemapCurve, 0.0f, ui::slider_float(-1.0f, 1.0f), "HDR")
+REFLECT_FIELD(float, saturation, 1.0f, ui::slider_float(0.0f, 2.0f), "HDR")
 REFLECT_STRUCT_END()
 
 REFLECT_STRUCT_BEGIN(UIConfig)
-  REFLECT_FIELD(bool, visible, false, ui::hidden(), "")
-  REFLECT_FIELD(bool, showFPS, false, ui::checkbox(), "Overlay")
-  REFLECT_FIELD(bool, showVignette, false, ui::checkbox(), "Overlay")
-  REFLECT_FIELD(int, menuHotkey, 0x74, ui::hidden(), "Hotkeys")
-  REFLECT_FIELD(int, fpsHotkey, 0x75, ui::hidden(), "Hotkeys")
-  REFLECT_FIELD(int, vignetteHotkey, 0x76, ui::hidden(), "Hotkeys")
-  REFLECT_FIELD(float, vignetteIntensity, 0.35f, ui::slider_float(0.0f, 1.0f), "Overlay")
-  REFLECT_FIELD(float, vignetteRadius, 0.78f, ui::slider_float(0.0f, 1.0f), "Overlay")
-  REFLECT_FIELD(float, vignetteSoftness, 0.55f, ui::slider_float(0.0f, 1.0f), "Overlay")
-  REFLECT_FIELD(float, vignetteColorR, 0.01f, ui::color_rgb(), "Overlay")
-  REFLECT_FIELD(float, vignetteColorG, 0.73f, ui::color_rgb(), "Overlay")
-  REFLECT_FIELD(float, vignetteColorB, 0.93f, ui::color_rgb(), "Overlay")
+REFLECT_FIELD(bool, visible, false, ui::hidden(), "")
+REFLECT_FIELD(bool, showFPS, false, ui::checkbox(), "Overlay")
+REFLECT_FIELD(bool, showVignette, false, ui::checkbox(), "Overlay")
+REFLECT_FIELD(int, menuHotkey, 0x74, ui::hidden(), "Hotkeys")
+REFLECT_FIELD(int, fpsHotkey, 0x75, ui::hidden(), "Hotkeys")
+REFLECT_FIELD(int, vignetteHotkey, 0x76, ui::hidden(), "Hotkeys")
+REFLECT_FIELD(float, vignetteIntensity, 0.35f, ui::slider_float(0.0f, 1.0f), "Overlay")
+REFLECT_FIELD(float, vignetteRadius, 0.78f, ui::slider_float(0.0f, 1.0f), "Overlay")
+REFLECT_FIELD(float, vignetteSoftness, 0.55f, ui::slider_float(0.0f, 1.0f), "Overlay")
+REFLECT_FIELD(float, vignetteColorR, 0.01f, ui::color_rgb(), "Overlay")
+REFLECT_FIELD(float, vignetteColorG, 0.73f, ui::color_rgb(), "Overlay")
+REFLECT_FIELD(float, vignetteColorB, 0.93f, ui::color_rgb(), "Overlay")
 REFLECT_STRUCT_END()
 
 REFLECT_STRUCT_BEGIN(CustomizationConfig)
-  REFLECT_FIELD(int, animationType, 0, ui::dropdown(nullptr, 0), "Customization")
-  REFLECT_FIELD(float, animSpeed, 1.0f, ui::slider_float(0.1f, 5.0f), "Customization")
-  REFLECT_FIELD(float, panelOpacity, 0.94f, ui::slider_float(0.0f, 1.0f), "Customization")
-  REFLECT_FIELD(float, panelWidth, 520.0f, ui::slider_float(300.0f, 1000.0f), "Customization")
-  REFLECT_FIELD(float, cornerRadius, 6.0f, ui::slider_float(0.0f, 20.0f), "Customization")
-  REFLECT_FIELD(bool, panelShadow, true, ui::checkbox(), "Customization")
-  REFLECT_FIELD(float, panelX, -1.0f, ui::hidden(), "")
-  REFLECT_FIELD(float, panelY, -1.0f, ui::hidden(), "")
-  REFLECT_FIELD(bool, snapToEdges, true, ui::checkbox(), "Customization")
-  REFLECT_FIELD(float, snapDistance, 20.0f, ui::slider_float(0.0f, 100.0f), "Customization")
-  REFLECT_FIELD(int, fpsPosition, 0, ui::dropdown(nullptr, 0), "Customization")
-  REFLECT_FIELD(int, fpsStyle, 0, ui::dropdown(nullptr, 0), "Customization")
-  REFLECT_FIELD(float, fpsOpacity, 0.85f, ui::slider_float(0.0f, 1.0f), "Customization")
-  REFLECT_FIELD(float, fpsScale, 1.0f, ui::slider_float(0.5f, 2.0f), "Customization")
-  REFLECT_FIELD(float, accentR, 0.831f, ui::color_rgb(), "Customization")
-  REFLECT_FIELD(float, accentG, 0.686f, ui::color_rgb(), "Customization")
-  REFLECT_FIELD(float, accentB, 0.216f, ui::color_rgb(), "Customization")
-  REFLECT_FIELD(bool, backgroundDim, true, ui::checkbox(), "Customization")
-  REFLECT_FIELD(float, backgroundDimAmount, 0.3f, ui::slider_float(0.0f, 1.0f), "Customization")
-  REFLECT_FIELD(bool, widgetGlow, true, ui::checkbox(), "Customization")
-  REFLECT_FIELD(bool, statusPulse, true, ui::checkbox(), "Customization")
-  REFLECT_FIELD(bool, smoothFPS, true, ui::checkbox(), "Customization")
-  REFLECT_FIELD(int, layoutMode, 1, ui::dropdown(nullptr, 0), "Customization")
-  REFLECT_FIELD(float, fontScale, 1.0f, ui::slider_float(0.5f, 2.0f), "Customization")
-  REFLECT_FIELD(bool, miniMode, false, ui::checkbox(), "Customization")
+REFLECT_FIELD(int, animationType, 0, ui::dropdown(nullptr, 0), "Customization")
+REFLECT_FIELD(float, animSpeed, 1.0f, ui::slider_float(0.1f, 5.0f), "Customization")
+REFLECT_FIELD(float, panelOpacity, 0.94f, ui::slider_float(0.0f, 1.0f), "Customization")
+REFLECT_FIELD(float, panelWidth, 520.0f, ui::slider_float(300.0f, 1000.0f), "Customization")
+REFLECT_FIELD(float, cornerRadius, 6.0f, ui::slider_float(0.0f, 20.0f), "Customization")
+REFLECT_FIELD(bool, panelShadow, true, ui::checkbox(), "Customization")
+REFLECT_FIELD(float, panelX, -1.0f, ui::hidden(), "")
+REFLECT_FIELD(float, panelY, -1.0f, ui::hidden(), "")
+REFLECT_FIELD(bool, snapToEdges, true, ui::checkbox(), "Customization")
+REFLECT_FIELD(float, snapDistance, 20.0f, ui::slider_float(0.0f, 100.0f), "Customization")
+REFLECT_FIELD(int, fpsPosition, 0, ui::dropdown(nullptr, 0), "Customization")
+REFLECT_FIELD(int, fpsStyle, 0, ui::dropdown(nullptr, 0), "Customization")
+REFLECT_FIELD(float, fpsOpacity, 0.85f, ui::slider_float(0.0f, 1.0f), "Customization")
+REFLECT_FIELD(float, fpsScale, 1.0f, ui::slider_float(0.5f, 2.0f), "Customization")
+REFLECT_FIELD(float, accentR, 0.831f, ui::color_rgb(), "Customization")
+REFLECT_FIELD(float, accentG, 0.686f, ui::color_rgb(), "Customization")
+REFLECT_FIELD(float, accentB, 0.216f, ui::color_rgb(), "Customization")
+REFLECT_FIELD(bool, backgroundDim, true, ui::checkbox(), "Customization")
+REFLECT_FIELD(float, backgroundDimAmount, 0.3f, ui::slider_float(0.0f, 1.0f), "Customization")
+REFLECT_FIELD(bool, widgetGlow, true, ui::checkbox(), "Customization")
+REFLECT_FIELD(bool, statusPulse, true, ui::checkbox(), "Customization")
+REFLECT_FIELD(bool, smoothFPS, true, ui::checkbox(), "Customization")
+REFLECT_FIELD(int, layoutMode, 1, ui::dropdown(nullptr, 0), "Customization")
+REFLECT_FIELD(float, fontScale, 1.0f, ui::slider_float(0.5f, 2.0f), "Customization")
+REFLECT_FIELD(bool, miniMode, false, ui::checkbox(), "Customization")
 REFLECT_STRUCT_END()
 
 REFLECT_STRUCT_BEGIN(SystemConfig)
-  REFLECT_FIELD(int, logVerbosity, 1, ui::hidden(), "")
-  REFLECT_FIELD(bool, debugMode, false, ui::checkbox(), "System")
-  REFLECT_FIELD(bool, setupWizardCompleted, false, ui::hidden(), "")
-  REFLECT_FIELD(bool, quietResourceScan, true, ui::checkbox(), "System")
-  REFLECT_FIELD(bool, setupWizardForceShow, false, ui::hidden(), "")
-  REFLECT_FIELD(bool, hudFixEnabled, false, ui::checkbox(), "System")
+REFLECT_FIELD(int, logVerbosity, 1, ui::hidden(), "")
+REFLECT_FIELD(bool, debugMode, false, ui::checkbox(), "System")
+REFLECT_FIELD(bool, setupWizardCompleted, false, ui::hidden(), "")
+REFLECT_FIELD(bool, quietResourceScan, true, ui::checkbox(), "System")
+REFLECT_FIELD(bool, setupWizardForceShow, false, ui::hidden(), "")
+REFLECT_FIELD(bool, hudFixEnabled, false, ui::checkbox(), "System")
 REFLECT_STRUCT_END()
 
 // Initialize reflection for all structs
@@ -264,12 +265,11 @@ inline void InitReflection() {
 
 } // namespace cpp26::reflect
 
-static_assert(std::is_trivially_copyable_v<ModConfig>,
-              "ModConfig must be trivially copyable — no reference members");
+static_assert(std::is_trivially_copyable_v<ModConfig>, "ModConfig must be trivially copyable — no reference members");
 
 class ConfigManager {
 public:
-  static ConfigManager &Get();
+  static ConfigManager& Get();
 
   // Non-copyable, non-movable singleton
   ConfigManager(const ConfigManager&) = delete;
@@ -287,7 +287,7 @@ public:
   // Returns a mutable reference to the config.  Safe ONLY when called from the
   // render / Present thread (the "owning" thread).  For cross-thread reads use
   // DataSnapshot() instead.
-  ModConfig &Data() { return m_config; }
+  ModConfig& Data() { return m_config; }
 
   // Returns a thread-safe copy of the current config.  Use this from any
   // non-render thread (e.g. timer thread, metrics thread).
@@ -299,7 +299,7 @@ public:
 private:
   ConfigManager() { cpp26::reflect::InitReflection(); }
   std::filesystem::path GetConfigPath();
-  void ImportLegacyIni(const std::filesystem::path &iniPath);
+  void ImportLegacyIni(const std::filesystem::path& iniPath);
 
   ModConfig m_config;
   // Lock hierarchy level 4 (SwapChain=1 > Hooks=2 > Resources=3 > Config=4 > Logging=5).

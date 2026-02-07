@@ -307,6 +307,11 @@ static bool GhostCB_ResourceBarrier(CONTEXT* ctx, void* /*userData*/) {
             if (after == D3D12_RESOURCE_STATE_DEPTH_WRITE || after == D3D12_RESOURCE_STATE_DEPTH_READ) {
               ResourceDetector::Get().RegisterDepthFromView(pRes, DXGI_FORMAT_UNKNOWN);
             }
+            // Phase 1.5: Track render targets transitioning to RENDER_TARGET state
+            // as potential pre-UI (HUD-less) scene buffers
+            if (after == D3D12_RESOURCE_STATE_RENDER_TARGET) {
+              ResourceDetector::Get().RegisterHUDLessCandidate(pRes);
+            }
             ResourceStateTracker_RecordTransition(pRes, pBarriers[i].Transition.StateBefore,
                                                   pBarriers[i].Transition.StateAfter);
           }
@@ -342,9 +347,21 @@ static bool GhostCB_Close(CONTEXT* ctx, void* /*userData*/) {
 
       if (found) {
         UpdateCameraCache(view, proj, jitter.x, jitter.y);
+        // Phase 1.4: Cache successful camera data for fallback
+        StreamlineIntegration::Get().CacheCameraData(view, proj);
         StreamlineIntegration::Get().SetCameraData(view, proj, jitter.x, jitter.y);
       } else {
-        StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitter.x, jitter.y);
+        // Phase 1.4: Try cached camera data before sending null matrices
+        float cachedView[16], cachedProj[16];
+        if (StreamlineIntegration::Get().GetCachedCameraData(cachedView, cachedProj)) {
+          StreamlineIntegration::Get().SetCameraData(cachedView, cachedProj, jitter.x, jitter.y);
+          static uint64_t s_cacheHits = 0;
+          if (s_cacheHits++ % 300 == 0) {
+            LOG_INFO("[Camera] Using cached camera data (scanner missed {} consecutive frames)", s_cacheHits);
+          }
+        } else {
+          StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitter.x, jitter.y);
+        }
       }
     }
   } catch (...) {
