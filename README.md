@@ -5,7 +5,7 @@
 ### **Unlock Next-Gen Graphics & Up to 4× Frame Generation**
 
 [![Version](https://img.shields.io/badge/Version-1.0.0--preview-blue?style=for-the-badge)](https://github.com/AcerThyRacer/ACV-DLSS-4.5/releases/latest)
-[![Status](https://img.shields.io/badge/Status-Working-brightgreen?style=for-the-badge)](#)
+[![Status](https://img.shields.io/badge/Status-Unstable-red?style=for-the-badge)](#)
 [![RTX](https://img.shields.io/badge/NVIDIA-RTX%20Optimized-76B900?style=for-the-badge&logo=nvidia)](https://nvidia.com)
 
 <img src="assets/Screenshot-2026-02-02-153102.png" width="700" alt="DLSS 4.5 Control Panel"/>
@@ -15,6 +15,13 @@
 [🚀 Quick Install](#-quick-install-2-minutes) • [✨ Features](#-features) • [🎛️ Overlay Guide](#️-the-in-game-overlay) • [❓ FAQ](#-faq)
 
 </div>
+
+---
+
+> [!CAUTION]
+> **⚠️ Unstable Build — No Features Guaranteed**
+>
+> This is a **highly unstable** preview build. **None of the features listed below are guaranteed to work.** You may experience crashes, broken functionality, visual artifacts, or complete failure to initialize. Use at your own risk. This build is provided as-is for testing and feedback purposes only.
 
 ---
 
