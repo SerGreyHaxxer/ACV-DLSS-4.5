@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -18,9 +18,35 @@
 #include <d3d12.h>
 #include <cstdint>
 
-// Lightweight resource state tracker fed by ResourceBarrier ghost hook.
-// Lock hierarchy level 3 (SwapChain=1 > Hooks=2 > Resources=3 > Config=4 > Logging=5).
-void ResourceStateTracker_RecordTransition(ID3D12Resource* pResource, D3D12_RESOURCE_STATES stateBefore, D3D12_RESOURCE_STATES stateAfter);
-bool ResourceStateTracker_GetCurrentState(ID3D12Resource* pResource, D3D12_RESOURCE_STATES& outState);
+// ============================================================================
+// P0 Fix 2 + P1 Fix 3: RCU Double-Buffered TLS-Batched Resource State Tracker
+// ============================================================================
+// RecordTransition is called 5,000-15,000 times per frame across multiple
+// Anvil worker threads. The architecture is:
+//
+//   RecordTransition → O(1) push to thread_local inplace_vector (zero locks)
+//   FlushTLS         → Builds new state on write buffer, atomically flips
+//                       the active pointer (single brief lock)
+//   GetCurrentState  → Wait-free atomic load of active map pointer (ZERO
+//                       locks, ZERO cache-line invalidation — eliminates the
+//                       shared_mutex refcount bouncing that was choking CPUs
+//                       with 15,000+ reads/frame)
+//
+// TLSBatch uses atomic<bool> is_alive tombstone (P0 Fix 2) to prevent
+// OS Loader Lock deadlocks during DLL_THREAD_DETACH on worker thread exit.
+// ============================================================================
+
+void ResourceStateTracker_RecordTransition(ID3D12Resource* pResource,
+                                           D3D12_RESOURCE_STATES stateBefore,
+                                           D3D12_RESOURCE_STATES stateAfter);
+
+bool ResourceStateTracker_GetCurrentState(ID3D12Resource* pResource,
+                                          D3D12_RESOURCE_STATES& outState);
+
+// Flush all TLS batches into the active read-optimized map via RCU swap.
+// Must be called from a single point (GhostCB_ExecuteCommandLists) before
+// any code that reads resource states (camera scanning, DLSS evaluation).
+void ResourceStateTracker_FlushTLS();
+
 void ResourceStateTracker_EvictStale(uint64_t currentFrame, uint64_t maxAge);
 void ResourceStateTracker_Clear();

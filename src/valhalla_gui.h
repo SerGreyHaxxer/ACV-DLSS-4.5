@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -230,12 +231,12 @@ public:
 
   // Text
   enum class TextAlign { Left, Center, Right };
-  void DrawText(const std::wstring& text, float x, float y, float w, float h,
+  void DrawText(std::wstring_view text, float x, float y, float w, float h,
                 const D2D1_COLOR_F& color, float fontSize, TextAlign align = TextAlign::Left, bool bold = false);
-  void DrawTextA(const std::string& text, float x, float y, float w, float h,
+  void DrawTextA(std::string_view text, float x, float y, float w, float h,
                  const D2D1_COLOR_F& color, float fontSize, TextAlign align = TextAlign::Left, bool bold = false);
   struct TextSize { float width; float height; };
-  TextSize MeasureTextA(const std::string& text, float fontSize, bool bold = false, float maxWidth = 10000.0f);
+  TextSize MeasureTextA(std::string_view text, float fontSize, bool bold = false, float maxWidth = 10000.0f);
 
   // Clipping
   void PushClip(float x, float y, float w, float h);

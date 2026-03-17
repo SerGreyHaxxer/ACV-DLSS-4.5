@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -16,6 +16,7 @@
  */
 #pragma once
 
+#include <atomic>
 #include <windows.h>
 
 // Do NOT include dxgi headers here to avoid redefinition conflicts
@@ -68,7 +69,9 @@ struct DXGIProxyState {
     void* pfnOpenAdapter10_2 = nullptr;
     void* pfnSetAppCompatStringPointer = nullptr;
     
-    bool initialized = false;
+    // Fix 11: Must be atomic — multiple DXGI threads read this concurrently
+    // during initialization. Plain bool is a data race (UB).
+    std::atomic<bool> initialized{false};
 };
 
 // Global proxy state

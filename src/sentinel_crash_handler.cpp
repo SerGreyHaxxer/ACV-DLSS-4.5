@@ -47,6 +47,12 @@ static std::atomic<size_t> g_CapturedFrameCount{0};
 // Pre-allocated crash log buffer (async-signal-safe)
 static char g_CrashBuffer[16384];
 
+// P2 Fix 7: Pre-opened file handles — opened during Install() to avoid
+// calling CreateFileA inside the VEH where Loader Lock or Heap Lock
+// may be held. This prevents double-fault deadlocks on heap corruption.
+static HANDLE g_PreOpenedLogHandle = INVALID_HANDLE_VALUE;
+static HANDLE g_PreOpenedDumpHandle = INVALID_HANDLE_VALUE;
+
 // Module range for filtering
 struct ModuleRange {
   uintptr_t base;
@@ -147,96 +153,59 @@ static bool IsAddressInKnownModule(uintptr_t address) {
 }
 
 // ============================================================================
-// STACK WALKING (KERNEL-AWARE)
+// STACK WALKING (ASYNC-SIGNAL-SAFE)
 // ============================================================================
+// Fix 10: Replaced SymInitialize/StackWalk64/SymFromAddr with
+// RtlCaptureStackBackTrace. The old stack walker called:
+//   - SymInitialize → acquires Loader Lock
+//   - StackWalk64 → acquires Heap Lock for symbol tables
+//   - GetModuleHandleExA → acquires Loader Lock
+// If the crash occurred while ANY of those locks were held, the VEH would
+// deadlock and the game would freeze to a black screen with no dump.
+//
+// RtlCaptureStackBackTrace is documented as async-signal-safe — it reads
+// the RSP chain directly without acquiring any locks.
 
 static size_t WalkStack(CONTEXT* ctx, StackFrame* frames, size_t maxFrames) {
   if (!ctx || !frames || maxFrames == 0) return 0;
 
-  // Initialize DbgHelp for symbol resolution
-  static std::atomic<bool> s_SymInitialized{false};
-  if (!s_SymInitialized.exchange(true)) {
-    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
-    SymInitialize(GetCurrentProcess(), nullptr, TRUE);
-  }
-
-  STACKFRAME64 sf{};
-  DWORD machineType;
-
-#ifdef _WIN64
-  machineType = IMAGE_FILE_MACHINE_AMD64;
-  sf.AddrPC.Offset = ctx->Rip;
-  sf.AddrPC.Mode = AddrModeFlat;
-  sf.AddrFrame.Offset = ctx->Rbp;
-  sf.AddrFrame.Mode = AddrModeFlat;
-  sf.AddrStack.Offset = ctx->Rsp;
-  sf.AddrStack.Mode = AddrModeFlat;
-#else
-  machineType = IMAGE_FILE_MACHINE_I386;
-  sf.AddrPC.Offset = ctx->Eip;
-  sf.AddrPC.Mode = AddrModeFlat;
-  sf.AddrFrame.Offset = ctx->Ebp;
-  sf.AddrFrame.Mode = AddrModeFlat;
-  sf.AddrStack.Offset = ctx->Esp;
-  sf.AddrStack.Mode = AddrModeFlat;
-#endif
+  // Capture raw return addresses using the async-signal-safe API
+  void* rawAddresses[kMaxStackFrames];
+  USHORT captured = RtlCaptureStackBackTrace(
+      0, // Skip 0 frames
+      static_cast<DWORD>(maxFrames < kMaxStackFrames ? maxFrames : kMaxStackFrames),
+      rawAddresses,
+      nullptr);
 
   size_t frameCount = 0;
-  HANDLE process = GetCurrentProcess();
-  HANDLE thread = GetCurrentThread();
-
-  // Pre-allocate symbol buffer (avoid allocation in loop)
-  char symbolBuffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(TCHAR)];
-  SYMBOL_INFO* symbol = reinterpret_cast<SYMBOL_INFO*>(symbolBuffer);
-  symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
-  symbol->MaxNameLen = MAX_SYM_NAME;
-
-  IMAGEHLP_LINE64 lineInfo{};
-  lineInfo.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
-
-  while (frameCount < maxFrames) {
-    if (!StackWalk64(machineType, process, thread, &sf, ctx, nullptr, SymFunctionTableAccess64, SymGetModuleBase64,
-                     nullptr)) {
-      break;
-    }
-
-    if (sf.AddrPC.Offset == 0) break;
-
+  for (USHORT i = 0; i < captured && frameCount < maxFrames; i++) {
     StackFrame& frame = frames[frameCount];
-    frame.address = sf.AddrPC.Offset;
-    frame.returnAddress = sf.AddrReturn.Offset;
-    frame.framePointer = sf.AddrFrame.Offset;
+    frame.address = reinterpret_cast<uintptr_t>(rawAddresses[i]);
+    frame.returnAddress = 0;
+    frame.framePointer = 0;
     frame.moduleName[0] = '\0';
     frame.symbolName[0] = '\0';
     frame.lineNumber = 0;
     frame.fileName[0] = '\0';
 
-    // Get module name
+    // Best-effort module name resolution — GetModuleHandleExA is NOT
+    // async-signal-safe, but it's unlikely to deadlock on the Loader Lock
+    // if the crash was in user code (not a DLL load/unload). We accept
+    // the risk here because module names are critical for crash triage.
     HMODULE hModule = nullptr;
     if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           reinterpret_cast<LPCSTR>(sf.AddrPC.Offset), &hModule)) {
+                           reinterpret_cast<LPCSTR>(rawAddresses[i]), &hModule)) {
       GetModuleFileNameA(hModule, frame.moduleName, MAX_PATH);
     }
 
-    // Get symbol name
-    DWORD64 displacement64 = 0;
-    if (SymFromAddr(process, sf.AddrPC.Offset, &displacement64, symbol)) {
-      strncpy_s(frame.symbolName, symbol->Name, _TRUNCATE);
-    }
-
-    // Get line info
-    DWORD displacement32 = 0;
-    if (SymGetLineFromAddr64(process, sf.AddrPC.Offset, &displacement32, &lineInfo)) {
-      frame.lineNumber = lineInfo.LineNumber;
-      strncpy_s(frame.fileName, lineInfo.FileName, _TRUNCATE);
-    }
+    // Symbol resolution is DEFERRED — we do NOT call SymFromAddr here.
+    // The raw addresses are sufficient for post-mortem analysis with
+    // a debugger or addr2line equivalent.
 
     frameCount++;
 
-    // Stop at known Denuvo trampolines (obfuscated return addresses)
-    // These have addresses in executable sections but no valid symbols
-    if (frameCount > 5 && frame.symbolName[0] == '\0' && !IsAddressInKnownModule(frame.address)) {
-      // Likely hit Denuvo obfuscation, capture what we have
+    // Stop at known Denuvo trampolines
+    if (frameCount > 5 && frame.moduleName[0] == '\0' && !IsAddressInKnownModule(frame.address)) {
       break;
     }
   }
@@ -308,8 +277,23 @@ static bool WriteMiniDump(PEXCEPTION_POINTERS exInfo, const char* path) {
 // ============================================================================
 
 static void WriteCrashLog(PEXCEPTION_POINTERS exInfo, const char* path) {
-  HANDLE hFile =
-      CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  // P2 Fix 7: Use pre-opened HANDLE if available — avoids CreateFileA inside VEH.
+  // CreateFileA can acquire the PEB lock and Heap Lock, which deadlocks if the
+  // crash happened inside ntdll.dll or during heap corruption.
+  HANDLE hFile = INVALID_HANDLE_VALUE;
+  bool usedPreOpened = false;
+
+  if (g_PreOpenedLogHandle != INVALID_HANDLE_VALUE) {
+    hFile = g_PreOpenedLogHandle;
+    usedPreOpened = true;
+    // Seek to beginning to overwrite previous crash data
+    SetFilePointer(hFile, 0, nullptr, FILE_BEGIN);
+    SetEndOfFile(hFile); // Truncate
+  } else {
+    // Fallback: try CreateFileA (risky in VEH but better than nothing)
+    hFile = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  }
   if (hFile == INVALID_HANDLE_VALUE) return;
 
   int pos = 0;
@@ -480,7 +464,12 @@ static void WriteCrashLog(PEXCEPTION_POINTERS exInfo, const char* path) {
   // Write with single call (async-signal-safe)
   DWORD bytesWritten = 0;
   WriteFile(hFile, g_CrashBuffer, static_cast<DWORD>(pos), &bytesWritten, nullptr);
-  CloseHandle(hFile);
+  FlushFileBuffers(hFile); // Ensure data hits disk even during crash
+
+  // Only close if we created the handle ourselves (not pre-opened)
+  if (!usedPreOpened) {
+    CloseHandle(hFile);
+  }
 }
 
 // ============================================================================
@@ -496,18 +485,28 @@ static LONG WINAPI SentinelHandler(PEXCEPTION_POINTERS exInfo) {
     return EXCEPTION_CONTINUE_SEARCH;
   }
 
+  // Fix 10: DENUVO FILTER — ACV uses Denuvo Anti-Tamper which intentionally
+  // throws EXCEPTION_ACCESS_VIOLATION to verify code integrity. If the fault
+  // address is NOT inside our proxy module, immediately pass it through.
+  // Otherwise we'll catch DRM's intentional AVs and kill the game.
+  uintptr_t faultAddr = reinterpret_cast<uintptr_t>(exInfo->ExceptionRecord->ExceptionAddress);
+  if (g_SelfModule.size > 0) {
+    if (faultAddr < g_SelfModule.base || faultAddr >= g_SelfModule.base + g_SelfModule.size) {
+      return EXCEPTION_CONTINUE_SEARCH;
+    }
+  }
+
   // Prevent re-entry
   if (g_HandlingCrash.exchange(true)) {
     return EXCEPTION_CONTINUE_SEARCH;
   }
 
   // Store crash info
-  g_LastCrashAddress.store(reinterpret_cast<uintptr_t>(exInfo->ExceptionRecord->ExceptionAddress));
+  g_LastCrashAddress.store(faultAddr);
   g_LastExceptionCode.store(code);
 
-  // Walk stack (before any other actions that might corrupt it)
+  // Walk stack using async-signal-safe RtlCaptureStackBackTrace
   if (g_Config.enableStackWalk) {
-    // Make a copy of context for stack walking
     CONTEXT ctxCopy = *exInfo->ContextRecord;
     g_CapturedFrameCount.store(WalkStack(&ctxCopy, g_CapturedFrames, kMaxStackFrames));
   }
@@ -516,10 +515,12 @@ static LONG WINAPI SentinelHandler(PEXCEPTION_POINTERS exInfo) {
   const char* logPath = g_Config.logPath ? g_Config.logPath : "dlss4_sentinel.log";
   const char* dumpPath = g_Config.dumpPath ? g_Config.dumpPath : "dlss4_sentinel.dmp";
 
-  // Write crash log
+  // Write crash log (uses pre-allocated buffer — async-safe)
   WriteCrashLog(exInfo, logPath);
 
-  // Write minidump (MiniDumpWriteDump is documented as VEH-safe)
+  // Write minidump — best-effort. MiniDumpWriteDump may deadlock if the
+  // heap is corrupted, but it's the only in-process dump mechanism.
+  // Out-of-process dumping via sentinel_watcher.exe is a future improvement.
   WriteMiniDump(exInfo, dumpPath);
 
   // Optionally open log
@@ -544,6 +545,20 @@ bool Install(const Config& config) {
   g_Config = config;
   InitializeModuleRanges();
 
+  // P2 Fix 7: Pre-open crash log and dump file handles.
+  // These are kept open for the lifetime of the handler so that
+  // WriteCrashLog doesn't need to call CreateFileA inside the VEH.
+  const char* logPath = config.logPath ? config.logPath : "dlss4_sentinel.log";
+  const char* dumpPath = config.dumpPath ? config.dumpPath : "dlss4_sentinel.dmp";
+  g_PreOpenedLogHandle = CreateFileA(logPath, GENERIC_WRITE, FILE_SHARE_READ,
+                                     nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  g_PreOpenedDumpHandle = CreateFileA(dumpPath, GENERIC_WRITE, FILE_SHARE_READ,
+                                      nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (g_PreOpenedLogHandle != INVALID_HANDLE_VALUE) {
+    // Move file pointer to end for append-style if desired, or beginning for overwrite
+    SetFilePointer(g_PreOpenedLogHandle, 0, nullptr, FILE_BEGIN);
+  }
+
   // Install as first handler (priority 1)
   g_VehHandle = AddVectoredExceptionHandler(1, SentinelHandler);
   if (!g_VehHandle) {
@@ -562,6 +577,16 @@ void Uninstall() {
   if (g_VehHandle) {
     RemoveVectoredExceptionHandler(g_VehHandle);
     g_VehHandle = nullptr;
+  }
+
+  // P2 Fix 7: Close pre-opened file handles
+  if (g_PreOpenedLogHandle != INVALID_HANDLE_VALUE) {
+    CloseHandle(g_PreOpenedLogHandle);
+    g_PreOpenedLogHandle = INVALID_HANDLE_VALUE;
+  }
+  if (g_PreOpenedDumpHandle != INVALID_HANDLE_VALUE) {
+    CloseHandle(g_PreOpenedDumpHandle);
+    g_PreOpenedDumpHandle = INVALID_HANDLE_VALUE;
   }
 }
 

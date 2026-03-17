@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -33,54 +33,13 @@
 namespace fs = std::filesystem;
 
 // ============================================================================
-// RAII Wrapper for HMODULE - Ensures proper cleanup on initialization failure
+// C++20: Zero-cost RAII HMODULE wrapper using unique_ptr + custom deleter
+// Replaces the 45-line ModuleHandle class with a 4-line zero-overhead abstraction
 // ============================================================================
-class ModuleHandle {
-public:
-  ModuleHandle() = default;
-  explicit ModuleHandle(HMODULE handle) : m_handle(handle) {}
-  ~ModuleHandle() { Release(); }
-
-  // Non-copyable
-  ModuleHandle(const ModuleHandle&) = delete;
-  ModuleHandle& operator=(const ModuleHandle&) = delete;
-
-  // Movable
-  ModuleHandle(ModuleHandle&& other) noexcept : m_handle(other.m_handle) {
-    other.m_handle = nullptr;
-  }
-  ModuleHandle& operator=(ModuleHandle&& other) noexcept {
-    if (this != &other) {
-      Release();
-      m_handle = other.m_handle;
-      other.m_handle = nullptr;
-    }
-    return *this;
-  }
-
-  [[nodiscard]] HMODULE Get() const { return m_handle; }
-  [[nodiscard]] bool IsValid() const { return m_handle != nullptr; }
-
-  void Reset(HMODULE handle = nullptr) {
-    Release();
-    m_handle = handle;
-  }
-
-  HMODULE Detach() {
-    HMODULE tmp = m_handle;
-    m_handle = nullptr;
-    return tmp;
-  }
-
-private:
-  void Release() {
-    if (m_handle) {
-      FreeLibrary(m_handle);
-      m_handle = nullptr;
-    }
-  }
-  HMODULE m_handle = nullptr;
+struct ModuleDeleter {
+  void operator()(HMODULE h) const noexcept { if (h) ::FreeLibrary(h); }
 };
+using UniqueModule = std::unique_ptr<std::remove_pointer_t<HMODULE>, ModuleDeleter>;
 
 static std::atomic<bool> s_startupTraceEnabled(true);
 // Lock hierarchy level 5 â€” lowest priority (Logging tier).
@@ -90,12 +49,12 @@ static std::ofstream s_startupTraceFile;
 extern "C" void LogStartup(const char *msg) {
   if (!s_startupTraceEnabled.load(std::memory_order_relaxed))
     return;
-  std::lock_guard<std::mutex> lock(s_startupTraceMutex);
+  std::scoped_lock lock(s_startupTraceMutex);
   if (!s_startupTraceFile.is_open()) {
     s_startupTraceFile.open("startup_trace.log", std::ios::trunc);
   }
   if (s_startupTraceFile) {
-    s_startupTraceFile << "[PROXY] " << msg << '\n';
+    s_startupTraceFile << std::format("[PROXY] {}\n", msg);
     s_startupTraceFile.flush();
   }
 }
@@ -114,7 +73,7 @@ void InitProxyGlobal() {
 }
 
 void CleanupProxyGlobal() {
-  std::lock_guard<std::mutex> lock(s_startupTraceMutex);
+  std::scoped_lock lock(s_startupTraceMutex);
   if (s_startupTraceFile.is_open()) {
     s_startupTraceFile.close();
   }
@@ -148,9 +107,9 @@ bool InitializeProxy() {
 
     LOG_INFO("Loading original DXGI from: {}", dxgiPath.string());
 
-    // Use RAII wrapper to ensure cleanup on failure
-    ModuleHandle dxgiModule(LoadLibraryW(dxgiPath.c_str()));
-    if (!dxgiModule.IsValid()) {
+    // Modern exception-safe loading via UniqueModule (unique_ptr<HMODULE>)
+    UniqueModule dxgiModule(LoadLibraryW(dxgiPath.c_str()));
+    if (!dxgiModule) {
       LOG_ERROR("Failed to load original dxgi.dll! Error: {}", GetLastError());
       LogStartup("Failed to load original dxgi.dll");
       return;
@@ -160,21 +119,21 @@ bool InitializeProxy() {
     LogStartup("Loading function pointers...");
 
     LogStartup(std::format("hOriginalDXGI = {:p}",
-               static_cast<void*>(dxgiModule.Get())).c_str());
+               static_cast<void*>(dxgiModule.get())).c_str());
 
     // Test GetProcAddress directly
     FARPROC testProc =
-        GetProcAddress(dxgiModule.Get(), "CreateDXGIFactory");
+        GetProcAddress(dxgiModule.get(), "CreateDXGIFactory");
     LogStartup(std::format("CreateDXGIFactory = {:p}",
                reinterpret_cast<void*>(testProc)).c_str());
 
     // Store function pointers in local variables first
     auto pfnCreateDXGIFactory = reinterpret_cast<PFN_CreateDXGIFactory>(
-        GetProcAddress(dxgiModule.Get(), "CreateDXGIFactory"));
+        GetProcAddress(dxgiModule.get(), "CreateDXGIFactory"));
     auto pfnCreateDXGIFactory1 = reinterpret_cast<PFN_CreateDXGIFactory1>(
-        GetProcAddress(dxgiModule.Get(), "CreateDXGIFactory1"));
+        GetProcAddress(dxgiModule.get(), "CreateDXGIFactory1"));
     auto pfnCreateDXGIFactory2 = reinterpret_cast<PFN_CreateDXGIFactory2>(
-        GetProcAddress(dxgiModule.Get(), "CreateDXGIFactory2"));
+        GetProcAddress(dxgiModule.get(), "CreateDXGIFactory2"));
 
     LogStartup("Got CreateDXGIFactory");
 
@@ -185,7 +144,8 @@ bool InitializeProxy() {
     }
 
     // Now commit the module and function pointers to global state
-    g_ProxyState.hOriginalDXGI = dxgiModule.Detach();
+    // Release ownership from smart pointer — global state takes over lifetime
+    g_ProxyState.hOriginalDXGI = dxgiModule.release();
     g_ProxyState.pfnCreateDXGIFactory = pfnCreateDXGIFactory;
     g_ProxyState.pfnCreateDXGIFactory1 = pfnCreateDXGIFactory1;
     g_ProxyState.pfnCreateDXGIFactory2 = pfnCreateDXGIFactory2;
@@ -234,7 +194,7 @@ bool InitializeProxy() {
     LogStartup("Installing D3D12 Hooks...");
     InstallD3D12Hooks();
     LogStartup("D3D12 Hooks installed");
-    g_ProxyState.initialized = true;
+    g_ProxyState.initialized.store(true, std::memory_order_release);
     success = true;
   });
   return g_ProxyState.initialized;
@@ -245,7 +205,7 @@ void ShutdownProxy() {
     FreeLibrary(g_ProxyState.hOriginalDXGI);
     g_ProxyState.hOriginalDXGI = nullptr;
   }
-  g_ProxyState.initialized = false;
+  g_ProxyState.initialized.store(false, std::memory_order_release);
   Logger::Shutdown();
 }
 
@@ -309,90 +269,93 @@ HRESULT WINAPI DXGIGetDebugInterface1(UINT Flags, REFIID riid, void **pDebug) {
              : E_NOINTERFACE;
 }
 
-typedef HRESULT(WINAPI *PFN_Generic)(void *a, void *b, void *c, void *d);
+// ============================================================================
+// Type-Safe Forwarding Stubs (P0 Fix: Eliminates x64 ABI UB)
+// ============================================================================
+// The old GenericForward blindly cast all functions to a 4-arg void* signature.
+// If the real function takes 0-2 args, calling with 4 trashes R8/R9 registers.
+// Each stub now matches the exact argument count of the original function.
+// ============================================================================
 
-HRESULT WINAPI GenericForward(void *func, void *a, void *b, void *c, void *d) {
-  return func ? reinterpret_cast<PFN_Generic>(func)(a, b, c, d) : E_NOINTERFACE;
-}
-
-#define STUB_FORWARD(Name)                                                     \
-  HRESULT WINAPI Name(void *a, void *b, void *c, void *d) {                    \
-    if (!g_ProxyState.initialized)                                             \
-      InitializeProxy();                                                       \
-    return GenericForward(g_ProxyState.pfn##Name, a, b, c, d);                 \
-  }
+typedef HRESULT(WINAPI* PFN_2Arg)(void*, void*);
+typedef HRESULT(WINAPI* PFN_3Arg)(void*, void*, void*);
+typedef HRESULT(WINAPI* PFN_1Arg)(void*);
+typedef HRESULT(WINAPI* PFN_0Arg)();
 
 HRESULT WINAPI ApplyCompatResolutionQuirking(void *a, void *b) {
-  if (!g_ProxyState.initialized)
+  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
     InitializeProxy();
-  return GenericForward(g_ProxyState.pfnApplyCompatResolutionQuirking, a, b,
-                        nullptr, nullptr);
+  auto fn = reinterpret_cast<PFN_2Arg>(g_ProxyState.pfnApplyCompatResolutionQuirking);
+  return fn ? fn(a, b) : E_NOINTERFACE;
 }
 HRESULT WINAPI CompatString(void *a, void *b, void *c) {
-  if (!g_ProxyState.initialized)
+  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
     InitializeProxy();
-  return GenericForward(g_ProxyState.pfnCompatString, a, b, c, nullptr);
+  auto fn = reinterpret_cast<PFN_3Arg>(g_ProxyState.pfnCompatString);
+  return fn ? fn(a, b, c) : E_NOINTERFACE;
 }
 HRESULT WINAPI CompatValue(void *a, void *b) {
-  if (!g_ProxyState.initialized)
+  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
     InitializeProxy();
-  return GenericForward(g_ProxyState.pfnCompatValue, a, b, nullptr, nullptr);
+  auto fn = reinterpret_cast<PFN_2Arg>(g_ProxyState.pfnCompatValue);
+  return fn ? fn(a, b) : E_NOINTERFACE;
 }
 HRESULT WINAPI DXGIDumpJournal(void *a) {
-  if (!g_ProxyState.initialized)
+  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
     InitializeProxy();
-  return GenericForward(g_ProxyState.pfnDXGIDumpJournal, a, nullptr, nullptr,
-                        nullptr);
+  auto fn = reinterpret_cast<PFN_1Arg>(g_ProxyState.pfnDXGIDumpJournal);
+  return fn ? fn(a) : E_NOINTERFACE;
 }
 HRESULT WINAPI DXGIReportAdapterConfiguration(void *a) {
-  if (!g_ProxyState.initialized)
+  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
     InitializeProxy();
-  return GenericForward(g_ProxyState.pfnDXGIReportAdapterConfiguration, a,
-                        nullptr, nullptr, nullptr);
+  auto fn = reinterpret_cast<PFN_1Arg>(g_ProxyState.pfnDXGIReportAdapterConfiguration);
+  return fn ? fn(a) : E_NOINTERFACE;
 }
 HRESULT WINAPI DXGIDisableVBlankVirtualization() {
-  if (!g_ProxyState.initialized)
+  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
     InitializeProxy();
-  return GenericForward(g_ProxyState.pfnDXGIDisableVBlankVirtualization,
-                        nullptr, nullptr, nullptr, nullptr);
+  auto fn = reinterpret_cast<PFN_0Arg>(g_ProxyState.pfnDXGIDisableVBlankVirtualization);
+  return fn ? fn() : E_NOINTERFACE;
 }
 
-#define FORWARD_1ARG(Name)                                                     \
+// 1-arg D3DKMT forwarding stubs — each matches exact original signature
+#define FORWARD_1ARG_SAFE(Name)                                                \
   HRESULT WINAPI Name(void *a) {                                               \
-    if (!g_ProxyState.initialized)                                             \
+    if (!g_ProxyState.initialized.load(std::memory_order_acquire))             \
       InitializeProxy();                                                       \
-    return GenericForward(g_ProxyState.pfn##Name, a, nullptr, nullptr,         \
-                          nullptr);                                            \
+    auto fn = reinterpret_cast<PFN_1Arg>(g_ProxyState.pfn##Name);              \
+    return fn ? fn(a) : E_NOINTERFACE;                                         \
   }
 
-FORWARD_1ARG(D3DKMTCloseAdapter)
-FORWARD_1ARG(D3DKMTDestroyAllocation)
-FORWARD_1ARG(D3DKMTDestroyContext)
-FORWARD_1ARG(D3DKMTDestroyDevice)
-FORWARD_1ARG(D3DKMTDestroySynchronizationObject)
-FORWARD_1ARG(D3DKMTQueryAdapterInfo)
-FORWARD_1ARG(D3DKMTSetDisplayPrivateDriverFormat)
-FORWARD_1ARG(D3DKMTSignalSynchronizationObject)
-FORWARD_1ARG(D3DKMTUnlock)
-FORWARD_1ARG(D3DKMTWaitForSynchronizationObject)
+FORWARD_1ARG_SAFE(D3DKMTCloseAdapter)
+FORWARD_1ARG_SAFE(D3DKMTDestroyAllocation)
+FORWARD_1ARG_SAFE(D3DKMTDestroyContext)
+FORWARD_1ARG_SAFE(D3DKMTDestroyDevice)
+FORWARD_1ARG_SAFE(D3DKMTDestroySynchronizationObject)
+FORWARD_1ARG_SAFE(D3DKMTQueryAdapterInfo)
+FORWARD_1ARG_SAFE(D3DKMTSetDisplayPrivateDriverFormat)
+FORWARD_1ARG_SAFE(D3DKMTSignalSynchronizationObject)
+FORWARD_1ARG_SAFE(D3DKMTUnlock)
+FORWARD_1ARG_SAFE(D3DKMTWaitForSynchronizationObject)
 
 HRESULT WINAPI OpenAdapter10(void *a) {
-  if (!g_ProxyState.initialized)
+  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
     InitializeProxy();
-  return GenericForward(g_ProxyState.pfnOpenAdapter10, a, nullptr, nullptr,
-                        nullptr);
+  auto fn = reinterpret_cast<PFN_1Arg>(g_ProxyState.pfnOpenAdapter10);
+  return fn ? fn(a) : E_NOINTERFACE;
 }
 HRESULT WINAPI OpenAdapter10_2(void *a) {
-  if (!g_ProxyState.initialized)
+  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
     InitializeProxy();
-  return GenericForward(g_ProxyState.pfnOpenAdapter10_2, a, nullptr, nullptr,
-                        nullptr);
+  auto fn = reinterpret_cast<PFN_1Arg>(g_ProxyState.pfnOpenAdapter10_2);
+  return fn ? fn(a) : E_NOINTERFACE;
 }
 HRESULT WINAPI SetAppCompatStringPointer(void *a, void *b) {
-  if (!g_ProxyState.initialized)
+  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
     InitializeProxy();
-  return GenericForward(g_ProxyState.pfnSetAppCompatStringPointer, a, b,
-                        nullptr, nullptr);
+  auto fn = reinterpret_cast<PFN_2Arg>(g_ProxyState.pfnSetAppCompatStringPointer);
+  return fn ? fn(a, b) : E_NOINTERFACE;
 }
 
 HRESULT WINAPI Proxy_D3D12CreateDevice(IUnknown *pAdapter,

@@ -266,6 +266,22 @@ private:
   };
   PerFeatureGPU m_featureGPU[kFeatureSlotCount]{};
 
+  // P2 Fix 6: Async compute queue for FrameGen/DeepDVC overlapping
+  Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_pAsyncComputeQueue;
+  Microsoft::WRL::ComPtr<ID3D12Fence> m_asyncSyncFence;
+  UINT64 m_asyncSyncFenceValue = 0;
+  bool m_asyncComputeEnabled = false;
+
+  // P2 Fix 6: Per-feature compute resources (used when async compute is enabled)
+  struct PerFeatureCompute {
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> cmdList;
+    Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+    HANDLE fenceEvent = nullptr;
+    UINT64 fenceValue = 0;
+  };
+  PerFeatureCompute m_featureCompute[kFeatureSlotCount]{};
+
   // Legacy single allocator (kept for backward compat, unused in new path)
   Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_pCommandAllocator;
   Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_pCommandList;

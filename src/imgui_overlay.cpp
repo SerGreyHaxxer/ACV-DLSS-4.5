@@ -1729,7 +1729,7 @@ void ImGuiOverlay::BuildMainPanel() {
         sli.SetFrameGenMultiplier(cfg.fg.multiplier);
         sli.SetSharpness(cfg.dlss.sharpness);
         sli.SetLODBias(cfg.dlss.lodBias);
-        ApplySamplerLodBias(cfg.dlss.lodBias);
+        SamplerInterceptor_SetTargetLODBias(cfg.dlss.lodBias);
         sli.SetReflexEnabled(cfg.rr.enabled);
         sli.SetRayReconstructionEnabled(cfg.rr.enabled);
         sli.SetDeepDVCEnabled(cfg.dvc.enabled);
@@ -1750,7 +1750,7 @@ void ImGuiOverlay::BuildMainPanel() {
         sli.SetFrameGenMultiplier(cfg.fg.multiplier);
         sli.SetSharpness(cfg.dlss.sharpness);
         sli.SetLODBias(cfg.dlss.lodBias);
-        ApplySamplerLodBias(cfg.dlss.lodBias);
+        SamplerInterceptor_SetTargetLODBias(cfg.dlss.lodBias);
         sli.SetReflexEnabled(cfg.rr.enabled);
         sli.SetRayReconstructionEnabled(cfg.rr.enabled);
         sli.SetDeepDVCEnabled(cfg.dvc.enabled);
@@ -1772,7 +1772,7 @@ void ImGuiOverlay::BuildMainPanel() {
         sli.SetFrameGenMultiplier(cfg.fg.multiplier);
         sli.SetSharpness(cfg.dlss.sharpness);
         sli.SetLODBias(cfg.dlss.lodBias);
-        ApplySamplerLodBias(cfg.dlss.lodBias);
+        SamplerInterceptor_SetTargetLODBias(cfg.dlss.lodBias);
         sli.SetReflexEnabled(cfg.rr.enabled);
         sli.SetRayReconstructionEnabled(cfg.rr.enabled);
         sli.SetDeepDVCEnabled(cfg.dvc.enabled);
@@ -1810,7 +1810,7 @@ void ImGuiOverlay::BuildMainPanel() {
       if (AutoUI::DrawStruct(*this, cfg.dlss)) {
         sli.SetSharpness(cfg.dlss.sharpness);
         sli.SetLODBias(cfg.dlss.lodBias);
-        ApplySamplerLodBias(cfg.dlss.lodBias);
+        SamplerInterceptor_SetTargetLODBias(cfg.dlss.lodBias);
         ConfigManager::Get().MarkDirty();
       }
       Spacing();
@@ -2273,7 +2273,7 @@ void ImGuiOverlay::BuildMainPanel() {
         sli.SetFrameGenMultiplier(reset.fg.multiplier);
         sli.SetSharpness(reset.dlss.sharpness);
         sli.SetLODBias(reset.dlss.lodBias);
-        ApplySamplerLodBias(reset.dlss.lodBias);
+        SamplerInterceptor_SetTargetLODBias(reset.dlss.lodBias);
         sli.SetReflexEnabled(reset.rr.enabled);
         sli.SetHUDFixEnabled(reset.system.hudFixEnabled);
         sli.SetRayReconstructionEnabled(reset.rr.enabled);
@@ -2799,7 +2799,7 @@ void ImGuiOverlay::BuildSetupWizard() {
       sli.SetDLSSPreset(cfg.dlss.preset);
       sli.SetSharpness(cfg.dlss.sharpness);
       sli.SetLODBias(cfg.dlss.lodBias);
-      ApplySamplerLodBias(cfg.dlss.lodBias);
+      SamplerInterceptor_SetTargetLODBias(cfg.dlss.lodBias);
       sli.SetFrameGenMultiplier(cfg.fg.multiplier);
       sli.SetDeepDVCEnabled(cfg.dvc.enabled);
       sli.SetHDREnabled(cfg.hdr.enabled);

@@ -443,25 +443,18 @@ bool HookManager::ApplyBreakpointsToAllThreads() {
     do {
       if (te.th32OwnerProcessID == currentPid) {
         if (te.th32ThreadID == currentTid) {
-          // Apply to current thread directly
-          CONTEXT ctx{};
-          ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-
-          // Get current debug registers
-          // For current thread, we need to use NtGetContextThread
-          // or work with the current context
-          HANDLE hThread = GetCurrentThread();
-          if (GetThreadContext(hThread, &ctx)) {
-            EnterCriticalSection(&m_Lock);
-            ctx.Dr0 = m_Slots[0].active ? m_Slots[0].address : 0;
-            ctx.Dr1 = m_Slots[1].active ? m_Slots[1].address : 0;
-            ctx.Dr2 = m_Slots[2].active ? m_Slots[2].address : 0;
-            ctx.Dr3 = m_Slots[3].active ? m_Slots[3].address : 0;
-            ctx.Dr6 = 0;
-            ctx.Dr7 = BuildDr7(m_Slots, tl_DisabledSlot);
-            LeaveCriticalSection(&m_Lock);
-
-            SetThreadContext(hThread, &ctx);
+          // P1 FIX: Use a real handle (not the pseudo-handle) for the current
+          // thread.  GetThreadContext with GetCurrentThread() pseudo-handle can
+          // return stale debug register values on the running thread.  Open a
+          // real handle and suspend/resume just like we do for other threads.
+          HANDLE hThread = OpenThread(
+              THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME,
+              FALSE, currentTid);
+          if (hThread) {
+            if (!ApplyBreakpointsToThread(hThread)) {
+              success = false;
+            }
+            CloseHandle(hThread);
           }
         } else {
           HANDLE hThread =

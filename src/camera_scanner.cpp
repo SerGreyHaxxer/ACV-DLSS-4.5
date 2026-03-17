@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -26,7 +26,6 @@
 #include <atomic>
 #include <cfloat>
 #include <cmath>
-#include <immintrin.h>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -197,63 +196,10 @@ bool TryExtractCameraFromBuffer(const uint8_t* data, size_t size, float* outView
   auto scanWithStride = [&](size_t stride, float& bestScoreOut, size_t& bestOffsetOut) {
     const size_t scanLimit = size;
     const size_t matrixBytes = sizeof(float) * 32;
-#if defined(__AVX512F__)
-    const size_t laneCount = 16;
-    const size_t blockSpan = stride * (laneCount - 1) + matrixBytes;
-    const char* base = reinterpret_cast<const char*>(data);
-    const __m512 vOne = _mm512_set1_ps(1.0f);
-    const __m512 vTol = _mm512_set1_ps(0.1f);
-    size_t offset = 0;
-    for (; offset + blockSpan <= scanLimit; offset += stride * laneCount) {
-      alignas(64) int indices[laneCount];
-      for (int lane = 0; lane < static_cast<int>(laneCount); ++lane) {
-        indices[lane] = static_cast<int>(offset + static_cast<size_t>(lane) * stride + 15 * sizeof(float));
-      }
-      __m512 view15 = _mm512_i32gather_ps(_mm512_loadu_si512(indices), base, 1);
-      __m512 diff = _mm512_sub_ps(view15, vOne);
-      __m512 absDiff = _mm512_max_ps(diff, _mm512_sub_ps(_mm512_setzero_ps(), diff));
-      __mmask16 mask = _mm512_cmp_ps_mask(absDiff, vTol, _CMP_LE_OQ);
-      if (!mask) continue;
-      for (int lane = 0; lane < static_cast<int>(laneCount); ++lane) {
-        if ((mask & (1u << lane)) == 0) continue;
-        size_t candidateOffset = offset + static_cast<size_t>(lane) * stride;
-        const float* view = reinterpret_cast<const float*>(data + candidateOffset);
-        const float* proj = view + 16;
-        float score = ScoreMatrixPair(view, proj);
-        if (score > bestScoreOut) {
-          bestScoreOut = score;
-          bestOffsetOut = candidateOffset;
-        }
-
-        float tView[16], tProj[16];
-        TransposeMatrix(view, tView);
-        TransposeMatrix(proj, tProj);
-        float tScore = ScoreMatrixPair(tView, tProj);
-        if (tScore > bestScoreOut) {
-          bestScoreOut = tScore;
-          bestOffsetOut = candidateOffset;
-        }
-      }
-    }
-    for (; offset + matrixBytes <= scanLimit; offset += stride) {
-      const float* view = reinterpret_cast<const float*>(data + offset);
-      const float* proj = view + 16;
-      float score = ScoreMatrixPair(view, proj);
-      if (score > bestScoreOut) {
-        bestScoreOut = score;
-        bestOffsetOut = offset;
-      }
-
-      float tView[16], tProj[16];
-      TransposeMatrix(view, tView);
-      TransposeMatrix(proj, tProj);
-      float tScore = ScoreMatrixPair(tView, tProj);
-      if (tScore > bestScoreOut) {
-        bestScoreOut = tScore;
-        bestOffsetOut = offset;
-      }
-    }
-#else
+    // Fix 4b: Removed AVX-512 _mm512_i32gather_ps scan path. With root parameter
+    // filtering (Fix 4a), we now have very few candidates (2-3 per frame) instead
+    // of thousands. The scalar loop is sufficient and avoids PCIe bus-choking reads
+    // from Write-Combine (upload heap) memory that caused multi-ms CPU spikes.
     for (size_t offset = 0; offset + matrixBytes <= scanLimit; offset += stride) {
       const float* view = reinterpret_cast<const float*>(data + offset);
       const float* proj = view + 16;
@@ -272,8 +218,8 @@ bool TryExtractCameraFromBuffer(const uint8_t* data, size_t size, float* outView
         bestOffsetOut = offset;
       }
     }
-#endif
   };
+
 
   // Multi-stride scanning: coarse to fine, carrying best score forward
   // (don't reset bestScore between passes — coarse hits are valid)

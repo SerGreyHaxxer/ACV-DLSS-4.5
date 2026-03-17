@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -37,6 +37,7 @@
 
 #include "src/crash_handler.h"
 #include "src/dlss4_config.h"
+#include "src/dxgi_wrappers.h" // StopFrameTimer()
 #include "src/hooks.h"
 #include "src/logger.h"
 #include "src/proxy.h"
@@ -100,6 +101,12 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
       // Only cleanup if we are actually being unloaded, not just terminating
       // However, many games re-load DLLs or use multiple instances.
       // For stealth and persistence, we should be careful here.
+
+      // P0 FIX: Stop the frame timer thread FIRST.  The timer thread triggers
+      // ghost‑hook breakpoints and acquires config/input locks.  Joining it here
+      // is safe because it never acquires the loader lock nor loads DLLs.
+      StopFrameTimer();
+      LogStartup("Frame Timer Stopped");
 
       // Cleanup in reverse order
       CleanupHooks();

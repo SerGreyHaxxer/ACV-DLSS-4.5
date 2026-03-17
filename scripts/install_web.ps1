@@ -154,6 +154,80 @@ foreach ($dll in $slDlls) {
 $ProgressPreference = 'Continue'
 Write-Host "   OK  Downloaded $downloaded/$($slDlls.Count) SDK DLLs" -ForegroundColor Green
 
+# -- Step 2b: SHA256 Checksum Validation (P2 Security Fix) --------------------
+Write-Host "  [2b] Validating checksums..." -ForegroundColor Cyan
+
+$checksumFile = Join-Path $TempDir "checksums.sha256"
+$checksumUrl = $null
+$checksumAvailable = $false
+
+# Try to download checksums from release asset
+if ($release) {
+    $csAsset = $release.assets | Where-Object { $_.name -eq "checksums.sha256" } | Select-Object -First 1
+    if ($csAsset) { $checksumUrl = $csAsset.browser_download_url }
+}
+# Fallback to raw repo
+if (-not $checksumUrl) {
+    $checksumUrl = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch/checksums.sha256"
+}
+
+try {
+    $ProgressPreference = 'SilentlyContinue'
+    Invoke-WebRequest -Uri $checksumUrl -OutFile $checksumFile -UseBasicParsing -ErrorAction Stop
+    $ProgressPreference = 'Continue'
+    $checksumAvailable = $true
+}
+catch {
+    Write-Host "   WARN  checksums.sha256 not found — skipping validation" -ForegroundColor Yellow
+    Write-Host "         (Older releases may not include checksums)" -ForegroundColor DarkGray
+}
+
+if ($checksumAvailable) {
+    $checksumLines = Get-Content $checksumFile
+    $checksumMap = @{}
+    foreach ($line in $checksumLines) {
+        $line = $line.Trim()
+        if ($line -eq "" -or $line.StartsWith("#")) { continue }
+        # Format: "<sha256hash>  <filename>" or "<sha256hash> *<filename>"
+        if ($line -match '^([0-9a-fA-F]{64})\s+\*?(.+)$') {
+            $checksumMap[$Matches[2].Trim()] = $Matches[1].ToLower()
+        }
+    }
+
+    $allValid = $true
+    $filesToValidate = @("dxgi.dll") + $slDlls
+
+    foreach ($fileName in $filesToValidate) {
+        $filePath = Join-Path $TempDir $fileName
+        if (-not (Test-Path $filePath)) { continue }
+
+        if ($checksumMap.ContainsKey($fileName)) {
+            $expectedHash = $checksumMap[$fileName]
+            $actualHash = (Get-FileHash $filePath -Algorithm SHA256).Hash.ToLower()
+            if ($actualHash -ne $expectedHash) {
+                Write-Host "   FAIL  Checksum MISMATCH: $fileName" -ForegroundColor Red
+                Write-Host "         Expected: $expectedHash" -ForegroundColor DarkGray
+                Write-Host "         Got:      $actualHash" -ForegroundColor DarkGray
+                $allValid = $false
+            } else {
+                Write-Host "   OK  $fileName (SHA256 verified)" -ForegroundColor Green
+            }
+        } else {
+            Write-Host "   WARN  No checksum for $fileName (not in checksums file)" -ForegroundColor Yellow
+        }
+    }
+
+    if (-not $allValid) {
+        Write-Host ""
+        Write-Host "  FATAL: One or more files failed checksum validation!" -ForegroundColor Red
+        Write-Host "  This could indicate a corrupted download or tampered files." -ForegroundColor Red
+        Write-Host "  Installation ABORTED for your safety." -ForegroundColor Red
+        Remove-Item $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+        exit 1
+    }
+    Write-Host "   OK  All checksums verified" -ForegroundColor Green
+}
+
 # -- Step 3: Find AC Valhalla -------------------------------------------------
 Write-Host "  [3] Searching for AC Valhalla..." -ForegroundColor Cyan
 

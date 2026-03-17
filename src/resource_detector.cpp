@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -20,10 +20,11 @@
 #include "dlss4_config.h"
 #include "heuristic_scanner.h"
 #include "logger.h"
+#include "resource_lifetime_tracker.h"
 
 #include <algorithm>
-#include <iomanip>
-#include <sstream>
+#include <format>
+#include <ranges>
 
 ResourceDetector& ResourceDetector::Get() {
   static ResourceDetector instance;
@@ -130,12 +131,11 @@ void ResourceDetector::UpdateHeuristics(ID3D12CommandQueue* pQueue) {
 
   if (!bestCandidate) return;
 
-  // Run Analysis â€” wait for GPU to finish previous submission first
-  if (m_fence && m_fenceVal > 1) {
-    if (m_fence->GetCompletedValue() < m_fenceVal - 1) {
-      m_fence->SetEventOnCompletion(m_fenceVal - 1, m_fenceEvent);
-      WaitForSingleObject(m_fenceEvent, 1000);
-    }
+  // P0 FIX: Stutter eliminated — instead of blocking for up to 1 second with
+  // WaitForSingleObject, we check the fence non-blockingly. If the previous GPU
+  // work isn't done, we simply defer analysis to the next frame.
+  if (m_fence && m_fenceVal > 1 && m_fence->GetCompletedValue() < m_fenceVal - 1) {
+    return; // Previous work still in flight — retry next frame
   }
   m_cmdAlloc->Reset();
   m_cmdList->Reset(m_cmdAlloc.Get(), nullptr);
@@ -168,18 +168,11 @@ void ResourceDetector::NewFrame() {
     return (currentFrame - cand.lastFrameSeen) > resource_config::kStaleFrames;
   };
 
-  if (!m_motionCandidates.empty()) {
-    m_motionCandidates.erase(std::remove_if(m_motionCandidates.begin(), m_motionCandidates.end(), isStale),
-                             m_motionCandidates.end());
-  }
-  if (!m_depthCandidates.empty()) {
-    m_depthCandidates.erase(std::remove_if(m_depthCandidates.begin(), m_depthCandidates.end(), isStale),
-                            m_depthCandidates.end());
-  }
-  if (!m_colorCandidates.empty()) {
-    m_colorCandidates.erase(std::remove_if(m_colorCandidates.begin(), m_colorCandidates.end(), isStale),
-                            m_colorCandidates.end());
-  }
+  // C++20: std::erase_if replaces erase(remove_if(...), end()) pattern
+  auto eraseStale = [&](auto& list) { std::erase_if(list, isStale); };
+  eraseStale(m_motionCandidates);
+  eraseStale(m_depthCandidates);
+  eraseStale(m_colorCandidates);
 
   // Periodically clear old candidates to adapt to resolution changes
   // But ONLY if we have new candidates to replace them with
@@ -194,21 +187,12 @@ void ResourceDetector::NewFrame() {
 
   // Trim m_seenGeneration every 600 frames: remove entries not seen in the last 2 generations
   if (currentFrame % 600 == 0) {
-    uint64_t currentGen = currentFrame / resource_config::kCleanupInterval;
-    uint64_t minGen = currentGen >= 2 ? currentGen - 2 : 0;
-    for (auto it = m_seenGeneration.begin(); it != m_seenGeneration.end();) {
-      if (it->second < minGen) {
-        it = m_seenGeneration.erase(it);
-      } else {
-        ++it;
-      }
-    }
+    const uint64_t currentGen = currentFrame / resource_config::kCleanupInterval;
+    const uint64_t minGen = currentGen >= 2 ? currentGen - 2 : 0;
+    std::erase_if(m_seenGeneration, [minGen](const auto& pair) { return pair.second < minGen; });
   }
-
-  // Phase 3.3: Prune dead resources every 60 frames
-  if (currentFrame % 60 == 0) {
-    ValidateAndPruneDead();
-  }
+  // Phase 3.3 pruning removed — Fix 1 uses deterministic Release tracking
+  // via ResourceLifetimeTracker::NotifyReleased → OnResourceDestroyed()
 }
 
 void ResourceDetector::Clear() {
@@ -253,7 +237,7 @@ void ResourceDetector::RegisterDepthFromView(ID3D12Resource* pResource, DXGI_FOR
   if (m_bestDepth.Get() == pResource) return;
   m_bestDepthScore = 2.0f;
   m_bestDepth = pResource;
-  bool quietScan = ConfigManager::Get().Data().system.quietResourceScan;
+  bool quietScan = ConfigManager::Get().DataSnapshot().system.quietResourceScan;
   if (!quietScan) {
     LOG_INFO("[DLSSG] Depth view bound: {}x{} Fmt:{} Ptr:{:p}", desc.Width, desc.Height, static_cast<int>(desc.Format),
              static_cast<void*>(pResource));
@@ -285,7 +269,7 @@ void ResourceDetector::RegisterDepthFromClear(ID3D12Resource* pResource, float c
   m_bestDepthScore = 3.0f; // Extremely high confidence
   m_bestDepth = pResource;
 
-  if (!ConfigManager::Get().Data().system.quietResourceScan) {
+  if (!ConfigManager::Get().DataSnapshot().system.quietResourceScan) {
     LOG_INFO("[DLSSG] Depth IDENTIFIED via Clear: {}x{} Fmt:{} Ptr:{:p}", desc.Width, desc.Height,
              static_cast<int>(desc.Format), static_cast<void*>(pResource));
   }
@@ -304,7 +288,7 @@ void ResourceDetector::RegisterColorFromClear(ID3D12Resource* pResource) {
   m_bestColorScore = 2.5f; // High confidence
   m_bestColor = pResource;
 
-  if (!ConfigManager::Get().Data().system.quietResourceScan) {
+  if (!ConfigManager::Get().DataSnapshot().system.quietResourceScan) {
     LOG_INFO("[DLSSG] Color IDENTIFIED via Clear: {}x{} Fmt:{} Ptr:{:p}", desc.Width, desc.Height,
              static_cast<int>(desc.Format), static_cast<void*>(pResource));
   }
@@ -380,7 +364,7 @@ void ResourceDetector::RegisterMotionVectorFromView(ID3D12Resource* pResource, D
   if (m_bestMotion.Get() == pResource) return;
   m_bestMotionScore = 2.0f;
   m_bestMotion = pResource;
-  bool quietScan = ConfigManager::Get().Data().system.quietResourceScan;
+  bool quietScan = ConfigManager::Get().DataSnapshot().system.quietResourceScan;
   if (!quietScan) {
     LOG_INFO("[DLSSG] MV view bound: {}x{} Fmt:{} Ptr:{:p}", desc.Width, desc.Height, static_cast<int>(desc.Format),
              static_cast<void*>(pResource));
@@ -403,6 +387,9 @@ ResourceDetector::GetMotionFormatOverride(ID3D12Resource* pResource) {
 
 void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDuplicate) {
   if (!pResource) return;
+
+  // Fix 1: Track this resource for deterministic lifetime notifications
+  ResourceLifetimeTracker::Get().TrackResource(pResource);
 
   D3D12_RESOURCE_DESC desc = pResource->GetDesc();
 
@@ -466,12 +453,12 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDup
 
   // Eviction cap: sort by score, keep top candidates to prevent unbounded growth
   // Template lambda to work with inplace_vector
+  // C++20: ranges::sort with projection replaces lambda comparator
   auto evict = [](auto& list) {
     // inplace_vector has fixed capacity 64, just trim if near full
     constexpr std::size_t maxSize = 50; // Leave room for new insertions
     if (list.size() > maxSize) {
-      std::sort(list.begin(), list.end(),
-                [](const ResourceCandidate& a, const ResourceCandidate& b) { return a.score > b.score; });
+      std::ranges::sort(list, std::greater<>{}, &ResourceCandidate::score);
       while (list.size() > 40) {
         list.pop_back();
       }
@@ -481,7 +468,7 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDup
   evict(m_motionCandidates);
   evict(m_depthCandidates);
 
-  bool quietScan = ConfigManager::Get().Data().system.quietResourceScan;
+  bool quietScan = ConfigManager::Get().DataSnapshot().system.quietResourceScan;
   if (mvScore >= 0.5f) {
     bool found = false;
     ResourceCandidate* target = nullptr;
@@ -838,15 +825,14 @@ float ResourceDetector::ScoreColor(const D3D12_RESOURCE_DESC& desc) {
 
 ID3D12Resource* ResourceDetector::GetBestMotionVectorCandidate() {
   std::shared_lock<std::shared_mutex> lock(m_mutex);
-  // Phase 3.3: Validate before returning
-  if (m_bestMotion && !IsResourceAlive(m_bestMotion.Get())) return nullptr;
+  // Fix 1: No IsResourceAlive check needed — dead resources are purged
+  // deterministically via OnResourceDestroyed() from Release hook.
   return m_bestMotion.Get();
 }
 
 ID3D12Resource* ResourceDetector::GetBestDepthCandidate() {
   std::shared_lock<std::shared_mutex> lock(m_mutex);
-  // Phase 3.3: Validate before returning
-  if (m_bestDepth && !IsResourceAlive(m_bestDepth.Get())) return nullptr;
+  // Fix 1: Dead resources purged deterministically
   return m_bestDepth.Get();
 }
 
@@ -863,7 +849,7 @@ ID3D12Resource* ResourceDetector::GetBestColorCandidate() {
 
     for (const auto& cand : m_colorCandidates) {
       if (cand.desc.Width == mvDesc.Width && cand.desc.Height == mvDesc.Height) {
-        if (cand.score > bestMatchScore && cand.score > 0.6f && IsResourceAlive(cand.pResource.Get())) {
+        if (cand.score > bestMatchScore && cand.score > 0.6f) {
           bestMatchScore = cand.score;
           bestMatch = cand.pResource.Get();
         }
@@ -881,7 +867,7 @@ ID3D12Resource* ResourceDetector::GetBestColorCandidate() {
       float ratioH = static_cast<float>(cand.desc.Height) / static_cast<float>(m_expectedHeight);
       if (ratioW >= resource_config::kExpectedMinRatio && ratioW <= resource_config::kExpectedMaxRatio &&
           ratioH >= resource_config::kExpectedMinRatio && ratioH <= resource_config::kExpectedMaxRatio) {
-        if (cand.score > bestMatchScore && IsResourceAlive(cand.pResource.Get())) {
+        if (cand.score > bestMatchScore) {
           bestMatchScore = cand.score;
           bestMatch = cand.pResource.Get();
         }
@@ -890,8 +876,7 @@ ID3D12Resource* ResourceDetector::GetBestColorCandidate() {
     if (bestMatch) return bestMatch;
   }
 
-  // Phase 3.3: Validate fallback before returning
-  if (m_bestColor && !IsResourceAlive(m_bestColor.Get())) return nullptr;
+  // Fix 1: Dead resources purged deterministically
   return m_bestColor.Get();
 }
 
@@ -902,26 +887,30 @@ uint64_t ResourceDetector::GetFrameCount() {
 
 std::string ResourceDetector::GetDebugInfo() {
   std::shared_lock<std::shared_mutex> lock(m_mutex);
-  std::stringstream ss;
-  ss << "=== RESOURCE DETECTOR DEBUG ===\r\n";
-  ss << "Frame: " << m_frameCount << "\r\n\r\n";
+  std::string info;
+  info.reserve(4096);
+
+  // C++20: std::format_to replaces slow, memory-fragmenting stringstreams
+  std::format_to(std::back_inserter(info), "=== RESOURCE DETECTOR DEBUG ===\r\nFrame: {}\r\n\r\n",
+                 m_frameCount.load(std::memory_order_relaxed));
 
   // Template lambda to work with inplace_vector
-  auto printList = [&](const char* name, const auto& list) {
-    ss << "--- " << name << " (" << list.size() << ") ---\r\n";
+  auto printList = [&](std::string_view name, const auto& list) {
+    std::format_to(std::back_inserter(info), "--- {} ({}) ---\r\n", name, list.size());
     for (const auto& c : list) {
-      ss << "Ptr: " << static_cast<void*>(c.pResource.Get()) << " | " << c.desc.Width << "x" << c.desc.Height
-         << " | Fmt: " << c.desc.Format << " | Score: " << std::fixed << std::setprecision(2) << c.score
-         << " | Hits: " << c.seenCount << " | Last: " << c.lastFrameSeen << "\r\n";
+      std::format_to(std::back_inserter(info),
+        "Ptr: {:p} | {}x{} | Fmt: {} | Score: {:.2f} | Hits: {} | Last: {}\r\n",
+        static_cast<void*>(c.pResource.Get()), c.desc.Width, c.desc.Height,
+        static_cast<int>(c.desc.Format), c.score, c.seenCount, c.lastFrameSeen);
     }
-    ss << "\r\n";
+    info += "\r\n";
   };
 
   printList("Color Candidates", m_colorCandidates);
   printList("Depth Candidates", m_depthCandidates);
   printList("Motion Vec Candidates", m_motionCandidates);
 
-  return ss.str();
+  return info;
 }
 
 void ResourceDetector::LogDebugInfo() {
@@ -980,7 +969,7 @@ void ResourceDetector::RegisterHUDLessCandidate(ID3D12Resource* pResource) {
     m_bestHUDLess = pResource;
     m_hudLessLastFrameSeen = currentFrame;
 
-    bool quietScan = ConfigManager::Get().Data().system.quietResourceScan;
+    bool quietScan = ConfigManager::Get().DataSnapshot().system.quietResourceScan;
     if (!quietScan) {
       LOG_INFO("[DLSSG] HUD-less candidate: {}x{} Fmt:{} Score:{:.2f} Ptr:{:p}", desc.Width, desc.Height,
                static_cast<int>(desc.Format), score, static_cast<void*>(pResource));
@@ -993,8 +982,7 @@ ID3D12Resource* ResourceDetector::GetBestHUDLessCandidate() {
   // Only return if recently seen (within 120 frames)
   uint64_t currentFrame = m_frameCount.load(std::memory_order_relaxed);
   if (currentFrame - m_hudLessLastFrameSeen > 120) return nullptr;
-  // Phase 3.3: Validate before returning
-  if (m_bestHUDLess && !IsResourceAlive(m_bestHUDLess.Get())) return nullptr;
+  // Fix 1: Dead resources purged deterministically
   return m_bestHUDLess.Get();
 }
 
@@ -1087,69 +1075,51 @@ bool ResourceDetector::IsValidFormatFor(DXGI_FORMAT format, ResourceType type) {
 }
 
 // ============================================================================
-// Phase 3.3: Resource Lifetime Tracking
+// Fix 1: Deterministic Resource Lifetime Tracking
 // ============================================================================
-// Uses AddRef/Release to check if a COM resource is still alive.
-// A destroyed resource will crash on AddRef, so we use SEH on Windows
-// to catch access violations. If the resource is dead, return false.
-bool ResourceDetector::IsResourceAlive(ID3D12Resource* pResource) {
-  if (!pResource) return false;
-  __try {
-    // AddRef + Release: if the object is dead, the vtable pointer is garbage
-    // and this will trigger an access violation.
-    ULONG refBefore = pResource->AddRef();
-    pResource->Release();
-    // Sanity: refcount must be >= 2 (us + at least one other holder)
-    // If refBefore was 1, we were the last reference — resource was about
-    // to die. Still alive for now though.
-    return refBefore >= 1;
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return false;
-  }
-}
+// Called by ResourceLifetimeTracker when a tracked resource's Release()
+// drops refcount to 0. Purges the pointer from ALL candidate lists,
+// best-resource pointers, heuristic maps, and format override maps.
+void ResourceDetector::OnResourceDestroyed(ID3D12Resource* pResource) {
+  if (!pResource) return;
+  std::unique_lock<std::shared_mutex> lock(m_mutex);
 
-void ResourceDetector::ValidateAndPruneDead() {
-  // Called under unique_lock from NewFrame()
-  // Check each candidate list + best pointers for dead resources
-
-  auto pruneList = [](auto& list, const char* name) {
-    size_t before = list.size();
-    list.erase(std::remove_if(list.begin(), list.end(),
-                              [](const ResourceCandidate& c) { return !IsResourceAlive(c.pResource.Get()); }),
-               list.end());
-    size_t removed = before - list.size();
-    if (removed > 0) {
-      LOG_INFO("[Phase3] Pruned {} dead {} candidates", removed, name);
-    }
+  // C++20: std::erase_if replaces erase(remove_if(...), end())
+  auto eraseFromList = [pResource](auto& list) {
+    std::erase_if(list, [pResource](const ResourceCandidate& c) { return c.pResource.Get() == pResource; });
   };
 
-  pruneList(m_motionCandidates, "MV");
-  pruneList(m_depthCandidates, "Depth");
-  pruneList(m_colorCandidates, "Color");
+  eraseFromList(m_motionCandidates);
+  eraseFromList(m_depthCandidates);
+  eraseFromList(m_colorCandidates);
 
-  // Validate best pointers
-  if (m_bestMotion && !IsResourceAlive(m_bestMotion.Get())) {
-    LOG_INFO("[Phase3] Best MV resource invalidated (destroyed)");
+  // Clear best pointers if they match
+  if (m_bestMotion.Get() == pResource) {
     m_bestMotion = nullptr;
     m_bestMotionScore = 0.0f;
   }
-  if (m_bestDepth && !IsResourceAlive(m_bestDepth.Get())) {
-    LOG_INFO("[Phase3] Best Depth resource invalidated (destroyed)");
+  if (m_bestDepth.Get() == pResource) {
     m_bestDepth = nullptr;
     m_bestDepthScore = 0.0f;
   }
-  if (m_bestColor && !IsResourceAlive(m_bestColor.Get())) {
-    LOG_INFO("[Phase3] Best Color resource invalidated (destroyed)");
+  if (m_bestColor.Get() == pResource) {
     m_bestColor = nullptr;
     m_bestColorScore = 0.0f;
   }
-  if (m_bestHUDLess && !IsResourceAlive(m_bestHUDLess.Get())) {
-    LOG_INFO("[Phase3] Best HUD-less resource invalidated (destroyed)");
+  if (m_bestHUDLess.Get() == pResource) {
     m_bestHUDLess = nullptr;
     m_bestHUDLessScore = 0.0f;
   }
-  if (m_exposureResource && !IsResourceAlive(m_exposureResource.Get())) {
-    LOG_INFO("[Phase3] Exposure resource invalidated (destroyed)");
+  if (m_exposureResource.Get() == pResource) {
     m_exposureResource = nullptr;
   }
+  if (m_lastAnalyzedCandidate.Get() == pResource) {
+    m_lastAnalyzedCandidate = nullptr;
+  }
+
+  // Clean up maps
+  m_heuristics.erase(pResource);
+  m_seenGeneration.erase(pResource);
+  m_depthFormatOverrides.erase(pResource);
+  m_motionFormatOverrides.erase(pResource);
 }

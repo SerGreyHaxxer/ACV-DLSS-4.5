@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -50,7 +50,8 @@ static std::mutex g_timerMutex;
 static std::atomic<uint64_t> g_unifiedFrameCount(0);
 
 static void RegisterHotkeys() {
-  ModConfig &cfg = ConfigManager::Get().Data();
+  // P1 FIX: Use snapshot — this runs on the timer thread, not the render thread.
+  ModConfig cfg = ConfigManager::Get().DataSnapshot();
   InputHandler::Get().RegisterHotkey(
       cfg.ui.menuHotkey, []() { ImGuiOverlay::Get().ToggleVisibility(); },
       "Toggle Menu");
@@ -77,9 +78,6 @@ static void TimerThreadProc() {
 
   // Register hotkey callbacks (idempotent â€” callbacks are only added once)
   bool hotkeysRegistered = false;
-  bool hookInstalled = false;
-  int hookRetryCount = 0;
-  constexpr int kMaxHookRetries = 10;
 
   auto lastFpsTime = std::chrono::steady_clock::now();
   uint64_t lastFrameCount = 0;
@@ -92,23 +90,11 @@ static void TimerThreadProc() {
       hotkeysRegistered = true;
     }
 
-    // --- Hook installation with retry ---
-    // Low-level keyboard hooks require a message pump on the thread that
-    // installed them.  If the hook fails (e.g. security software blocked it),
-    // retry a few times before giving up.  Polling via ProcessInput() still
-    // works as a fallback.
-    if (!hookInstalled && hookRetryCount < kMaxHookRetries) {
-      InputHandler::Get().InstallHook();
-      if (InputHandler::Get().HasHookInstalled()) {
-        hookInstalled = true;
-        LOG_INFO("[TIMER] Keyboard hook active â€” F5 hotkey ready");
-      } else {
-        ++hookRetryCount;
-        LOG_WARN("[TIMER] Hook install attempt {}/{} failed, will retry. "
-                 "Polling fallback is active.",
-                 hookRetryCount, kMaxHookRetries);
-      }
-    }
+    // P1 FIX: WH_KEYBOARD_LL requires a message pump on the installing
+    // thread.  This timer thread only uses condition_variable::wait_for
+    // and never calls GetMessage/PeekMessage, so a LL hook installed here
+    // would be dead.  Hotkeys are reliably handled via polling in
+    // ProcessInput() below (called every ~16 ms).
 
     std::unique_lock<std::mutex> lock(g_timerMutex);
     g_timerCV.wait_for(lock, std::chrono::milliseconds(16), [] {

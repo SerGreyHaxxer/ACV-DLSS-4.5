@@ -81,6 +81,12 @@ set(SRC_FILES
     src/resource_state_tracker.cpp
     # Phase 4: Jitter Extraction Engine
     src/jitter_engine.cpp
+    # Fix 1: Deterministic resource lifetime tracking
+    src/resource_lifetime_tracker.cpp
+    # Fix 3: Shadow vtable hooking
+    src/shadow_vtable.cpp
+    # Fix 6: Reactive mask for UI ghosting prevention
+    src/reactive_mask.cpp
 )
 
 # Includes — target-scoped to avoid polluting consumers
@@ -115,6 +121,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     psapi
     dbghelp
     crypt32
+    d3dcompiler  # Fix 9: Runtime HLSL compilation for reactive mask compute shader
 )
 
 # Output Name

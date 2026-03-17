@@ -20,6 +20,7 @@
 #include "dlss4_config.h"
 #include "imgui_overlay.h"
 #include "logger.h"
+#include "reactive_mask.h"
 #include "resource_detector.h"
 
 #include <algorithm>
@@ -51,7 +52,8 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
   m_pDevice = pDevice;
 
   ConfigManager::Get().Load();
-  ModConfig& cfg = ConfigManager::Get().Data();
+  // P1 FIX: Use snapshot — Initialize is called from hook callback threads.
+  ModConfig cfg = ConfigManager::Get().DataSnapshot();
 
   m_dlssMode = static_cast<sl::DLSSMode>(cfg.dlss.mode);
   m_frameGenMultiplier = cfg.fg.multiplier;
@@ -115,6 +117,45 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
     m_gpuFenceValue = 0;
   }
 
+  // P2 Fix 6: Create dedicated async compute queue for FrameGen/DeepDVC
+  // This overlaps Tensor Core work with the game's rasterization on the Direct queue.
+  {
+    D3D12_COMMAND_QUEUE_DESC computeQueueDesc{};
+    computeQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+    computeQueueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_HIGH;
+    HRESULT hr = m_pDevice->CreateCommandQueue(&computeQueueDesc, IID_PPV_ARGS(&m_pAsyncComputeQueue));
+    if (SUCCEEDED(hr)) {
+      hr = m_pDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_asyncSyncFence));
+      if (SUCCEEDED(hr)) {
+        m_asyncComputeEnabled = true;
+        LOG_INFO("[AsyncCompute] Dedicated compute queue created for FrameGen/DeepDVC overlap");
+
+        // Create per-feature compute resources
+        const char* computeSlotNames[] = {"DLSS-Compute", "FG-Compute", "DVC-Compute"};
+        for (int i = 0; i < kFeatureSlotCount; ++i) {
+          auto& cmp = m_featureCompute[i];
+          hr = m_pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE, IID_PPV_ARGS(&cmp.allocator));
+          if (FAILED(hr)) continue;
+          hr = m_pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE, cmp.allocator.Get(), nullptr,
+                                            IID_PPV_ARGS(&cmp.cmdList));
+          if (FAILED(hr)) continue;
+          cmp.cmdList->Close();
+          hr = m_pDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&cmp.fence));
+          if (FAILED(hr)) continue;
+          cmp.fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+          cmp.fenceValue = 0;
+          LOG_DEBUG("[AsyncCompute] {} resources created", computeSlotNames[i]);
+        }
+      } else {
+        LOG_WARN("[AsyncCompute] Failed to create sync fence, falling back to direct queue");
+        m_pAsyncComputeQueue.Reset();
+      }
+    } else {
+      LOG_WARN("[AsyncCompute] Failed to create compute queue (HRESULT: {:08X}), using direct queue",
+               static_cast<unsigned>(hr));
+    }
+  }
+
   // Feature support checks
   m_dlssSupported = (slIsFeatureSupported(sl::kFeatureDLSS, sl::AdapterInfo{}) == sl::Result::eOk);
   m_dlssgSupported = (slIsFeatureSupported(sl::kFeatureDLSS_G, sl::AdapterInfo{}) == sl::Result::eOk);
@@ -156,7 +197,22 @@ void StreamlineIntegration::Shutdown() {
     gpu.fence.Reset();
     gpu.cmdList.Reset();
     gpu.allocator.Reset();
+
+    // P2 Fix 6: Clean up compute resources
+    auto& cmp = m_featureCompute[i];
+    if (cmp.fenceEvent) {
+      CloseHandle(cmp.fenceEvent);
+      cmp.fenceEvent = nullptr;
+    }
+    cmp.fence.Reset();
+    cmp.cmdList.Reset();
+    cmp.allocator.Reset();
   }
+
+  // P2 Fix 6: Release async compute queue
+  m_asyncSyncFence.Reset();
+  m_pAsyncComputeQueue.Reset();
+  m_asyncComputeEnabled = false;
 }
 
 void StreamlineIntegration::NewFrame(IDXGISwapChain* pSwapChain) {
@@ -206,9 +262,25 @@ void StreamlineIntegration::SetCameraData(const float* view, const float* proj, 
     jitterY = 0.0f;
   }
 
+  // Fix 5: AnvilNext 2.0 bakes TAA sub-pixel jitter directly into the
+  // projection matrix. If we pass the jittered matrix AND separate jitterX/Y
+  // to Streamline, DLSS will apply the jitter twice — causing intense
+  // vibrating, smearing, and a "vaseline" effect during slow camera pans.
+  // Mathematically subtract the jitter before handing to Streamline.
+  float unjitteredProj[16];
+  const float* projForSL = proj;
+  if (proj && (jitterX != 0.0f || jitterY != 0.0f)) {
+    std::copy_n(proj, 16, unjitteredProj);
+    // Standard row-major projection layout: jitter is added to [2][0] and [2][1]
+    // which correspond to indices [8] and [9] in a flat 4x4 matrix.
+    unjitteredProj[8] -= jitterX * 2.0f;
+    unjitteredProj[9] -= jitterY * 2.0f;
+    projForSL = unjitteredProj;
+  }
+
   sl::Constants consts{};
   if (view) std::copy_n(view, 16, reinterpret_cast<float*>(&consts.cameraViewToClip));
-  if (proj) std::copy_n(proj, 16, reinterpret_cast<float*>(&consts.clipToCameraView));
+  if (projForSL) std::copy_n(projForSL, 16, reinterpret_cast<float*>(&consts.clipToCameraView));
   consts.jitterOffset = sl::float2(jitterX, jitterY);
   consts.mvecScale = sl::float2(m_mvecScaleX, m_mvecScaleY);
   m_hasCameraData = (view != nullptr);
@@ -262,7 +334,37 @@ void StreamlineIntegration::EvaluateDLSSFromPresent() {
 void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain* /*pSwapChain*/) {
   if (!m_initialized || !m_dlssgLoaded || !m_pCommandQueue || !m_frameToken) return;
 
-  // Phase 1.2: Use dedicated FrameGen GPU resources
+  // P2 Fix 6: Use async compute queue if available (overlaps Tensor Cores + CUDA Cores)
+  if (m_asyncComputeEnabled && m_pAsyncComputeQueue) {
+    int idx = static_cast<int>(FeatureSlot::FrameGen);
+    auto& cmp = m_featureCompute[idx];
+    if (cmp.allocator && cmp.cmdList && cmp.fence) {
+      // Wait for previous compute work to finish
+      if (cmp.fence->GetCompletedValue() < cmp.fenceValue) {
+        m_pAsyncComputeQueue->Wait(cmp.fence.Get(), cmp.fenceValue);
+      }
+
+      HRESULT hr = cmp.allocator->Reset();
+      if (SUCCEEDED(hr)) hr = cmp.cmdList->Reset(cmp.allocator.Get(), nullptr);
+      if (SUCCEEDED(hr)) {
+        m_viewport = sl::ViewportHandle(0);
+        const sl::BaseStructure* inputs[] = {&m_viewport};
+        slEvaluateFeature(sl::kFeatureDLSS_G, *m_frameToken, inputs, 1, cmp.cmdList.Get());
+        cmp.cmdList->Close();
+        ID3D12CommandList* lists[] = {cmp.cmdList.Get()};
+        m_pAsyncComputeQueue->ExecuteCommandLists(1, lists);
+
+        cmp.fenceValue++;
+        m_pAsyncComputeQueue->Signal(cmp.fence.Get(), cmp.fenceValue);
+
+        // Direct queue waits on compute to finish before Present
+        m_pCommandQueue->Wait(cmp.fence.Get(), cmp.fenceValue);
+        return;
+      }
+    }
+  }
+
+  // Fallback: use direct queue (original path)
   if (!EnsureFeatureCommandList(FeatureSlot::FrameGen)) return;
 
   auto& gpu = m_featureGPU[static_cast<int>(FeatureSlot::FrameGen)];
@@ -295,7 +397,34 @@ void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain* /*pSwapChain*/) {
 void StreamlineIntegration::EvaluateDeepDVC(IDXGISwapChain* /*pSwapChain*/) {
   if (!m_initialized || !m_deepDvcLoaded || !m_pCommandQueue || !m_frameToken) return;
 
-  // Phase 1.2: Use dedicated DeepDVC GPU resources
+  // P2 Fix 6: Use async compute queue if available
+  if (m_asyncComputeEnabled && m_pAsyncComputeQueue) {
+    int idx = static_cast<int>(FeatureSlot::DeepDVC);
+    auto& cmp = m_featureCompute[idx];
+    if (cmp.allocator && cmp.cmdList && cmp.fence) {
+      if (cmp.fence->GetCompletedValue() < cmp.fenceValue) {
+        m_pAsyncComputeQueue->Wait(cmp.fence.Get(), cmp.fenceValue);
+      }
+
+      HRESULT hr = cmp.allocator->Reset();
+      if (SUCCEEDED(hr)) hr = cmp.cmdList->Reset(cmp.allocator.Get(), nullptr);
+      if (SUCCEEDED(hr)) {
+        m_viewport = sl::ViewportHandle(0);
+        const sl::BaseStructure* inputs[] = {&m_viewport};
+        slEvaluateFeature(sl::kFeatureDeepDVC, *m_frameToken, inputs, 1, cmp.cmdList.Get());
+        cmp.cmdList->Close();
+        ID3D12CommandList* lists[] = {cmp.cmdList.Get()};
+        m_pAsyncComputeQueue->ExecuteCommandLists(1, lists);
+
+        cmp.fenceValue++;
+        m_pAsyncComputeQueue->Signal(cmp.fence.Get(), cmp.fenceValue);
+        m_pCommandQueue->Wait(cmp.fence.Get(), cmp.fenceValue);
+        return;
+      }
+    }
+  }
+
+  // Fallback: use direct queue
   if (!EnsureFeatureCommandList(FeatureSlot::DeepDVC)) return;
 
   auto& gpu = m_featureGPU[static_cast<int>(FeatureSlot::DeepDVC)];
@@ -595,6 +724,38 @@ void StreamlineIntegration::TagResources() {
     tags.push_back(sl::ResourceTag(&exposureSL, sl::kBufferTypeExposure, sl::ResourceLifecycle::eValidUntilPresent));
   }
 
+  // Fix 9: GPU Compute Auto-Masking — dispatch the reactive mask shader
+  // before tagging. This diffs colorRes (with HUD) against hudLessRes
+  // (without HUD) to produce a pixel-accurate reactive mask on the GPU.
+  auto& mask = ReactiveMask::Get();
+  if (colorRes && hudLessRes && colorRes != hudLessRes) {
+    D3D12_RESOURCE_DESC colorDesc = colorRes->GetDesc();
+    if (!mask.IsInitialized()) {
+      mask.Initialize(m_pDevice.Get(),
+                      static_cast<UINT>(colorDesc.Width),
+                      colorDesc.Height);
+    }
+    // Dispatch the compute shader on our command list
+    if (mask.IsInitialized() && EnsureCommandList()) {
+      m_pCommandAllocator->Reset();
+      m_pCommandList->Reset(m_pCommandAllocator.Get(), nullptr);
+      mask.DispatchMask(m_pCommandList.Get(), colorRes, hudLessRes);
+      m_pCommandList->Close();
+
+      ID3D12CommandList* lists[] = {m_pCommandList.Get()};
+      if (m_pCommandQueue) {
+        m_pCommandQueue->ExecuteCommandLists(1, lists);
+      }
+    }
+  }
+
+  // Tag reactive mask for Streamline (Fix 6/9 combined)
+  ID3D12Resource* reactiveMaskRes = mask.GetMaskTexture();
+  if (reactiveMaskRes) {
+    sl::Resource maskSL(sl::ResourceType::eTex2d, reactiveMaskRes);
+    tags.push_back(sl::ResourceTag(&maskSL, sl::kBufferTypeReactiveMask, sl::ResourceLifecycle::eValidUntilPresent));
+  }
+
   // Tag all resources in one call (frame-based tagging)
   sl::Result result =
       slSetTagForFrame(*m_frameToken, m_viewport, tags.data(), static_cast<uint32_t>(tags.size()), nullptr);
@@ -651,13 +812,16 @@ bool StreamlineIntegration::EnsureFeatureCommandList(FeatureSlot slot) {
   return true;
 }
 
-// Phase 1.2: Wait for specific feature's GPU work to complete
+// Phase 1.2: GPU-side async wait for specific feature's work to complete.
+// Uses CommandQueue::Wait instead of CPU-blocking WaitForSingleObject so the
+// CPU returns instantly and the GPU schedules the dependency internally.
+// This preserves pipeline parallelism and eliminates 1% low frame-time spikes.
 void StreamlineIntegration::WaitForFeature(FeatureSlot slot) {
   auto& gpu = m_featureGPU[static_cast<int>(slot)];
-  if (!gpu.fence || !gpu.fenceEvent || !m_pCommandQueue) return;
+  if (!gpu.fence || !m_pCommandQueue) return;
   if (gpu.fence->GetCompletedValue() < gpu.fenceValue) {
-    gpu.fence->SetEventOnCompletion(gpu.fenceValue, gpu.fenceEvent);
-    WaitForSingleObject(gpu.fenceEvent, 5000);
+    // GPU-side dependency: the queue waits internally, CPU returns instantly
+    m_pCommandQueue->Wait(gpu.fence.Get(), gpu.fenceValue);
   }
 }
 

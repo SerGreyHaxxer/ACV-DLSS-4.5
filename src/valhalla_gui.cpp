@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -17,8 +17,7 @@
 #include "valhalla_gui.h"
 #include "logger.h"
 #include <cstring>
-#include <locale>
-#include <codecvt>
+#include <string_view>
 
 // Linking handled by CMakeLists.txt â€” no #pragma comment(lib) needed
 
@@ -338,10 +337,11 @@ IDWriteTextFormat* ValhallaRenderer::GetTextFormat(float fontSize, bool bold) {
   return fmt.Get();
 }
 
-void ValhallaRenderer::DrawText(const std::wstring& text, float x, float y, float w, float h,
+void ValhallaRenderer::DrawText(std::wstring_view text, float x, float y, float w, float h,
                                 const D2D1_COLOR_F& color, float fontSize, TextAlign align, bool bold) {
+  if (text.empty()) [[unlikely]] return;
   auto* fmt = GetTextFormat(fontSize, bold);
-  if (!fmt) return;
+  if (!fmt) [[unlikely]] return;
 
   DWRITE_TEXT_ALIGNMENT dtAlign = DWRITE_TEXT_ALIGNMENT_LEADING;
   if (align == TextAlign::Center) dtAlign = DWRITE_TEXT_ALIGNMENT_CENTER;
@@ -349,31 +349,32 @@ void ValhallaRenderer::DrawText(const std::wstring& text, float x, float y, floa
   fmt->SetTextAlignment(dtAlign);
   fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
-  m_d2dContext->DrawText(text.c_str(), static_cast<UINT32>(text.length()),
+  m_d2dContext->DrawText(text.data(), static_cast<UINT32>(text.length()),
                          fmt, D2D1::RectF(x, y, x + w, y + h), GetBrush(color));
 }
 
-void ValhallaRenderer::DrawTextA(const std::string& text, float x, float y, float w, float h,
+void ValhallaRenderer::DrawTextA(std::string_view text, float x, float y, float w, float h,
                                  const D2D1_COLOR_F& color, float fontSize, TextAlign align, bool bold) {
-  // Convert to wide string
-  int len = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+  if (text.empty()) [[unlikely]] return;
+  // C++20 string_view-safe conversion — uses data()+size() instead of c_str()/-1
+  int len = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
   if (len <= 0) return;
-  std::wstring wide(static_cast<size_t>(len - 1), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wide.data(), len);
+  std::wstring wide(static_cast<size_t>(len), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), len);
   DrawText(wide, x, y, w, h, color, fontSize, align, bold);
 }
 
-ValhallaRenderer::TextSize ValhallaRenderer::MeasureTextA(const std::string& text, float fontSize, bool bold, float maxWidth) {
+ValhallaRenderer::TextSize ValhallaRenderer::MeasureTextA(std::string_view text, float fontSize, bool bold, float maxWidth) {
   auto* fmt = GetTextFormat(fontSize, bold);
   if (!fmt) return {0, 0};
 
-  int len = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+  int len = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
   if (len <= 0) return {0, 0};
-  std::wstring wide(static_cast<size_t>(len - 1), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wide.data(), len);
+  std::wstring wide(static_cast<size_t>(len), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), len);
 
   ComPtr<IDWriteTextLayout> layout;
-  HRESULT hr = m_dwriteFactory->CreateTextLayout(wide.c_str(), static_cast<UINT32>(wide.length()),
+  HRESULT hr = m_dwriteFactory->CreateTextLayout(wide.data(), static_cast<UINT32>(wide.length()),
                                                   fmt, maxWidth, 1000.0f, &layout);
   if (FAILED(hr)) return {0, 0};
 

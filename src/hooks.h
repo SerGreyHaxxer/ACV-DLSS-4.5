@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -112,3 +112,6 @@ void NotifyWrappedCommandListUsed();
 bool IsWrappedCommandListUsed();
 void SetPatternJitterAddress(uintptr_t address);
 bool TryGetPatternJitter(float& jitterX, float& jitterY);
+
+// P0 Fix 1: Patch a command list's vtable with shadow hooks
+void InstallCommandListShadowVTable(ID3D12GraphicsCommandList* pList);

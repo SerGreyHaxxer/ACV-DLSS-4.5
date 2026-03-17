@@ -88,9 +88,10 @@ public:
   enum class ResourceType { Color, Depth, MotionVector };
   static bool IsValidFormatFor(DXGI_FORMAT format, ResourceType type);
 
-  // Phase 3.3: Resource lifetime tracking
-  static bool IsResourceAlive(ID3D12Resource* pResource);
-  void ValidateAndPruneDead();
+  // Fix 1: Deterministic resource lifetime tracking — called by
+  // ResourceLifetimeTracker when a tracked resource's refcount drops to 0.
+  // Purges the resource from ALL candidate lists and best-resource pointers.
+  void OnResourceDestroyed(ID3D12Resource* pResource);
 
 private:
   ResourceDetector() = default;
