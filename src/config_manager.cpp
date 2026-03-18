@@ -97,8 +97,8 @@ void ConfigManager::Load() {
   try {
     auto tbl = toml::parse_file(path.string());
 
-    // Parse into a temporary config, then swap under lock to avoid tearing.
-    ModConfig parsed = m_config; // start from current defaults
+    // Parse into a temporary config, then publish atomically.
+    ModConfig parsed = m_mutableConfig; // start from current defaults
 
     DeserializeStruct(tbl, parsed.dlss, "DLSS");
     DeserializeStruct(tbl, parsed.fg, "FrameGen");
@@ -110,11 +110,15 @@ void ConfigManager::Load() {
     DeserializeStruct(tbl, parsed.customization, "Customization");
     DeserializeStruct(tbl, parsed.system, "System");
 
-    // Swap the parsed config into m_config atomically (under lock)
+    // Atomically update the mutable config and publish to cross-thread readers.
     {
-      std::lock_guard<std::mutex> lock(m_configMutex);
-      m_config = parsed;
+      std::lock_guard<std::mutex> lock(m_writeMutex);
+      m_mutableConfig = parsed;
     }
+    // Publish the new config so DataSnapshot() callers observe it immediately.
+    m_configPtr.store(std::make_shared<const ModConfig>(parsed),
+                      std::memory_order_release);
+
     m_lastWriteTime = std::filesystem::last_write_time(path);
 
     LOG_INFO("Configuration loaded from TOML.");
@@ -124,11 +128,11 @@ void ConfigManager::Load() {
 }
 
 void ConfigManager::Save() {
-  // Take a snapshot under lock so we serialize a consistent state
+  // Take a snapshot under the write mutex so we serialize a consistent state.
   ModConfig snapshot;
   {
-    std::lock_guard<std::mutex> lock(m_configMutex);
-    snapshot = m_config;
+    std::lock_guard<std::mutex> lock(m_writeMutex);
+    snapshot = m_mutableConfig;
   }
 
   auto tbl = toml::table{};
@@ -145,7 +149,9 @@ void ConfigManager::Save() {
 
   std::ofstream file(GetConfigPath());
   file << tbl;
-  m_dirty = false;
+
+  // Atomically clear the dirty flag — no data race possible.
+  m_dirty.store(false, std::memory_order_release);
   m_lastWriteTime = std::filesystem::last_write_time(GetConfigPath());
 }
 
@@ -167,24 +173,25 @@ void ConfigManager::CheckHotReload() {
 void ConfigManager::ImportLegacyIni(const std::filesystem::path &iniPath) {
   std::array<char, 32> buf{};
   std::string path = iniPath.string();
-  m_config.dlss.mode =
+  m_mutableConfig.dlss.mode =
       GetPrivateProfileIntA("Settings", "DLSSMode", 5, path.c_str());
-  m_config.fg.multiplier =
+  m_mutableConfig.fg.multiplier =
       GetPrivateProfileIntA("Settings", "FrameGenMultiplier", 4, path.c_str());
   GetPrivateProfileStringA("Settings", "Sharpness", "0.5", buf.data(),
                            static_cast<DWORD>(buf.size()), path.c_str());
   float val = 0.5f;
   std::from_chars(buf.data(), buf.data() + std::strlen(buf.data()), val);
-  m_config.dlss.sharpness = val;
+  m_mutableConfig.dlss.sharpness = val;
 }
 
 void ConfigManager::ResetToDefaults() {
-  m_config = ModConfig{};
-  m_dirty = true;
+  m_mutableConfig = ModConfig{};
+  m_dirty.store(true, std::memory_order_release);
   Save();
+  Publish();
 }
-void ConfigManager::MarkDirty() { m_dirty = true; }
+void ConfigManager::MarkDirty() { m_dirty.store(true, std::memory_order_release); }
 void ConfigManager::SaveIfDirty() {
-  if (m_dirty)
+  if (m_dirty.load(std::memory_order_acquire))
     Save();
 }

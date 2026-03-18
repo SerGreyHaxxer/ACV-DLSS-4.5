@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -44,14 +44,14 @@ public:
     HeuristicScanner(HeuristicScanner&&) = delete;
     HeuristicScanner& operator=(HeuristicScanner&&) = delete;
 
-    bool Initialize(ID3D12Device* pDevice);
+    [[nodiscard]] bool Initialize(ID3D12Device* pDevice);
     void Shutdown();
 
     // Returns true if analysis was successful
-    bool AnalyzeTexture(ID3D12GraphicsCommandList* pCmdList, ID3D12Resource* pResource, ScanResult& outResult);
+    [[nodiscard]] bool AnalyzeTexture(ID3D12GraphicsCommandList* pCmdList, ID3D12Resource* pResource, ScanResult& outResult);
 
     // New: Read back the results from the buffer (Must be called AFTER fence sync)
-    bool GetReadbackResult(ScanResult& outResult);
+    [[nodiscard]] bool GetReadbackResult(ScanResult& outResult);
 
 private:
     HeuristicScanner() = default;

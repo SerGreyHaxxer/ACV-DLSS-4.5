@@ -24,6 +24,9 @@
 #include <psapi.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
+#include <winternl.h> // PEB, LDR_DATA_TABLE_ENTRY
+
+
 
 
 // ============================================================================
@@ -152,6 +155,72 @@ static bool IsAddressInKnownModule(uintptr_t address) {
   return false;
 }
 
+static bool IsAddressInSelfModule(uintptr_t address) {
+  if (g_SelfModule.size == 0) return false;
+  return (address >= g_SelfModule.base && address < g_SelfModule.base + g_SelfModule.size);
+}
+
+// ============================================================================
+// LOCK-FREE PEB WALK FOR MODULE RESOLUTION
+// ============================================================================
+// Fix 6: GetModuleHandleExA acquires the Loader Lock (PEB->LoaderLock).
+// If a crash occurs while any thread holds Loader Lock (e.g. during
+// DllMain, LoadLibrary, or Denuvo's integrity checks), calling
+// GetModuleHandleExA from the VEH deadlocks and the game hangs.
+//
+// This PEB walk reads the InMemoryOrderModuleList directly.
+// It is NOT truly lock-free (the list can be mutated concurrently)
+// but it avoids the Loader Lock wait, which is the deadlock source.
+// In practice, module list mutations during a crash are extremely rare.
+
+static bool FindModuleByAddressPEB(uintptr_t address, char* outName, size_t maxLen) {
+  if (!outName || maxLen == 0) return false;
+  outName[0] = '\0';
+
+  __try {
+    // Access PEB through the TEB (Thread Environment Block)
+#ifdef _WIN64
+    const PEB* peb = reinterpret_cast<const PEB*>(__readgsqword(0x60));
+#else
+    const PEB* peb = reinterpret_cast<const PEB*>(__readfsdword(0x30));
+#endif
+    if (!peb || !peb->Ldr) return false;
+
+    const LIST_ENTRY* head = &peb->Ldr->InMemoryOrderModuleList;
+    const LIST_ENTRY* current = head->Flink;
+
+    // Safety limit to prevent infinite loops on corrupted lists
+    int limit = 512;
+    while (current != head && limit-- > 0) {
+      // The LDR_DATA_TABLE_ENTRY for InMemoryOrder is offset by one LIST_ENTRY
+      const auto* entry = CONTAINING_RECORD(current, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks);
+
+      uintptr_t base = reinterpret_cast<uintptr_t>(entry->DllBase);
+      size_t size = entry->SizeOfImage;
+
+      if (address >= base && address < base + size) {
+        // Found — copy the module name (UNICODE_STRING → narrow)
+        if (entry->FullDllName.Buffer && entry->FullDllName.Length > 0) {
+          USHORT charCount = entry->FullDllName.Length / sizeof(WCHAR);
+          size_t copyLen = (charCount < maxLen - 1) ? charCount : maxLen - 1;
+          for (size_t i = 0; i < copyLen; i++) {
+            WCHAR wc = entry->FullDllName.Buffer[i];
+            outName[i] = (wc < 128) ? static_cast<char>(wc) : '?';
+          }
+          outName[copyLen] = '\0';
+        }
+        return true;
+      }
+
+      current = current->Flink;
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    // PEB/LDR was corrupted — silently fail
+  }
+
+  return false;
+}
+
 // ============================================================================
 // STACK WALKING (ASYNC-SIGNAL-SAFE)
 // ============================================================================
@@ -188,15 +257,9 @@ static size_t WalkStack(CONTEXT* ctx, StackFrame* frames, size_t maxFrames) {
     frame.lineNumber = 0;
     frame.fileName[0] = '\0';
 
-    // Best-effort module name resolution — GetModuleHandleExA is NOT
-    // async-signal-safe, but it's unlikely to deadlock on the Loader Lock
-    // if the crash was in user code (not a DLL load/unload). We accept
-    // the risk here because module names are critical for crash triage.
-    HMODULE hModule = nullptr;
-    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           reinterpret_cast<LPCSTR>(rawAddresses[i]), &hModule)) {
-      GetModuleFileNameA(hModule, frame.moduleName, MAX_PATH);
-    }
+    // Fix 6: Lock-free PEB walk — avoids GetModuleHandleExA which acquires
+    // Loader Lock and can deadlock if the crash occurred during DLL load.
+    FindModuleByAddressPEB(frame.address, frame.moduleName, MAX_PATH);
 
     // Symbol resolution is DEFERRED — we do NOT call SymFromAddr here.
     // The raw addresses are sufficient for post-mortem analysis with
@@ -330,12 +393,9 @@ static void WriteCrashLog(PEXCEPTION_POINTERS exInfo, const char* path) {
   pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "\r\n");
 
   // Module info
-  HMODULE hModule = nullptr;
+  // Fix 6: Lock-free PEB walk for module name resolution
   char moduleName[MAX_PATH] = {0};
-  if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                         reinterpret_cast<LPCSTR>(address), &hModule)) {
-    GetModuleFileNameA(hModule, moduleName, MAX_PATH);
-  }
+  FindModuleByAddressPEB(address, moduleName, MAX_PATH);
   pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "Faulting Module: ");
   pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, moduleName[0] ? moduleName : "Unknown");
   pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "\r\n");
@@ -485,13 +545,31 @@ static LONG WINAPI SentinelHandler(PEXCEPTION_POINTERS exInfo) {
     return EXCEPTION_CONTINUE_SEARCH;
   }
 
-  // Fix 10: DENUVO FILTER — ACV uses Denuvo Anti-Tamper which intentionally
-  // throws EXCEPTION_ACCESS_VIOLATION to verify code integrity. If the fault
-  // address is NOT inside our proxy module, immediately pass it through.
-  // Otherwise we'll catch DRM's intentional AVs and kill the game.
+  // Fix 10 + Fix 6: DENUVO FILTER — ACV uses Denuvo Anti-Tamper which
+  // intentionally throws EXCEPTION_ACCESS_VIOLATION to verify code integrity.
+  // Check if either:
+  //   (a) The fault is directly inside our proxy module, OR
+  //   (b) Our proxy module is on the call stack (the crash was caused by
+  //       our hooks but faulted in game/system code).
+  // If neither, pass through — it's a Denuvo or game-native exception.
   uintptr_t faultAddr = reinterpret_cast<uintptr_t>(exInfo->ExceptionRecord->ExceptionAddress);
   if (g_SelfModule.size > 0) {
-    if (faultAddr < g_SelfModule.base || faultAddr >= g_SelfModule.base + g_SelfModule.size) {
+    bool faultInSelf = IsAddressInSelfModule(faultAddr);
+    bool proxyOnStack = false;
+
+    if (!faultInSelf) {
+      // Quick check: scan the call stack for any return address in our module
+      void* stackFrames[32];
+      USHORT count = RtlCaptureStackBackTrace(0, 32, stackFrames, nullptr);
+      for (USHORT i = 0; i < count; i++) {
+        if (IsAddressInSelfModule(reinterpret_cast<uintptr_t>(stackFrames[i]))) {
+          proxyOnStack = true;
+          break;
+        }
+      }
+    }
+
+    if (!faultInSelf && !proxyOnStack) {
       return EXCEPTION_CONTINUE_SEARCH;
     }
   }

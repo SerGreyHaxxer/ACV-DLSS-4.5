@@ -219,8 +219,8 @@ HRESULT WINAPI CreateDXGIFactory(REFIID riid, void **ppFactory) {
   HRESULT hr = g_ProxyState.pfnCreateDXGIFactory(riid, ppFactory);
   LogStartup("CreateDXGIFactory: Original returned");
   if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
-    *ppFactory = new WrappedIDXGIFactory(static_cast<IDXGIFactory*>(*ppFactory));
-    LogStartup("Factory Wrapped");
+    InstallDXGIFactoryVTableHooks(static_cast<IDXGIFactory*>(*ppFactory));
+    LogStartup("Factory VTable Hooked");
   }
   return hr;
 }
@@ -233,8 +233,8 @@ HRESULT WINAPI CreateDXGIFactory1(REFIID riid, void **ppFactory) {
   HRESULT hr = g_ProxyState.pfnCreateDXGIFactory1(riid, ppFactory);
   LogStartup("CreateDXGIFactory1: Original returned");
   if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
-    *ppFactory = new WrappedIDXGIFactory(static_cast<IDXGIFactory*>(*ppFactory));
-    LogStartup("Factory1 Wrapped");
+    InstallDXGIFactoryVTableHooks(static_cast<IDXGIFactory*>(*ppFactory));
+    LogStartup("Factory1 VTable Hooked");
   }
   return hr;
 }
@@ -247,8 +247,8 @@ HRESULT WINAPI CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppFactory) {
   HRESULT hr = g_ProxyState.pfnCreateDXGIFactory2(Flags, riid, ppFactory);
   LogStartup("CreateDXGIFactory2: Original returned");
   if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
-    *ppFactory = new WrappedIDXGIFactory(static_cast<IDXGIFactory*>(*ppFactory));
-    LogStartup("Factory2 Wrapped");
+    InstallDXGIFactoryVTableHooks(static_cast<IDXGIFactory*>(*ppFactory));
+    LogStartup("Factory2 VTable Hooked");
   }
   return hr;
 }

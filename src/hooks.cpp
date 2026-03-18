@@ -107,10 +107,7 @@ bool TryGetPatternJitter(float& jitterX, float& jitterY) {
   uintptr_t addr = g_JitterAddress.load();
   if (!addr) return false;
 
-  MEMORY_BASIC_INFORMATION mbi;
-  if (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == 0) return false;
-  if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return false;
-
+  // SEH in SafeReadFloatPair handles invalid memory Ã¢â‚¬â€ no VirtualQuery syscall needed.
   float jx = 0.0f;
   float jy = 0.0f;
   if (!SafeReadFloatPair(addr, &jx, &jy)) return false;
@@ -166,102 +163,63 @@ typedef void(STDMETHODCALLTYPE* PFN_DrawIndexedInstanced)(ID3D12GraphicsCommandL
 static PFN_DrawIndexedInstanced g_OriginalDrawIndexedInstanced = nullptr;
 
 // ============================================================================
-// SLOT ROTATION SCHEDULER - shares 4 HW breakpoints across 14+ hooks
+// SHADOW VTABLE ARCHITECTURE Ã¢â‚¬â€ All hooks via vtable patching (no HWBP)
 // ============================================================================
-// Dr0: Present       (pinned - always active)
-// Dr1: ExecCmdLists  (pinned - always active)
-// Dr2: Rotating slot A
-// Dr3: Rotating slot B
-//
-// Each frame, slots A/B rotate through the remaining hooks:
-//   Device hooks:    CreateSRV, CreateUAV, CreateRTV, CreateDSV, CreateCBV
-//   CmdList hooks:   ResourceBarrier, Close, SetComputeRootCBV,
-//                    SetGraphicsRootCBV, ClearDSV, ClearRTV
+// Every hooked COM interface (Device, CommandList, CommandQueue, SwapChain)
+// uses shadow vtables. This gives:
+//   - 100% call capture (no rotation misses)
+//   - ~2ns branch overhead per call (native speed)
+//   - Zero VEH/kernel overhead (no EXCEPTION_SINGLE_STEP)
+//   - Invisible to Denuvo (patches heap-allocated COM objects, not .text)
 // ============================================================================
 
-struct RotatingHookEntry {
-  uintptr_t address;
-  Ghost::HookCallback callback;
-  const char* name;
-};
-
-static std::vector<RotatingHookEntry> g_RotatingHooks;
-static std::mutex g_RotationMutex;
-static std::atomic<uint32_t> g_RotationIndex{0};
-static int g_PinnedSlot0 = -1; // Present
-static int g_PinnedSlot1 = -1; // ExecuteCommandLists
-static int g_RotatingSlotA = -1;
-static int g_RotatingSlotB = -1;
-
-static void AdvanceSlotRotation() {
-  // Phase 3 perf: Throttle rotation — only swap every N frames.
-  // With 18 hooks and 2 slots, a full cycle takes 9*N frames.
-  // N=4 gives a ~36 frame cycle (~0.6s @ 60fps) which is fine since
-  // most rotating hooks (CreateSampler, CreateDescriptorHeap, etc.)
-  // don't need per-frame coverage.
-  constexpr uint32_t kRotateEveryNFrames = 4;
-  static std::atomic<uint32_t> s_frameCounter{0};
-  uint32_t frame = s_frameCounter.fetch_add(1, std::memory_order_relaxed);
-  if ((frame % kRotateEveryNFrames) != 0) return;
-
-  std::lock_guard<std::mutex> lock(g_RotationMutex);
-  if (g_RotatingHooks.empty()) return;
-
-  auto& ghost = Ghost::HookManager::Get();
-  uint32_t count = static_cast<uint32_t>(g_RotatingHooks.size());
-  uint32_t idx = g_RotationIndex.fetch_add(2, std::memory_order_relaxed);
-  uint32_t idxA = idx % count;
-  uint32_t idxB = (idx + 1) % count;
-
-  auto& entryA = g_RotatingHooks[idxA];
-  uintptr_t addrA = entryA.address;
-  Ghost::HookCallback cbA = entryA.callback;
-
-  uintptr_t addrB = 0;
-  Ghost::HookCallback cbB = nullptr;
-  if (idxA != idxB) {
-    auto& entryB = g_RotatingHooks[idxB];
-    addrB = entryB.address;
-    cbB = entryB.callback;
-  }
-
-  // Batched swap: ONE thread enumeration instead of FOUR
-  ghost.SwapRotatingSlots(2, addrA, std::move(cbA), 3, addrB, std::move(cbB));
-}
-
-static void RegisterRotatingHook(uintptr_t address, Ghost::HookCallback callback, const char* name) {
-  if (!address) return;
-  std::lock_guard<std::mutex> lock(g_RotationMutex);
-  for (auto& entry : g_RotatingHooks) {
-    if (entry.address == address) return;
-  }
-  g_RotatingHooks.push_back({address, std::move(callback), name});
-  LOG_INFO("[GHOST] Registered rotating hook: {} @ {:p}", name, reinterpret_cast<void*>(address));
-}
-
 // ============================================================================
-// GHOST HOOK CALLBACKS - executed from VEH on hardware breakpoint
+// SWAPCHAIN SHADOW VTABLE HOOKS (stdcall wrappers)
 // ============================================================================
 
-// --- Present (pinned Dr0) ---
-static bool GhostCB_Present(CONTEXT* ctx, void* /*userData*/) {
-  auto* pSwapChain = reinterpret_cast<IDXGISwapChain*>(Ghost::GetArg1(ctx));
+static HRESULT STDMETHODCALLTYPE Hooked_Present(
+    IDXGISwapChain* pThis, UINT SyncInterval, UINT Flags) {
   try {
-    OnPresentThread(pSwapChain);
+    OnPresentThread(pThis);
   } catch (...) {
     static std::atomic<uint32_t> s_errs{0};
-    if (s_errs.fetch_add(1) % 300 == 0) LOG_ERROR("[GHOST] Exception in Present callback");
+    if (s_errs.fetch_add(1) % 300 == 0) LOG_ERROR("[ShadowVT] Exception in Present callback");
   }
   // Per-frame tick for Phase 3 subsystems
   DescriptorTracker_NewFrame();
   SamplerInterceptor_NewFrame();
-  AdvanceSlotRotation();
-  return true;
+  if (!g_OriginalPresent) return E_FAIL;
+  return g_OriginalPresent(pThis, SyncInterval, Flags);
 }
 
-// --- ExecuteCommandLists (pinned Dr1) ---
-static bool GhostCB_ExecuteCommandLists(CONTEXT* ctx, void* /*userData*/) {
-  auto* pThis = reinterpret_cast<ID3D12CommandQueue*>(Ghost::GetArg1(ctx));
+static HRESULT STDMETHODCALLTYPE Hooked_ResizeBuffers(
+    IDXGISwapChain* pThis, UINT BufferCount, UINT Width, UINT Height,
+    DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
+  try {
+    if (Width > 0 && Height > 0) {
+      ImGuiOverlay::Get().OnResize(Width, Height);
+      ResourceDetector::Get().SetExpectedDimensions(Width, Height);
+      LOG_INFO("[ShadowVT] ResizeBuffers: {}x{}", Width, Height);
+    } else {
+      LOG_DEBUG("[ShadowVT] ResizeBuffers: auto-size (0x0)");
+    }
+    ResetCameraScanCache();
+  } catch (...) {
+    LOG_ERROR("[ShadowVT] Exception in ResizeBuffers");
+  }
+  if (!g_OriginalResizeBuffers) return E_FAIL;
+  return g_OriginalResizeBuffers(pThis, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+}
+
+// ============================================================================
+// COMMAND QUEUE SHADOW VTABLE HOOKS (stdcall wrappers)
+// ============================================================================
+
+static void STDMETHODCALLTYPE Hooked_ExecuteCommandLists(
+    ID3D12CommandQueue* pThis, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists) {
+  // Call original first
+  if (g_OriginalExecuteCommandLists)
+    g_OriginalExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
 
   try {
     if (!StreamlineIntegration::Get().IsInitialized()) {
@@ -297,162 +255,213 @@ static bool GhostCB_ExecuteCommandLists(CONTEXT* ctx, void* /*userData*/) {
       StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
     }
   } catch (...) {
-    LOG_ERROR("[GHOST] Exception in ExecuteCommandLists callback");
+    LOG_ERROR("[ShadowVT] Exception in ExecuteCommandLists callback");
   }
-  return true;
 }
 
 // ============================================================================
-// PHASE 2: COMMAND LIST GHOST HOOK CALLBACKS (Rotating)
+// DEVICE SHADOW VTABLE HOOKS (stdcall wrappers)
+// ============================================================================
+// These replace the Ghost HW breakpoint rotating hooks. Each wrapper calls
+// the original vtable function, then executes hook logic.  Installed via
+// ShadowVTable::PatchEntry Ã¢â‚¬â€ 100% call capture, ~2ns overhead.
 // ============================================================================
 
-static bool GhostCB_ResourceBarrier(CONTEXT* ctx, void* /*userData*/) {
-  auto NumBarriers = static_cast<UINT>(Ghost::GetArg2(ctx));
-  auto* pBarriers = reinterpret_cast<const D3D12_RESOURCE_BARRIER*>(Ghost::GetArg3(ctx));
-
+static void STDMETHODCALLTYPE Hooked_CreateSRV(
+    ID3D12Device* pThis, ID3D12Resource* pResource,
+    const D3D12_SHADER_RESOURCE_VIEW_DESC* pDesc, D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+  if (g_OriginalCreateSRV) g_OriginalCreateSRV(pThis, pResource, pDesc, handle);
   try {
-    if (pBarriers && NumBarriers > 0) {
-      UINT scanCount = (std::min)(NumBarriers, static_cast<UINT>(resource_config::kBarrierScanMax));
-      for (UINT i = 0; i < scanCount; i++) {
-        if (pBarriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION) {
-          ID3D12Resource* pRes = pBarriers[i].Transition.pResource;
-          if (pRes) {
-            ResourceDetector::Get().RegisterResource(pRes, true);
-            D3D12_RESOURCE_STATES after = pBarriers[i].Transition.StateAfter;
-            if (after == D3D12_RESOURCE_STATE_DEPTH_WRITE || after == D3D12_RESOURCE_STATE_DEPTH_READ) {
-              ResourceDetector::Get().RegisterDepthFromView(pRes, DXGI_FORMAT_UNKNOWN);
-            }
-            // Phase 1.5: Track render targets transitioning to RENDER_TARGET state
-            // as potential pre-UI (HUD-less) scene buffers
-            if (after == D3D12_RESOURCE_STATE_RENDER_TARGET) {
-              ResourceDetector::Get().RegisterHUDLessCandidate(pRes);
-            }
-            ResourceStateTracker_RecordTransition(pRes, pBarriers[i].Transition.StateBefore,
-                                                  pBarriers[i].Transition.StateAfter);
-          }
+    if (pResource) {
+      DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
+      TrackDescriptorResource(handle, pResource, fmt);
+    }
+  } catch (...) {
+    LOG_ERROR("[ShadowVT] Exception in CreateSRV");
+  }
+}
+
+static void STDMETHODCALLTYPE Hooked_CreateUAV(
+    ID3D12Device* pThis, ID3D12Resource* pResource,
+    ID3D12Resource* pCounterResource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* pDesc,
+    D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+  if (g_OriginalCreateUAV) g_OriginalCreateUAV(pThis, pResource, pCounterResource, pDesc, handle);
+  try {
+    if (pResource) {
+      DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
+      TrackDescriptorResource(handle, pResource, fmt);
+    }
+  } catch (...) {
+    LOG_ERROR("[ShadowVT] Exception in CreateUAV");
+  }
+}
+
+static void STDMETHODCALLTYPE Hooked_CreateRTV(
+    ID3D12Device* pThis, ID3D12Resource* pResource,
+    const D3D12_RENDER_TARGET_VIEW_DESC* pDesc, D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+  if (g_OriginalCreateRTV) g_OriginalCreateRTV(pThis, pResource, pDesc, handle);
+  try {
+    if (pResource) {
+      DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
+      TrackDescriptorResource(handle, pResource, fmt);
+      ResourceDetector::Get().RegisterResource(pResource, true);
+    }
+  } catch (...) {
+    LOG_ERROR("[ShadowVT] Exception in CreateRTV");
+  }
+}
+
+static void STDMETHODCALLTYPE Hooked_CreateDSV(
+    ID3D12Device* pThis, ID3D12Resource* pResource,
+    const D3D12_DEPTH_STENCIL_VIEW_DESC* pDesc, D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+  if (g_OriginalCreateDSV) g_OriginalCreateDSV(pThis, pResource, pDesc, handle);
+  try {
+    if (pResource) {
+      DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
+      TrackDescriptorResource(handle, pResource, fmt);
+      ResourceDetector::Get().RegisterDepthFromView(pResource, fmt);
+    }
+  } catch (...) {
+    LOG_ERROR("[ShadowVT] Exception in CreateDSV");
+  }
+}
+
+static void STDMETHODCALLTYPE Hooked_CreateCBV(
+    ID3D12Device* pThis, const D3D12_CONSTANT_BUFFER_VIEW_DESC* pDesc,
+    D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+  if (g_OriginalCreateCBV) g_OriginalCreateCBV(pThis, pDesc, handle);
+  try {
+    if (pDesc) {
+      TrackCbvDescriptor(handle, pDesc);
+    }
+  } catch (...) {
+    LOG_ERROR("[ShadowVT] Exception in CreateCBV");
+  }
+}
+
+static void STDMETHODCALLTYPE Hooked_CreateSampler(
+    ID3D12Device* pThis, const D3D12_SAMPLER_DESC* pDesc,
+    D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+  if (g_OriginalCreateSampler) g_OriginalCreateSampler(pThis, pDesc, handle);
+  try {
+    if (pDesc && pThis && handle.ptr) {
+      RegisterSampler(*pDesc, handle, pThis);
+    }
+  } catch (...) {
+    LOG_ERROR("[ShadowVT] Exception in CreateSampler");
+  }
+}
+
+static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(
+    ID3D12Device* pThis, const D3D12_DESCRIPTOR_HEAP_DESC* pDesc,
+    REFIID riid, void** ppvHeap) {
+  HRESULT hr = E_FAIL;
+  if (g_OriginalCreateDescriptorHeap) hr = g_OriginalCreateDescriptorHeap(pThis, pDesc, riid, ppvHeap);
+  try {
+    if (pDesc && pThis) {
+      static std::atomic<uint32_t> s_heapCount{0};
+      uint32_t count = s_heapCount.fetch_add(1, std::memory_order_relaxed);
+      if (count < 50) {
+        LOG_DEBUG("[ShadowVT] CreateDescriptorHeap: Type={}, NumDescriptors={}, Flags={}",
+                  static_cast<int>(pDesc->Type), pDesc->NumDescriptors, static_cast<int>(pDesc->Flags));
+      }
+    }
+  } catch (...) {
+    LOG_ERROR("[ShadowVT] Exception in CreateDescriptorHeap");
+  }
+  return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE Hooked_CreateCommittedResource(
+    ID3D12Device* pThis, const D3D12_HEAP_PROPERTIES* pHeapProperties,
+    D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC* pDesc,
+    D3D12_RESOURCE_STATES InitialResourceState,
+    const D3D12_CLEAR_VALUE* pOptimizedClearValue, REFIID riidResource,
+    void** ppvResource) {
+  HRESULT hr = E_FAIL;
+  if (g_OriginalCreateCommittedResource)
+    hr = g_OriginalCreateCommittedResource(pThis, pHeapProperties, HeapFlags, pDesc,
+                                            InitialResourceState, pOptimizedClearValue,
+                                            riidResource, ppvResource);
+  try {
+    if (pDesc) {
+      bool isRT = (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0;
+      bool isDS = (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0;
+      bool isUAV = (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0;
+      if ((isRT || isDS || isUAV) && pDesc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+        static std::atomic<uint32_t> s_logCount{0};
+        if (s_logCount.fetch_add(1, std::memory_order_relaxed) < 100) {
+          LOG_DEBUG("[ShadowVT] CreateCommittedResource: {}x{} Fmt={} RT={} DS={} UAV={}",
+                    static_cast<uint32_t>(pDesc->Width), pDesc->Height,
+                    static_cast<int>(pDesc->Format), isRT, isDS, isUAV);
         }
       }
     }
   } catch (...) {
-    LOG_ERROR("[GHOST] Exception in ResourceBarrier callback");
+    LOG_ERROR("[ShadowVT] Exception in CreateCommittedResource");
   }
-  return true;
+  return hr;
 }
 
-static bool GhostCB_Close(CONTEXT* ctx, void* /*userData*/) {
+static HRESULT STDMETHODCALLTYPE Hooked_CreatePlacedResource(
+    ID3D12Device* pThis, ID3D12Heap* pHeap, UINT64 HeapOffset,
+    const D3D12_RESOURCE_DESC* pDesc, D3D12_RESOURCE_STATES InitialState,
+    const D3D12_CLEAR_VALUE* pOptimizedClearValue, REFIID riid, void** ppvResource) {
+  HRESULT hr = E_FAIL;
+  if (g_OriginalCreatePlacedResource)
+    hr = g_OriginalCreatePlacedResource(pThis, pHeap, HeapOffset, pDesc,
+                                         InitialState, pOptimizedClearValue, riid, ppvResource);
   try {
-    float patternX = 0.0f, patternY = 0.0f;
-    bool hasPattern = TryGetPatternJitter(patternX, patternY);
-
-    uint64_t currentFrame = ResourceDetector::Get().GetFrameCount();
-    static std::atomic<uint64_t> s_lastScanFrame{0};
-
-    uint64_t lastScan = s_lastScanFrame.load(std::memory_order_relaxed);
-    if (currentFrame > lastScan &&
-        s_lastScanFrame.compare_exchange_strong(lastScan, currentFrame, std::memory_order_relaxed)) {
-      float view[16], proj[16], score = 0.0f;
-      bool found = TryScanAllCbvsForCamera(view, proj, &score, false, true);
-      if (!found) found = TryScanDescriptorCbvsForCamera(view, proj, &score, false);
-      if (!found) found = TryScanRootCbvsForCamera(view, proj, &score, false);
-
-      // Phase 4: Three-tier jitter with validation & smoothing
-      float pX = hasPattern ? patternX : std::numeric_limits<float>::quiet_NaN();
-      float pY = hasPattern ? patternY : std::numeric_limits<float>::quiet_NaN();
-      JitterResult jitter = JitterEngine_Update(pX, pY, found ? proj : nullptr);
-
-      if (found) {
-        UpdateCameraCache(view, proj, jitter.x, jitter.y);
-        // Phase 1.4: Cache successful camera data for fallback
-        StreamlineIntegration::Get().CacheCameraData(view, proj);
-        StreamlineIntegration::Get().SetCameraData(view, proj, jitter.x, jitter.y);
-      } else {
-        // Phase 1.4: Try cached camera data before sending null matrices
-        float cachedView[16], cachedProj[16];
-        if (StreamlineIntegration::Get().GetCachedCameraData(cachedView, cachedProj)) {
-          StreamlineIntegration::Get().SetCameraData(cachedView, cachedProj, jitter.x, jitter.y);
-          static uint64_t s_cacheHits = 0;
-          if (s_cacheHits++ % 300 == 0) {
-            LOG_INFO("[Camera] Using cached camera data (scanner missed {} consecutive frames)", s_cacheHits);
-          }
-        } else {
-          StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitter.x, jitter.y);
+    if (pDesc && pDesc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+      bool isRT = (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0;
+      bool isDS = (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0;
+      if (isRT || isDS) {
+        static std::atomic<uint32_t> s_logCount{0};
+        if (s_logCount.fetch_add(1, std::memory_order_relaxed) < 50) {
+          LOG_DEBUG("[ShadowVT] CreatePlacedResource: {}x{} Fmt={} RT={} DS={}",
+                    static_cast<uint32_t>(pDesc->Width), pDesc->Height,
+                    static_cast<int>(pDesc->Format), isRT, isDS);
         }
       }
     }
   } catch (...) {
-    LOG_ERROR("[GHOST] Exception in Close callback");
+    LOG_ERROR("[ShadowVT] Exception in CreatePlacedResource");
   }
-  return true;
+  return hr;
 }
 
-static bool GhostCB_SetGraphicsRootCbv(CONTEXT* ctx, void* /*userData*/) {
-  // Fix 4: Only track CBVs bound to root parameter 0 or 1. ACV's camera CBV is
-  // almost always at these slots. Filtering here eliminates 99.9% of WC memory
-  // reads that were choking the PCIe bus in the camera scanner.
-  auto RootParameterIndex = static_cast<UINT>(Ghost::GetArg2(ctx));
-  auto BufferLocation = static_cast<D3D12_GPU_VIRTUAL_ADDRESS>(Ghost::GetArg3(ctx));
+// Resource::Map hook Ã¢â‚¬â€ captures upload buffer CPU pointers for camera scanning
+static HRESULT STDMETHODCALLTYPE Hooked_ResourceMap(
+    ID3D12Resource* pThis, UINT Subresource, const D3D12_RANGE* pReadRange,
+    void** ppData) {
+  HRESULT hr = E_FAIL;
+  if (g_OriginalResourceMap) hr = g_OriginalResourceMap(pThis, Subresource, pReadRange, ppData);
   try {
-    if (RootParameterIndex <= 1) {
-      TrackRootCbvAddress(BufferLocation);
+    if (!pThis || Subresource != 0) return hr;
+    D3D12_RESOURCE_DESC desc = pThis->GetDesc();
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER) return hr;
+    if (desc.Width < camera_config::kCbvMinSize) return hr;
+
+    if (SUCCEEDED(hr) && ppData && *ppData) {
+      RegisterCbv(pThis, static_cast<UINT64>(desc.Width),
+                  reinterpret_cast<uint8_t*>(*ppData));
+      static std::atomic<uint32_t> s_logCountMap{0};
+      if (s_logCountMap.fetch_add(1, std::memory_order_relaxed) < 10) {
+        LOG_INFO("[CAM] Registered upload buffer GPU:0x{:x} Size:{} via Map hook",
+                 pThis->GetGPUVirtualAddress(), desc.Width);
+      }
     }
   } catch (...) {
-    LOG_ERROR("[GHOST] Exception in SetGraphicsRootCbv");
+    LOG_ERROR("[ShadowVT] Exception in ResourceMap");
   }
-  return true;
+  return hr;
 }
 
-static bool GhostCB_SetComputeRootCbv(CONTEXT* ctx, void* /*userData*/) {
-  // Fix 4: Same root parameter filtering as graphics path.
-  auto RootParameterIndex = static_cast<UINT>(Ghost::GetArg2(ctx));
-  auto BufferLocation = static_cast<D3D12_GPU_VIRTUAL_ADDRESS>(Ghost::GetArg3(ctx));
-  try {
-    if (RootParameterIndex <= 1) {
-      TrackRootCbvAddress(BufferLocation);
-    }
-  } catch (...) {
-    LOG_ERROR("[GHOST] Exception in SetComputeRootCbv");
-  }
-  return true;
-}
-
-static bool GhostCB_ClearDSV(CONTEXT* ctx, void* /*userData*/) {
-  D3D12_CPU_DESCRIPTOR_HANDLE dsv;
-  dsv.ptr = static_cast<SIZE_T>(Ghost::GetArg2(ctx));
-  try {
-    ID3D12Resource* pResource = nullptr;
-    DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
-    if (TryResolveDescriptorResource(dsv, &pResource, &fmt) && pResource) {
-      ResourceDetector::Get().RegisterDepthFromClear(pResource, 1.0f);
-    }
-  } catch (...) {
-    LOG_ERROR("[GHOST] Exception in ClearDSV");
-  }
-  return true;
-}
-
-static bool GhostCB_ClearRTV(CONTEXT* ctx, void* /*userData*/) {
-  D3D12_CPU_DESCRIPTOR_HANDLE rtv;
-  rtv.ptr = static_cast<SIZE_T>(Ghost::GetArg2(ctx));
-  try {
-    ID3D12Resource* pResource = nullptr;
-    DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
-    if (TryResolveDescriptorResource(rtv, &pResource, &fmt) && pResource) {
-      ResourceDetector::Get().RegisterColorFromClear(pResource);
-    }
-  } catch (...) {
-    LOG_ERROR("[GHOST] Exception in ClearRTV");
-  }
-  return true;
-}
-
-// ============================================================================
-// P0 FIX 1: COMMAND LIST SHADOW VTABLE HOOKS (stdcall wrappers)
-// ============================================================================
-// These replace the HWBP rotating hooks for command list methods.
-// Each wrapper calls the original vtable function first, then executes
-// the same hook logic. Installed via ShadowVTable — 100% call capture,
-// zero VEH/kernel overhead.
-// ============================================================================
+// Fix 1.4: Hooked_ResourceRelease REMOVED — no longer needed.
+// With SetPrivateDataInterface, the D3D12 runtime automatically calls
+// GhostTrackerTag::Release() when a resource is destroyed. The old approach
+// of intercepting IUnknown::Release and probing refcounts was fragile and
+// required the global mutex-based ResourceLifetimeTracker.
 
 static void** g_CmdListShadowVTable = nullptr;
 static size_t g_CmdListVTableSize = 0;
@@ -652,292 +661,9 @@ void InstallCommandListShadowVTable(ID3D12GraphicsCommandList* pList) {
   *reinterpret_cast<void**>(pList) = g_CmdListShadowVTable;
 }
 
-// ============================================================================
-// DEVICE VIEW-CREATION GHOST CALLBACKS (Rotating)
-// ============================================================================
-
-static bool GhostCB_CreateSRV(CONTEXT* ctx, void* /*userData*/) {
-  auto* pResource = reinterpret_cast<ID3D12Resource*>(Ghost::GetArg2(ctx));
-  auto* pDesc = reinterpret_cast<const D3D12_SHADER_RESOURCE_VIEW_DESC*>(Ghost::GetArg3(ctx));
-  D3D12_CPU_DESCRIPTOR_HANDLE handle;
-  handle.ptr = static_cast<SIZE_T>(Ghost::GetArg4(ctx));
-  try {
-    if (pResource) {
-      DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
-      TrackDescriptorResource(handle, pResource, fmt);
-    }
-  } catch (...) {
-    LOG_ERROR("[GHOST] Exception in CreateSRV");
-  }
-  return true;
-}
-
-static bool GhostCB_CreateUAV(CONTEXT* ctx, void* /*userData*/) {
-  auto* pResource = reinterpret_cast<ID3D12Resource*>(Ghost::GetArg2(ctx));
-  // UAV: pDesc is arg4 (R9), DestDescriptor is arg5 (stack RSP+0x28)
-  auto* pDesc = reinterpret_cast<const D3D12_UNORDERED_ACCESS_VIEW_DESC*>(Ghost::GetArg4(ctx));
-#ifdef _WIN64
-  D3D12_CPU_DESCRIPTOR_HANDLE handle;
-  handle.ptr = *reinterpret_cast<SIZE_T*>(ctx->Rsp + 0x28);
-#else
-  D3D12_CPU_DESCRIPTOR_HANDLE handle;
-  handle.ptr = *reinterpret_cast<SIZE_T*>(ctx->Esp + 0x18);
-#endif
-  try {
-    if (pResource) {
-      DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
-      TrackDescriptorResource(handle, pResource, fmt);
-    }
-  } catch (...) {
-    LOG_ERROR("[GHOST] Exception in CreateUAV");
-  }
-  return true;
-}
-
-static bool GhostCB_CreateRTV(CONTEXT* ctx, void* /*userData*/) {
-  auto* pResource = reinterpret_cast<ID3D12Resource*>(Ghost::GetArg2(ctx));
-  auto* pDesc = reinterpret_cast<const D3D12_RENDER_TARGET_VIEW_DESC*>(Ghost::GetArg3(ctx));
-  D3D12_CPU_DESCRIPTOR_HANDLE handle;
-  handle.ptr = static_cast<SIZE_T>(Ghost::GetArg4(ctx));
-  try {
-    if (pResource) {
-      DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
-      TrackDescriptorResource(handle, pResource, fmt);
-      ResourceDetector::Get().RegisterResource(pResource, true);
-    }
-  } catch (...) {
-    LOG_ERROR("[GHOST] Exception in CreateRTV");
-  }
-  return true;
-}
-
-static bool GhostCB_CreateDSV(CONTEXT* ctx, void* /*userData*/) {
-  auto* pResource = reinterpret_cast<ID3D12Resource*>(Ghost::GetArg2(ctx));
-  auto* pDesc = reinterpret_cast<const D3D12_DEPTH_STENCIL_VIEW_DESC*>(Ghost::GetArg3(ctx));
-  D3D12_CPU_DESCRIPTOR_HANDLE handle;
-  handle.ptr = static_cast<SIZE_T>(Ghost::GetArg4(ctx));
-  try {
-    if (pResource) {
-      DXGI_FORMAT fmt = pDesc ? pDesc->Format : DXGI_FORMAT_UNKNOWN;
-      TrackDescriptorResource(handle, pResource, fmt);
-      ResourceDetector::Get().RegisterDepthFromView(pResource, fmt);
-    }
-  } catch (...) {
-    LOG_ERROR("[GHOST] Exception in CreateDSV");
-  }
-  return true;
-}
-
-// Phase 2.5: NEW CreateConstantBufferView hook
-static bool GhostCB_CreateCBV(CONTEXT* ctx, void* /*userData*/) {
-  auto* pDesc = reinterpret_cast<const D3D12_CONSTANT_BUFFER_VIEW_DESC*>(Ghost::GetArg2(ctx));
-  D3D12_CPU_DESCRIPTOR_HANDLE handle;
-  handle.ptr = static_cast<SIZE_T>(Ghost::GetArg3(ctx));
-  try {
-    if (pDesc) {
-      TrackCbvDescriptor(handle, pDesc);
-    }
-  } catch (...) {
-    LOG_ERROR("[GHOST] Exception in CreateCBV");
-  }
-  return true;
-}
-
-// Camera detection: ID3D12Resource::Map hook — captures upload buffer CPU pointers
-static bool GhostCB_ResourceMap(CONTEXT* ctx, void* /*userData*/) {
-  // Pre-call hook: Arg1=this (ID3D12Resource*), Arg2=Subresource, Arg3=pReadRange, Arg4=ppData
-  auto* pResource = reinterpret_cast<ID3D12Resource*>(Ghost::GetArg1(ctx));
-  try {
-    if (!pResource) return true;
-
-    // Only track subresource 0 (the buffer itself)
-    UINT subresource = static_cast<UINT>(Ghost::GetArg2(ctx));
-    if (subresource != 0) return true;
-
-    // Check if this is a buffer (constant buffers are DIMENSION_BUFFER)
-    D3D12_RESOURCE_DESC desc = pResource->GetDesc();
-    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER) return true;
-
-    // Only track buffers >= kCbvMinSize (128 bytes for 2 matrices)
-    if (desc.Width < camera_config::kCbvMinSize) return true;
-
-    // To get the CPU pointer, we do our own Map call (ref-counted for upload heaps).
-    // This is safe because D3D12 upload heaps support persistent/concurrent mapping.
-    void* cpuPtr = nullptr;
-    D3D12_RANGE readRange = {0, 0}; // We're not reading, just getting the pointer
-    HRESULT hr = pResource->Map(0, &readRange, &cpuPtr);
-    if (SUCCEEDED(hr) && cpuPtr) {
-      RegisterCbv(pResource, static_cast<UINT64>(desc.Width), reinterpret_cast<uint8_t*>(cpuPtr));
-      // Unmap our extra ref (the game's Map will keep it mapped)
-      pResource->Unmap(0, nullptr);
-
-      static std::atomic<uint32_t> s_logCountMap{0};
-      if (s_logCountMap.fetch_add(1, std::memory_order_relaxed) < 10) {
-        LOG_INFO("[CAM] Registered upload buffer GPU:0x{:x} Size:{} via Map hook", pResource->GetGPUVirtualAddress(),
-                 desc.Width);
-      }
-    }
-  } catch (...) {
-    LOG_ERROR("[GHOST] Exception in ResourceMap");
-  }
-  return true;
-}
 
 // ============================================================================
-// PHASE 3: NEW GHOST HOOK CALLBACKS - completing roadmap 0.2
-// ============================================================================
-
-// --- CreateSampler (Rotating) ---
-static bool GhostCB_CreateSampler(CONTEXT* ctx, void* /*userData*/) {
-  auto* pDevice = reinterpret_cast<ID3D12Device*>(Ghost::GetArg1(ctx));
-  auto* pDesc = reinterpret_cast<const D3D12_SAMPLER_DESC*>(Ghost::GetArg2(ctx));
-  D3D12_CPU_DESCRIPTOR_HANDLE handle;
-  handle.ptr = static_cast<SIZE_T>(Ghost::GetArg3(ctx));
-  try {
-    if (pDesc && pDevice && handle.ptr) {
-      RegisterSampler(*pDesc, handle, pDevice);
-    }
-  } catch (...) {
-    LOG_ERROR("[GHOST] Exception in CreateSampler");
-  }
-  return true;
-}
-
-// --- CreateDescriptorHeap (Rotating) ---
-static bool GhostCB_CreateDescriptorHeap(CONTEXT* ctx, void* /*userData*/) {
-  // We intercept at entry. The heap is not created yet, but we can track
-  // descriptor heaps when they are used by view-creation hooks.
-  // This callback is a pre-call observer: we log the creation request.
-  auto* pDevice = reinterpret_cast<ID3D12Device*>(Ghost::GetArg1(ctx));
-  auto* pDesc = reinterpret_cast<const D3D12_DESCRIPTOR_HEAP_DESC*>(Ghost::GetArg2(ctx));
-  try {
-    if (pDesc && pDevice) {
-      static std::atomic<uint32_t> s_heapCount{0};
-      uint32_t count = s_heapCount.fetch_add(1, std::memory_order_relaxed);
-      if (count < 50) { // Log first 50 heaps
-        LOG_DEBUG("[GHOST] CreateDescriptorHeap: Type={}, NumDescriptors={}, Flags={}", static_cast<int>(pDesc->Type),
-                  pDesc->NumDescriptors, static_cast<int>(pDesc->Flags));
-      }
-    }
-  } catch (...) {
-    LOG_ERROR("[GHOST] Exception in CreateDescriptorHeap");
-  }
-  return true;
-}
-
-// --- CreateCommittedResource (Rotating) ---
-static bool GhostCB_CreateCommittedResource(CONTEXT* ctx, void* /*userData*/) {
-  // Pre-call observer: extract resource description for early classification.
-  // Arg1=pDevice, Arg2=pHeapProperties, Arg3=HeapFlags, Arg4=pDesc(R9)
-  auto* pDesc = reinterpret_cast<const D3D12_RESOURCE_DESC*>(Ghost::GetArg4(ctx));
-  try {
-    if (pDesc) {
-      // Early classification: log large render targets and depth buffers
-      bool isRT = (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0;
-      bool isDS = (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0;
-      bool isUAV = (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0;
-      if ((isRT || isDS || isUAV) && pDesc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
-        static std::atomic<uint32_t> s_logCount{0};
-        if (s_logCount.fetch_add(1, std::memory_order_relaxed) < 100) {
-          LOG_DEBUG("[GHOST] CreateCommittedResource: {}x{} Fmt={} RT={} DS={} UAV={}",
-                    static_cast<uint32_t>(pDesc->Width), pDesc->Height, static_cast<int>(pDesc->Format), isRT, isDS,
-                    isUAV);
-        }
-      }
-    }
-  } catch (...) {
-    LOG_ERROR("[GHOST] Exception in CreateCommittedResource");
-  }
-  return true;
-}
-
-// --- CreatePlacedResource (Rotating) ---
-static bool GhostCB_CreatePlacedResource(CONTEXT* ctx, void* /*userData*/) {
-  // Pre-call observer: pDesc is arg4 (R9) for CreatePlacedResource
-  // Arg1=pDevice, Arg2=pHeap, Arg3=HeapOffset, Arg4=pDesc(R9)
-  auto* pDesc = reinterpret_cast<const D3D12_RESOURCE_DESC*>(Ghost::GetArg4(ctx));
-  try {
-    if (pDesc && pDesc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
-      bool isRT = (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0;
-      bool isDS = (pDesc->Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0;
-      if (isRT || isDS) {
-        static std::atomic<uint32_t> s_logCount{0};
-        if (s_logCount.fetch_add(1, std::memory_order_relaxed) < 50) {
-          LOG_DEBUG("[GHOST] CreatePlacedResource: {}x{} Fmt={} RT={} DS={}", static_cast<uint32_t>(pDesc->Width),
-                    pDesc->Height, static_cast<int>(pDesc->Format), isRT, isDS);
-        }
-      }
-    }
-  } catch (...) {
-    LOG_ERROR("[GHOST] Exception in CreatePlacedResource");
-  }
-  return true;
-}
-
-// --- CreateCommandList (Rotating → Shadow VTable Patcher) ---
-static bool GhostCB_CreateCommandList(CONTEXT* ctx, void* /*userData*/) {
-  // P0 Fix 1: After CreateCommandList returns, patch the newly created list
-  // with our shadow vtable. This ensures 100% hook coverage for all
-  // command list methods without any HWBP rotation overhead.
-  //
-  // Note: This is a PRE-call hook (fires at entry). We capture the output
-  // pointer location here. The actual patching happens on the NEXT call or
-  // via EnsureD3D12VTableHooks' initial temporary list.
-  try {
-    static std::atomic<uint64_t> s_cmdListCreated{0};
-    uint64_t count = s_cmdListCreated.fetch_add(1, std::memory_order_relaxed);
-    if (count % 1000 == 0 && count > 0) {
-      LOG_DEBUG("[ShadowVT] CommandList creation milestone: {} total", count);
-    }
-  } catch (...) {
-    LOG_ERROR("[GHOST] Exception in CreateCommandList");
-  }
-  return true;
-}
-
-// --- CreateCommandQueue (Rotating) ---
-static bool GhostCB_CreateCommandQueue(CONTEXT* /*ctx*/, void* /*userData*/) {
-  // Pre-call observer: queue vtables are already captured from
-  // the initial temporary object in EnsureD3D12VTableHooks. This hook
-  // serves as a diagnostic counter.
-  try {
-    static std::atomic<uint64_t> s_queueCreated{0};
-    uint64_t count = s_queueCreated.fetch_add(1, std::memory_order_relaxed);
-    if (count > 0) {
-      LOG_DEBUG("[GHOST] CommandQueue created (total: {})", count);
-    }
-  } catch (...) {
-    LOG_ERROR("[GHOST] Exception in CreateCommandQueue");
-  }
-  return true;
-}
-
-// --- ResizeBuffers (Rotating) ---
-static bool GhostCB_ResizeBuffers(CONTEXT* ctx, void* /*userData*/) {
-  // Arg1=pSwapChain, Arg2=BufferCount, Arg3=Width, Arg4=Height
-  // Stack: NewFormat(RSP+0x28), Flags(RSP+0x30)
-  auto Width = static_cast<UINT>(Ghost::GetArg3(ctx));
-  auto Height = static_cast<UINT>(Ghost::GetArg4(ctx));
-  try {
-    // Notify overlay of pending resize
-    if (Width > 0 && Height > 0) {
-      ImGuiOverlay::Get().OnResize(Width, Height);
-      ResourceDetector::Get().SetExpectedDimensions(Width, Height);
-      LOG_INFO("[GHOST] ResizeBuffers: {}x{}", Width, Height);
-    } else {
-      LOG_DEBUG("[GHOST] ResizeBuffers: auto-size (0x0)");
-    }
-
-    // Reset camera scan cache on resolution change
-    ResetCameraScanCache();
-  } catch (...) {
-    LOG_ERROR("[GHOST] Exception in ResizeBuffers");
-  }
-  return true;
-}
-
-// ============================================================================
-// DEVICE HOOK INSTALLATION - captures vtable pointers + registers ghost hooks
+// DEVICE HOOK INSTALLATION Ã¢â‚¬â€ captures vtable pointers + patches shadow vtable
 // ============================================================================
 
 static void CaptureDeviceVTablePointers(ID3D12Device* pDevice) {
@@ -966,13 +692,11 @@ static void CaptureDeviceVTablePointers(ID3D12Device* pDevice) {
   g_OriginalCreateDescriptorHeap = reinterpret_cast<PFN_CreateDescriptorHeap>(
       GetVTableEntry<void*, vtable::Device>(devVt, vtable::Device::CreateDescriptorHeap));
 
-  // Fix 3: Install shadow vtable on device — all hooks fire 100% reliably
-  // instead of cycling through 2 HWBP slots (missing ~85% of calls).
-  // Device vtable has ~44 entries up to CreatePlacedResource (index 29).
+  // Install shadow vtable on device Ã¢â‚¬â€ all hooks fire 100% reliably.
   constexpr size_t kDeviceVTableSize = 45;
   ShadowVTable::Install(pDevice, kDeviceVTableSize);
 
-  // Patch each hook into the shadow vtable
+  // Patch each hook into the shadow vtable via stdcall wrappers
   auto patchDevice = [pDevice](auto vtIdx, void* hookFn, const char* name) {
     size_t idx = static_cast<size_t>(vtIdx);
     void* orig = ShadowVTable::PatchEntry(pDevice, idx, hookFn);
@@ -980,49 +704,44 @@ static void CaptureDeviceVTablePointers(ID3D12Device* pDevice) {
     return orig;
   };
 
-  // We need stdcall wrapper functions for shadow vtable hooks (not ghost hook callbacks)
-  // The ghost callbacks work with CONTEXT*, but shadow vtable hooks are direct vtable calls.
-  // For now, keep the rotating hooks for compatibility since the ghost callbacks use CONTEXT*.
-  // The shadow vtable ensures they are always reachable via the vtable pointer.
+  patchDevice(vtable::Device::CreateShaderResourceView,
+              reinterpret_cast<void*>(Hooked_CreateSRV), "CreateSRV");
+  patchDevice(vtable::Device::CreateUnorderedAccessView,
+              reinterpret_cast<void*>(Hooked_CreateUAV), "CreateUAV");
+  patchDevice(vtable::Device::CreateRenderTargetView,
+              reinterpret_cast<void*>(Hooked_CreateRTV), "CreateRTV");
+  patchDevice(vtable::Device::CreateDepthStencilView,
+              reinterpret_cast<void*>(Hooked_CreateDSV), "CreateDSV");
+  patchDevice(vtable::Device::CreateConstantBufferView,
+              reinterpret_cast<void*>(Hooked_CreateCBV), "CreateCBV");
+  patchDevice(vtable::Device::CreateSampler,
+              reinterpret_cast<void*>(Hooked_CreateSampler), "CreateSampler");
+  patchDevice(vtable::Device::CreateDescriptorHeap,
+              reinterpret_cast<void*>(Hooked_CreateDescriptorHeap), "CreateDescHeap");
+  patchDevice(vtable::Device::CreateCommittedResource,
+              reinterpret_cast<void*>(Hooked_CreateCommittedResource), "CreateCommitted");
+  patchDevice(vtable::Device::CreatePlacedResource,
+              reinterpret_cast<void*>(Hooked_CreatePlacedResource), "CreatePlaced");
 
-  // Register as rotating ghost hooks — but now with shadow vtable backup,
-  // they will always be reachable for vtable-based callers.
-  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateSRV), GhostCB_CreateSRV, "CreateSRV");
-  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateUAV), GhostCB_CreateUAV, "CreateUAV");
-  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateRTV), GhostCB_CreateRTV, "CreateRTV");
-  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateDSV), GhostCB_CreateDSV, "CreateDSV");
-  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateCBV), GhostCB_CreateCBV, "CreateCBV");
-
-  // Register new Phase 3 rotating hooks
-  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateSampler), GhostCB_CreateSampler, "CreateSampler");
-  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateDescriptorHeap), GhostCB_CreateDescriptorHeap,
-                       "CreateDescHeap");
-  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateCommittedResource), GhostCB_CreateCommittedResource,
-                       "CreateCommitted");
-  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreatePlacedResource), GhostCB_CreatePlacedResource,
-                       "CreatePlaced");
-  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateCommandList), GhostCB_CreateCommandList,
-                       "CreateCmdList");
-  RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalCreateCommandQueue), GhostCB_CreateCommandQueue,
-                       "CreateCmdQueue");
-
-  LOG_INFO("[GHOST] Device hooks installed via shadow vtable + rotating HWBP ({} hooks)", g_RotatingHooks.size());
 }
+
+
+
+
 
 static void CaptureCommandQueueVTable(ID3D12CommandQueue* pQueue) {
   if (s_cmdQueueHooked.exchange(true)) return;
 
   void** queueVt = GetVTable(pQueue);
-  auto fnExecCmdLists = reinterpret_cast<uintptr_t>(
+  g_OriginalExecuteCommandLists = reinterpret_cast<PFN_ExecuteCommandLists>(
       GetVTableEntry<void*, vtable::CommandQueue>(queueVt, vtable::CommandQueue::ExecuteCommandLists));
-  g_OriginalExecuteCommandLists = reinterpret_cast<PFN_ExecuteCommandLists>(fnExecCmdLists);
 
-  auto& ghost = Ghost::HookManager::Get();
-  g_PinnedSlot1 = ghost.InstallHook(fnExecCmdLists, GhostCB_ExecuteCommandLists);
-  if (g_PinnedSlot1 >= 0)
-    LOG_INFO("[GHOST] ExecuteCommandLists pinned to Dr{}", g_PinnedSlot1);
-  else
-    LOG_ERROR("[GHOST] Failed to pin ExecuteCommandLists");
+  // Install shadow vtable on CommandQueue Ã¢â‚¬â€ ExecuteCommandLists via stdcall wrapper
+  constexpr size_t kQueueVTableSize = 19; // ID3D12CommandQueue has ~19 methods
+  ShadowVTable::Install(pQueue, kQueueVTableSize);
+  ShadowVTable::PatchEntry(pQueue, static_cast<size_t>(vtable::CommandQueue::ExecuteCommandLists),
+                           reinterpret_cast<void*>(Hooked_ExecuteCommandLists));
+  LOG_INFO("[ShadowVT] CommandQueue ExecuteCommandLists installed via shadow vtable");
 }
 
 static void CaptureCommandListVTable(ID3D12GraphicsCommandList* pList) {
@@ -1031,7 +750,7 @@ static void CaptureCommandListVTable(ID3D12GraphicsCommandList* pList) {
   // P0 Fix 1: Install shadow vtable on the first command list. This captures
   // the original function pointers AND patches the vtable in one step.
   // All subsequent command lists will use the same shared shadow vtable.
-  // NO rotating hooks needed — 100% call capture, zero VEH overhead.
+  // NO rotating hooks needed Ã¢â‚¬â€ 100% call capture, zero VEH overhead.
   InstallCommandListShadowVTable(pList);
 
   LOG_INFO("[ShadowVT] CommandList vtable captured via shadow vtable (6 hooks, 0 rotating)");
@@ -1045,7 +764,7 @@ void EnsureD3D12VTableHooks(ID3D12Device* pDevice) {
   if (!pDevice) return;
   if (s_deviceHooked.exchange(true)) return;
 
-  Ghost::HookManager::Get().Initialize();
+  // Shadow VTable architecture: no Ghost::HookManager needed.
   CaptureDeviceVTablePointers(pDevice);
 
   // Create temporary objects to capture their vtables
@@ -1087,52 +806,33 @@ void EnsureD3D12VTableHooks(ID3D12Device* pDevice) {
       void** resVt = GetVTable(tmpUpload.Get());
       g_OriginalResourceMap =
           reinterpret_cast<PFN_ResourceMap>(GetVTableEntry<void*, vtable::Resource>(resVt, vtable::Resource::Map));
+      g_OriginalResourceRelease = reinterpret_cast<PFN_Release>(resVt[2]);
+
+      // Install shadow vtable on the resource to patch Map and Release
+      constexpr size_t kResourceVTableSize = 12; // ID3D12Resource has ~12 methods
+      ShadowVTable::Install(tmpUpload.Get(), kResourceVTableSize);
+
       if (g_OriginalResourceMap) {
-        RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalResourceMap), GhostCB_ResourceMap, "ResourceMap");
-        LOG_INFO("[GHOST] Resource::Map hook registered for camera CBV tracking");
+        ShadowVTable::PatchEntry(tmpUpload.Get(), static_cast<size_t>(vtable::Resource::Map),
+                                 reinterpret_cast<void*>(Hooked_ResourceMap));
+        LOG_INFO("[ShadowVT] Resource::Map hook installed for camera CBV tracking");
       }
 
-      // Fix 1: Hook IUnknown::Release (vtable index 2) for deterministic
-      // resource lifetime tracking. When Release drops refcount to 0,
-      // we notify ResourceLifetimeTracker to purge the pointer.
-      g_OriginalResourceRelease = reinterpret_cast<PFN_Release>(resVt[2]);
-      if (g_OriginalResourceRelease) {
-        RegisterRotatingHook(reinterpret_cast<uintptr_t>(g_OriginalResourceRelease),
-          [](CONTEXT* ctx, void* /*userData*/) -> bool {
-            auto* pResource = reinterpret_cast<ID3D12Resource*>(Ghost::GetArg1(ctx));
-            try {
-              if (pResource && ResourceLifetimeTracker::Get().IsTracked(pResource)) {
-                // Peek at the refcount before the Release happens.
-                // AddRef + Release gives us the count before this Release.
-                ULONG refBefore = pResource->AddRef();
-                pResource->Release();
-                // If refBefore was 2, this Release will drop it to 0
-                // (our AddRef brought it from 1 to 2, our Release back to 1,
-                // then the original Release will drop to 0).
-                if (refBefore <= 2) {
-                  ResourceLifetimeTracker::Get().NotifyReleased(pResource);
-                }
-              }
-            } catch (...) {
-              // Silently ignore — the resource may already be partially destroyed
-            }
-            return true; // Continue to original Release
-          },
-          "ResourceRelease");
-        LOG_INFO("[GHOST] Resource::Release hook registered for lifetime tracking");
-      }
+      // Fix 1.4: Resource::Release hook REMOVED — SetPrivateDataInterface
+      // handles lifecycle automatically via GhostTrackerTag.
+      // The old Hooked_ResourceRelease was a fragile refcount-probing
+      // workaround that required the global mutex.
     } else {
-      LOG_WARN("[GHOST] Failed to create temp upload buffer for Resource vtable capture");
+      LOG_WARN("[ShadowVT] Failed to create temp upload buffer for Resource vtable capture");
     }
   }
 
   StreamlineIntegration::Get().Initialize(pDevice);
   SamplerInterceptor_InstallRootSigHook(); // P1 Fix 4: Static sampler LOD bias
-  AdvanceSlotRotation();
 
-  LOG_INFO("[GHOST] All hooks installed - {} pinned, {} rotating",
-           (g_PinnedSlot0 >= 0 ? 1 : 0) + (g_PinnedSlot1 >= 0 ? 1 : 0), g_RotatingHooks.size());
+  LOG_INFO("[ShadowVT] All hooks installed via shadow vtable architecture");
 }
+
 
 void WrapCreatedD3D12Device(REFIID /*riid*/, void** ppDevice, bool /*takeOwnership*/) {
   if (!ppDevice || !*ppDevice) return;
@@ -1235,7 +935,7 @@ bool InitializeHooks() {
 }
 
 void CleanupHooks() {
-  // P0 FIX: Defense-in-depth — stop timer thread if not already stopped.
+  // P0 FIX: Defense-in-depth Ã¢â‚¬â€ stop timer thread if not already stopped.
   // Must happen before Ghost shutdown because the timer thread may be
   // executing code that triggers ghost hook breakpoints.
   StopFrameTimer();

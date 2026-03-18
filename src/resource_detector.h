@@ -69,9 +69,9 @@ public:
   ID3D12Resource* GetExposureResource() { return m_exposureResource.Get(); }
   DXGI_FORMAT GetMotionFormatOverride(ID3D12Resource* pResource);
 
-  ID3D12Resource* GetBestMotionVectorCandidate();
-  ID3D12Resource* GetBestDepthCandidate();
-  ID3D12Resource* GetBestColorCandidate();
+  [[nodiscard]] ID3D12Resource* GetBestMotionVectorCandidate();
+  [[nodiscard]] ID3D12Resource* GetBestDepthCandidate();
+  [[nodiscard]] ID3D12Resource* GetBestColorCandidate();
   uint64_t GetFrameCount();
 
   std::string GetDebugInfo();

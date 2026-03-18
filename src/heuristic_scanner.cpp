@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -19,13 +19,36 @@
 #include "shaders/scanner_cs.h"
 #include <cmath>
 
+namespace {
+
+// C++20 constexpr jump table for typeless → concrete format resolution.
+// Compiler optimizes this to O(1) indexed dispatch — no sequential branching.
+constexpr DXGI_FORMAT ResolveTypelessFormat(DXGI_FORMAT fmt) noexcept {
+    switch (fmt) {
+        case DXGI_FORMAT_R16G16_TYPELESS:         return DXGI_FORMAT_R16G16_FLOAT;
+        case DXGI_FORMAT_R32G32_TYPELESS:         return DXGI_FORMAT_R32G32_FLOAT;
+        case DXGI_FORMAT_R32_TYPELESS:            return DXGI_FORMAT_R32_FLOAT;
+        case DXGI_FORMAT_R24G8_TYPELESS:          return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+        case DXGI_FORMAT_R32G8X24_TYPELESS:       return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+        case DXGI_FORMAT_R16G16B16A16_TYPELESS:   return DXGI_FORMAT_R16G16B16A16_FLOAT;
+        case DXGI_FORMAT_R32G32B32A32_TYPELESS:   return DXGI_FORMAT_R32G32B32A32_FLOAT;
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS:       return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case DXGI_FORMAT_B8G8R8A8_TYPELESS:       return DXGI_FORMAT_B8G8R8A8_UNORM;
+        case DXGI_FORMAT_R16_TYPELESS:            return DXGI_FORMAT_R16_FLOAT;
+        case DXGI_FORMAT_R10G10B10A2_TYPELESS:    return DXGI_FORMAT_R10G10B10A2_UNORM;
+        default:                                  return fmt;
+    }
+}
+
+} // namespace
+
 HeuristicScanner& HeuristicScanner::Get() {
     static HeuristicScanner instance;
     return instance;
 }
 
 bool HeuristicScanner::Initialize(ID3D12Device* pDevice) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::scoped_lock lock(m_mutex);
     if (m_initialized) return true;
 
     if (!CompileShader()) {
@@ -55,7 +78,7 @@ bool HeuristicScanner::Initialize(ID3D12Device* pDevice) {
 }
 
 void HeuristicScanner::Shutdown() {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::scoped_lock lock(m_mutex);
     m_pso.Reset();
     m_rootSignature.Reset();
     for (int i = 0; i < SCAN_RING_SIZE; ++i) {
@@ -205,20 +228,7 @@ bool HeuristicScanner::AnalyzeTexture(ID3D12GraphicsCommandList* pCmdList, ID3D1
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Texture2D.MipLevels = 1; // Only check top mip
-    srvDesc.Format = pResource->GetDesc().Format;
-    
-    // Handle typeless formats
-    if (srvDesc.Format == DXGI_FORMAT_R16G16_TYPELESS) srvDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
-    else if (srvDesc.Format == DXGI_FORMAT_R32G32_TYPELESS) srvDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
-    else if (srvDesc.Format == DXGI_FORMAT_R32_TYPELESS) srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-    else if (srvDesc.Format == DXGI_FORMAT_R24G8_TYPELESS) srvDesc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-    else if (srvDesc.Format == DXGI_FORMAT_R32G8X24_TYPELESS) srvDesc.Format = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
-    else if (srvDesc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS) srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-    else if (srvDesc.Format == DXGI_FORMAT_R32G32B32A32_TYPELESS) srvDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    else if (srvDesc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS) srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    else if (srvDesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS) srvDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    else if (srvDesc.Format == DXGI_FORMAT_R16_TYPELESS) srvDesc.Format = DXGI_FORMAT_R16_FLOAT;
-    else if (srvDesc.Format == DXGI_FORMAT_R10G10B10A2_TYPELESS) srvDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+    srvDesc.Format = ResolveTypelessFormat(pResource->GetDesc().Format);
 
     pDevice->CreateShaderResourceView(pResource, &srvDesc, cpuHandle);
     
@@ -290,11 +300,18 @@ bool HeuristicScanner::GetReadbackResult(ScanResult& outResult) {
     struct float4 { float x, y, z, w; };
     float4* samples = reinterpret_cast<float4*>(pData);
 
-    // Statistical Analysis
+    // ================================================================
+    // Welford's Algorithm — numerically stable single-pass variance
+    // ================================================================
+    // The naive formula (sumSqX/N - mean²) suffers from catastrophic
+    // cancellation when values are large (screen-space vectors, depths).
+    // Welford's recurrence computes variance incrementally with double
+    // accumulators, guaranteeing no floating-point collapse.
+    // ================================================================
     float minX = 1e9f, maxX = -1e9f;
     float minY = 1e9f, maxY = -1e9f;
-    double sumX = 0.0, sumY = 0.0;
-    double sumSqX = 0.0, sumSqY = 0.0;
+    double meanX = 0.0, meanY = 0.0;
+    double m2X = 0.0, m2Y = 0.0;
     int nonZeroCount = 0;
 
     for (uint32_t i = 0; i < SCAN_SAMPLE_COUNT; ++i) {
@@ -308,28 +325,31 @@ bool HeuristicScanner::GetReadbackResult(ScanResult& outResult) {
         if (y < minY) minY = y;
         if (y > maxY) maxY = y;
 
-        sumX += x;
-        sumY += y;
-        sumSqX += (x * x);
-        sumSqY += (y * y);
+        // Welford's online variance recurrence
+        double n = static_cast<double>(i + 1);
+        double deltaX = static_cast<double>(x) - meanX;
+        meanX += deltaX / n;
+        m2X += deltaX * (static_cast<double>(x) - meanX);
+
+        double deltaY = static_cast<double>(y) - meanY;
+        meanY += deltaY / n;
+        m2Y += deltaY * (static_cast<double>(y) - meanY);
     }
 
-    float count = static_cast<float>(SCAN_SAMPLE_COUNT);
-    float avgX = (float)(sumX / count);
-    float avgY = (float)(sumY / count);
-    float varX = (float)((sumSqX / count) - (avgX * avgX));
-    float varY = (float)((sumSqY / count) - (avgY * avgY));
+    float avgX = static_cast<float>(meanX);
+    float avgY = static_cast<float>(meanY);
+    float varX = static_cast<float>(m2X / SCAN_SAMPLE_COUNT);
+    float varY = static_cast<float>(m2Y / SCAN_SAMPLE_COUNT);
 
     outResult.minX = minX; outResult.maxX = maxX;
     outResult.minY = minY; outResult.maxY = maxY;
     outResult.avgX = avgX; outResult.avgY = avgY;
     outResult.varianceX = varX; outResult.varianceY = varY;
-    
+
     // Heuristic 1: Is it empty?
-    outResult.hasData = (nonZeroCount > (SCAN_SAMPLE_COUNT * 0.05f)); // At least 5% non-zero
+    outResult.hasData = (nonZeroCount > static_cast<int>(SCAN_SAMPLE_COUNT * 0.05f)); // At least 5% non-zero
 
     // Heuristic 2: Is it a solid color? (Variance near zero)
-    // Threshold: 0.0001 is very small variance
     outResult.isUniform = (varX < 0.0001f && varY < 0.0001f);
 
     // Heuristic 3: Valid Range for Motion Vectors

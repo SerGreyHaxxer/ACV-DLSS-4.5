@@ -5,33 +5,66 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 #pragma once
+#include <Unknwn.h>
+#include <atomic>
 #include <d3d12.h>
 
-#include <mutex>
-#include <unordered_set>
-
 // ============================================================================
-// Fix 1: Deterministic Resource Lifetime Tracking
+// Fix 1.4: Lock-Free Resource Lifetime Tracking via SetPrivateDataInterface
 // ============================================================================
-// Replaces the catastrophic SEH-based IsResourceAlive() with a deterministic
-// notification system. When a tracked resource's Release() drops the refcount
-// to 0, the tracker notifies ResourceDetector to safely erase the pointer.
+// Replaces the old ResourceLifetimeTracker (global mutex + unordered_set)
+// with a zero-lock, O(1) approach using D3D12's built-in private data API.
 //
-// This eliminates silent memory corruption caused by the old approach, where
-// freed heap addresses were recycled for unrelated objects and AddRef() would
-// blindly increment arbitrary memory.
+// HOW IT WORKS:
+//   1. TrackResource() attaches a GhostTrackerTag (IUnknown) to the resource
+//      via ID3D12Object::SetPrivateDataInterface().
+//   2. The D3D12 runtime holds a reference to our tag.
+//   3. When the resource is destroyed, D3D12 calls Release() on the tag.
+//   4. Our Release() enqueues the pointer into DeferredGC (lock-free ring).
+//   5. At frame boundaries, DeferredGC drains into ResourceDetector.
+//
+// This eliminates:
+//   - The global mutex that serialized all resource tracking (Vuln #1)
+//   - The synchronous OnResourceDestroyed call causing ABA problems (Vuln #5)
+//   - The overhead of maintaining a central unordered_set
 // ============================================================================
 
+// {7F8B74CD-DEAD-BEEF-0000-D3D12TRACKER}
+static const GUID GUID_GhostTracker =
+    {0x7f8b74cd, 0xdead, 0xbeef, {0x00, 0x00, 0xd3, 0xd1, 0x2a, 0xce, 0xba, 0x6b}};
+
+class GhostTrackerTag : public IUnknown {
+  ID3D12Resource* m_pRes;
+  std::atomic<ULONG> m_ref{1};
+
+public:
+  explicit GhostTrackerTag(ID3D12Resource* res) : m_pRes(res) {}
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
+    if (!ppv) return E_POINTER;
+    if (riid == __uuidof(IUnknown)) {
+      *ppv = static_cast<IUnknown*>(this);
+      AddRef();
+      return S_OK;
+    }
+    *ppv = nullptr;
+    return E_NOINTERFACE;
+  }
+
+  ULONG STDMETHODCALLTYPE AddRef() override {
+    return m_ref.fetch_add(1, std::memory_order_relaxed) + 1;
+  }
+
+  ULONG STDMETHODCALLTYPE Release() override;
+
+  ID3D12Resource* GetResource() const { return m_pRes; }
+};
+
+// ============================================================================
+// ResourceLifetimeTracker — thin static API over SetPrivateDataInterface
+// ============================================================================
 class ResourceLifetimeTracker {
 public:
   static ResourceLifetimeTracker& Get();
@@ -39,30 +72,20 @@ public:
   // Non-copyable, non-movable singleton
   ResourceLifetimeTracker(const ResourceLifetimeTracker&) = delete;
   ResourceLifetimeTracker& operator=(const ResourceLifetimeTracker&) = delete;
-  ResourceLifetimeTracker(ResourceLifetimeTracker&&) = delete;
-  ResourceLifetimeTracker& operator=(ResourceLifetimeTracker&&) = delete;
 
-  // Start tracking a resource pointer. Thread-safe.
+  // Attach a GhostTrackerTag to the resource. Lock-free, O(1).
   void TrackResource(ID3D12Resource* pResource);
 
-  // Stop tracking a resource (e.g., if we no longer care). Thread-safe.
+  // Remove tracking tag. Lock-free, O(1).
   void UntrackResource(ID3D12Resource* pResource);
 
-  // Check if a resource is currently tracked (safe replacement for IsResourceAlive).
-  bool IsTracked(ID3D12Resource* pResource) const;
+  // Check if a resource has a tracking tag. Lock-free, O(1).
+  [[nodiscard]] bool IsTracked(ID3D12Resource* pResource) const;
 
-  // Called by the Release hook when a resource's refcount drops to 0.
-  // Removes from tracker and notifies ResourceDetector.
-  void NotifyReleased(ID3D12Resource* pResource);
-
-  // Get count of tracked resources (for diagnostics)
-  size_t GetTrackedCount() const;
+  // Called once to wire up the tag. No-op for now.
+  void Initialize() {}
+  void Shutdown() {}
 
 private:
   ResourceLifetimeTracker() = default;
-  ~ResourceLifetimeTracker() = default;
-
-  // Lock hierarchy level 3 — same tier as Resources
-  mutable std::mutex m_mutex;
-  std::unordered_set<ID3D12Resource*> m_tracked;
 };

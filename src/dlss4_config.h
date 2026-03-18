@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -16,9 +16,9 @@
  */
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <string_view>
 
 // ============================================================================
 // DLSS 4 PROXY CONFIGURATION â€” Modern C++23 Typed Constants
@@ -26,8 +26,8 @@
 
 namespace dlss4 {
 
-inline constexpr std::string_view kProxyVersion = "4.5";
-inline constexpr std::string_view kLogFile = "dlss4_proxy.log";
+inline constexpr const char* kProxyVersion = "4.5";
+inline constexpr const char* kLogFile = "dlss4_proxy.log";
 
 // DLSS-G Frame Generation (2x, 3x, or 4x â€” GPU/driver dependent)
 inline constexpr int kDefaultFrameGenMultiplier = 4;
@@ -74,6 +74,11 @@ inline constexpr uint32_t kScanFineStride = 16;
 inline constexpr uint32_t kScanMedStride = 128;
 inline constexpr uint32_t kGraceFrames = 240;
 
+// Phase 2.2: Frame-rate independent chrono heuristics (safe with DLSS-G)
+inline constexpr std::chrono::milliseconds kScanStaleTime{2000};
+inline constexpr std::chrono::milliseconds kScanForceFullTime{5000};
+inline constexpr std::chrono::milliseconds kGraceTime{4000};
+
 } // namespace camera_config
 
 // ============================================================================
@@ -94,6 +99,10 @@ inline constexpr uint32_t kRecencyFrames = 60;
 inline constexpr float kRecencyBonus = 0.25f;
 inline constexpr float kFrequencyBonus = 0.2f;
 inline constexpr uint32_t kFrequencyHitCap = 30;
+
+// Phase 2.2: Frame-rate independent chrono heuristics (safe with DLSS-G)
+inline constexpr std::chrono::milliseconds kStaleTime{2000};
+inline constexpr std::chrono::milliseconds kRecencyTime{1000};
 
 // Phase 3.1: Multi-frame consensus — require N frames of agreement before locking
 inline constexpr uint32_t kConsensusThreshold = 3;

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -17,13 +17,13 @@
 #include "pattern_scanner.h"
 #include "logger.h"
 #include <algorithm>
+#include <charconv>
 #include <filesystem>
 #include <format>
 #include <fstream>
-#include <iomanip>
 #include <psapi.h>
-#include <sstream>
-
+#include <ranges>
+#include <string_view>
 
 extern "C" void LogStartup(const char *msg);
 
@@ -41,14 +41,21 @@ static std::filesystem::path GetCacheDir() {
 
 std::vector<int> PatternScanner::ParsePattern(const std::string &pattern) {
   std::vector<int> bytes;
-  std::stringstream ss(pattern);
-  std::string byteStr;
+  bytes.reserve(pattern.size() / 2); // Pre-allocate maximum possible size
 
-  while (ss >> byteStr) {
-    if (byteStr == "?" || byteStr == "??") {
+  // C++20 lazy view splitting — zero heap allocations for tokenization.
+  // Each token is a std::string_view into the original pattern string.
+  for (const auto word_range : std::views::split(std::string_view(pattern), ' ')) {
+    std::string_view token(word_range.begin(), word_range.end());
+    if (token.empty()) continue;
+
+    if (token == "?" || token == "??") {
       bytes.push_back(-1); // Wildcard
     } else {
-      bytes.push_back(std::stoi(byteStr, nullptr, 16));
+      int val = 0;
+      // C++17 std::from_chars — no exceptions, no locale, no heap allocation.
+      std::from_chars(token.data(), token.data() + token.size(), val, 16);
+      bytes.push_back(val);
     }
   }
   return bytes;
@@ -144,8 +151,7 @@ PatternScanResult<uintptr_t> PatternScanner::Scan(uintptr_t start, size_t length
   while (current < end) {
     MEMORY_BASIC_INFORMATION mbi;
     if (VirtualQuery(reinterpret_cast<LPCVOID>(current), &mbi, sizeof(mbi)) == 0) {
-      current += 4096;
-      continue;
+      break; // Exhausted accessible address space — stop scanning.
     }
 
     if (mbi.State != MEM_COMMIT || (mbi.Protect & PAGE_GUARD) ||

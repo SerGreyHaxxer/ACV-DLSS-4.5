@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -16,10 +16,12 @@
  */
 #pragma once
 #include <windows.h>
+#include <array>
+#include <atomic>
 #include <functional>
-#include <vector>
-#include <string>
 #include <mutex>
+#include <string>
+#include <vector>
 
 struct KeyCallback {
     int vKey;
@@ -37,28 +39,48 @@ public:
     InputHandler& operator=(const InputHandler&) = delete;
     InputHandler(InputHandler&&) = delete;
     InputHandler& operator=(InputHandler&&) = delete;
-    
+
     void RegisterHotkey(int vKey, std::function<void()> callback, const char* name);
     void UpdateHotkey(const char* name, int vKey);
     void ClearHotkeys();
     [[nodiscard]] std::string GetKeyName(int vKey) const;
-    
+
     // Global Hook
     void InstallHook();
     void UninstallHook();
     void ProcessInput();
-    
-    // Internal
-    void HandleKey(int vKey);
+
     bool HasHookInstalled() const { return m_hHook != nullptr; }
+
+    // Wait-free key queue — called by the OS LL hook thread.
+    // Stores a pending flag for the virtual key so the render/timer thread
+    // can safely process it later via ProcessInput().
+    void QueueKey(int vKey) noexcept {
+        if (vKey >= 0 && vKey < 256) {
+            m_pendingKeys[static_cast<size_t>(vKey)].store(true, std::memory_order_release);
+        }
+    }
+
+    // C++20 inline static atomic — wait-free access from the OS hook thread.
+    // No mutex, no allocation, no chance of Windows timing out the LL hook.
+    static inline std::atomic<InputHandler*> s_instance{nullptr};
 
 private:
     InputHandler() = default;
+
+    // Safely invokes registered callbacks for a given vKey.
+    // Only called from ProcessInput() on the timer/render thread.
+    void HandleKey(int vKey);
+
     std::vector<KeyCallback> m_callbacks;
-    // Lock hierarchy level 4 â€” same tier as Config
-    // (SwapChain=1 > Hooks=2 > Resources=3 > Config/Input=4 > Logging=5).
+    // Protects m_callbacks during RegisterHotkey/UpdateHotkey/ClearHotkeys
+    // (configuration-time only — never held in the OS hook or hot path).
     std::mutex m_callbackMutex;
+
+    // Lock-free array indexed by vKey (0-255).
+    // The OS hook thread sets entries; ProcessInput() drains them.
+    std::array<std::atomic<bool>, 256> m_pendingKeys{};
+
     HHOOK m_hHook = nullptr;
     HMODULE m_selfModule = nullptr; // Prevent premature unload
 };
-

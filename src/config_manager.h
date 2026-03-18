@@ -9,8 +9,10 @@
 #pragma once
 #include "cpp26/reflection.h"
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <type_traits>
@@ -284,28 +286,47 @@ public:
   void SaveIfDirty();
   void CheckHotReload();
 
-  // Returns a mutable reference to the config.  Safe ONLY when called from the
-  // render / Present thread (the "owning" thread).  For cross-thread reads use
-  // DataSnapshot() instead.
-  ModConfig& Data() { return m_config; }
+  // Returns a mutable reference to the render-thread's working copy.
+  // Safe ONLY when called from the render / Present thread (the "owning"
+  // thread).  After mutating, call Publish() to atomically propagate the
+  // changes to cross-thread readers.
+  ModConfig& Data() { return m_mutableConfig; }
 
-  // Returns a thread-safe copy of the current config.  Use this from any
-  // non-render thread (e.g. timer thread, metrics thread).
-  ModConfig DataSnapshot() const {
-    std::lock_guard<std::mutex> lock(m_configMutex);
-    return m_config;
+  // Atomically publishes the render-thread's working copy so that all
+  // cross-thread DataSnapshot() callers observe the latest state.
+  // Must be called from the render/Present thread after mutating Data().
+  void Publish() {
+    m_configPtr.store(
+        std::make_shared<const ModConfig>(m_mutableConfig),
+        std::memory_order_release);
+  }
+
+  // Wait-free, lock-free snapshot for any non-render thread.  Returns a
+  // shared_ptr to an immutable config — zero copies, zero mutex contention.
+  std::shared_ptr<const ModConfig> DataSnapshot() const {
+    return m_configPtr.load(std::memory_order_acquire);
   }
 
 private:
-  ConfigManager() { cpp26::reflect::InitReflection(); }
+  ConfigManager() : m_configPtr(std::make_shared<const ModConfig>()) {
+    cpp26::reflect::InitReflection();
+  }
   std::filesystem::path GetConfigPath();
   void ImportLegacyIni(const std::filesystem::path& iniPath);
 
-  ModConfig m_config;
+  // Render-thread working copy — mutated via Data(), published via Publish().
+  ModConfig m_mutableConfig;
+
+  // C++20 atomic shared_ptr — wait-free reads via DataSnapshot() (RCU pattern).
   // Lock hierarchy level 4 (SwapChain=1 > Hooks=2 > Resources=3 > Config=4 > Logging=5).
-  // Protects m_config during Load/Save/CheckHotReload so that cross-thread
-  // readers via DataSnapshot() observe a consistent state.
-  mutable std::mutex m_configMutex;
-  bool m_dirty = false;
+  std::atomic<std::shared_ptr<const ModConfig>> m_configPtr;
+
+  // Write mutex — serializes Load/Save/CheckHotReload (never held on hot path).
+  std::mutex m_writeMutex;
+
+  // Atomic dirty flag — fixes the data race where Save() cleared m_dirty
+  // outside the lock, potentially losing concurrent hot-reload writes.
+  std::atomic<bool> m_dirty{false};
+
   std::filesystem::file_time_type m_lastWriteTime;
 };

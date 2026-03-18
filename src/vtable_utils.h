@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -21,10 +21,11 @@
 #include <concepts>
 #include <cstddef>
 #include <type_traits>
+#include <utility>
 
 
 // ============================================================================
-// VTable Index Strong Types â€” eliminate magic numbers in hook setup
+// VTable Index Strong Types — eliminate magic numbers in hook setup
 // ============================================================================
 
 namespace vtable {
@@ -68,6 +69,20 @@ enum class SwapChain : size_t {
   ResizeBuffers = 13,
 };
 
+// IDXGIFactory vtable slots (for VTable hooking, Fix 1.3)
+// IDXGIFactory: IUnknown(3) + IDXGIObject(4) + EnumAdapters(1) +
+//   MakeWindowAssociation(1) + GetWindowAssociation(1) + CreateSwapChain(1) +
+//   CreateSoftwareAdapter(1) = slots 0-11
+// IDXGIFactory2 adds CreateSwapChainForHwnd at slot 15,
+//   CreateSwapChainForCoreWindow at slot 16, ...,
+//   CreateSwapChainForComposition at slot 24
+enum class DXGIFactory : size_t {
+  CreateSwapChain = 10,
+  CreateSwapChainForHwnd = 15,
+  CreateSwapChainForCoreWindow = 16,
+  CreateSwapChainForComposition = 24,
+};
+
 } // namespace vtable
 
 // ============================================================================
@@ -87,13 +102,25 @@ template <typename T> inline void** GetVTable(T* obj) {
   return *reinterpret_cast<void***>(obj);
 }
 
-template <typename T> inline T GetVTableFunc(void** vtable, size_t index) {
+// Primary template: retrieves a typed function pointer from a vtable.
+// For raw size_t indices (backward compatibility).
+template <typename T> [[nodiscard]] inline T GetVTableFunc(void** vtable, size_t index) noexcept {
   return reinterpret_cast<T>(vtable[index]);
 }
 
-// Overload for strongly-typed VTable indices
-template <typename Func, typename Index>
-  requires std::is_enum_v<Index>
-inline void* GetVTableEntry(void** vtable, Index index) {
-  return vtable[static_cast<size_t>(index)];
+// Overload for strongly-typed enum VTable indices.
+// Uses C++23 std::to_underlying to safely extract the enum's backing
+// integer type — cleaner and more type-safe than static_cast<size_t>.
+// Returns the typed FuncPtr directly, eliminating reinterpret_cast at call sites.
+template <typename FuncPtr, typename EnumType>
+  requires std::is_enum_v<EnumType>
+[[nodiscard]] inline FuncPtr GetVTableFunc(void** vtable, EnumType index) noexcept {
+  return reinterpret_cast<FuncPtr>(vtable[std::to_underlying(index)]);
+}
+
+// Legacy compatibility alias — same as enum-typed GetVTableFunc but returns void*.
+template <typename FuncPtr, typename EnumType>
+  requires std::is_enum_v<EnumType>
+[[nodiscard]] inline void* GetVTableEntry(void** vtable, EnumType index) noexcept {
+  return vtable[std::to_underlying(index)];
 }

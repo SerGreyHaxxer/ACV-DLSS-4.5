@@ -17,26 +17,77 @@
 #include "jitter_engine.h"
 #include "logger.h"
 
+#include <atomic>
 #include <cmath>
 #include <mutex>
+#include <array>
+#include <algorithm>
 
 namespace {
 
 // Lock hierarchy level 3
 std::mutex g_jitterMutex;
 
-JitterResult lastResult{};
-float emaX = 0.0f;
-float emaY = 0.0f;
+JitterResult lastResultLocal{};  // Used only within mutex-protected Update path
+std::atomic<JitterResult> g_lastResult{};  // Lock-free query target
 float prevProj8 = 0.0f;
 float prevProj9 = 0.0f;
 bool hasPrevProj = false;
 int zeroCount = 0;
 int framesSinceValid = 0;
 
-constexpr float kEmaAlpha = 0.3f;
+// Previous valid jitter for outlier detection (replaces EMA)
+float prevValidX = 0.0f;
+float prevValidY = 0.0f;
+
 constexpr float kOutlierThreshold = 0.5f;
 constexpr int kZeroFrameLimit = 5;
+
+// ============================================================================
+// Halton/Weyl Jitter Sequence Tables
+// ============================================================================
+// DLSS 4.5 (Ray Reconstruction, Frame Gen) requires exact sub-pixel offsets.
+// Games use deterministic sequences — Halton base-2,3 is the most common.
+// EMA smoothing was DESTROYING phase alignment by averaging across sequence
+// positions, causing ghosting / smearing / shimmering.
+//
+// Instead: if the raw jitter lies within ε of a known grid point, snap to
+// the exact grid value.  If no match, pass through raw (custom sequence).
+// ============================================================================
+
+// Snap tolerance: if raw jitter is within this distance of a grid point, snap
+constexpr float kSnapEpsilon = 0.02f;
+
+// Halton base-2 (first 16 terms, centered at 0): x-axis jitter
+constexpr std::array<float, 16> kHalton2 = {
+    -0.5f,      0.0f,      -0.25f,     0.25f,
+    -0.375f,   -0.125f,     0.125f,    0.375f,
+    -0.4375f,  -0.1875f,    0.0625f,   0.3125f,
+    -0.3125f,  -0.0625f,    0.1875f,   0.4375f,
+};
+
+// Halton base-3 (first 16 terms, centered at 0): y-axis jitter
+constexpr std::array<float, 16> kHalton3 = {
+    -0.16667f,  0.16667f,  -0.38889f, -0.05556f,
+     0.27778f, -0.46296f,  -0.12963f,  0.20370f,
+    -0.35185f, -0.01852f,   0.31481f, -0.42593f,
+    -0.09259f,  0.24074f,  -0.31481f,  0.01852f,
+};
+
+// Try to snap a value to the nearest point in a Halton sequence.
+// Returns the snapped value if within ε, or the original value unchanged.
+constexpr float TrySnapToGrid(float raw, const auto& grid) {
+    float bestDist = kSnapEpsilon;
+    float bestVal = raw;  // Default: pass through unchanged
+    for (float gridVal : grid) {
+        float dist = std::abs(raw - gridVal);
+        if (dist < bestDist) {
+            bestDist = dist;
+            bestVal = gridVal;
+        }
+    }
+    return bestVal;
+}
 
 bool IsFiniteAndSubPixel(float x, float y) {
     return std::isfinite(x) && std::isfinite(y) &&
@@ -52,29 +103,39 @@ bool Validate(float x, float y) {
     return IsFiniteAndSubPixel(x, y) && IsNonZero(x, y);
 }
 
-// Apply EMA outlier rejection and update smoothing state
-JitterResult ApplySmoothing(float rawX, float rawY, JitterSource source) {
-    // Outlier rejection against EMA
+// Apply sequence snapping and outlier rejection.
+// NEVER smooths — raw jitter is passed through (possibly snapped to grid).
+JitterResult ApplySequenceSnapping(float rawX, float rawY, JitterSource source) {
+    // Outlier rejection: reject values that deviate too far from BOTH
+    // the nearest grid point AND the previous frame's jitter.
+    // This catches corrupt values without smoothing valid ones.
     if (framesSinceValid > 0) {
-        float devX = std::abs(rawX - emaX);
-        float devY = std::abs(rawY - emaY);
-        if (devX > kOutlierThreshold || devY > kOutlierThreshold) {
-            LOG_WARN("JitterEngine: outlier rejected ({:.4f},{:.4f}), using EMA ({:.4f},{:.4f})",
-                     rawX, rawY, emaX, emaY);
-            rawX = emaX;
-            rawY = emaY;
+        float devX = std::abs(rawX - prevValidX);
+        float devY = std::abs(rawY - prevValidY);
+
+        // Check if the value is close to any Halton grid point
+        float snappedX = TrySnapToGrid(rawX, kHalton2);
+        float snappedY = TrySnapToGrid(rawY, kHalton3);
+        bool onGrid = (snappedX != rawX) || (snappedY != rawY);
+
+        if (!onGrid && (devX > kOutlierThreshold || devY > kOutlierThreshold)) {
+            LOG_WARN("JitterEngine: outlier rejected ({:.4f},{:.4f}), using previous ({:.4f},{:.4f})",
+                     rawX, rawY, prevValidX, prevValidY);
+            rawX = prevValidX;
+            rawY = prevValidY;
+        } else {
+            // Snap to grid if close to a known sequence point
+            rawX = snappedX;
+            rawY = snappedY;
         }
-    }
-
-    // Update EMA
-    if (framesSinceValid == 0) {
-        emaX = rawX;
-        emaY = rawY;
     } else {
-        emaX = kEmaAlpha * rawX + (1.0f - kEmaAlpha) * emaX;
-        emaY = kEmaAlpha * rawY + (1.0f - kEmaAlpha) * emaY;
+        // First valid frame: snap if possible
+        rawX = TrySnapToGrid(rawX, kHalton2);
+        rawY = TrySnapToGrid(rawY, kHalton3);
     }
 
+    prevValidX = rawX;
+    prevValidY = rawY;
     framesSinceValid++;
     zeroCount = 0;
 
@@ -83,7 +144,8 @@ JitterResult ApplySmoothing(float rawX, float rawY, JitterSource source) {
     r.y = rawY;
     r.source = source;
     r.valid = true;
-    lastResult = r;
+    lastResultLocal = r;
+    g_lastResult.store(r, std::memory_order_release);
     return r;
 }
 
@@ -101,13 +163,13 @@ const char* JitterSource_Name(JitterSource src) {
 
 JitterResult JitterEngine_Update(float patternX, float patternY,
                                   const float* proj) {
-    std::lock_guard<std::mutex> lock(g_jitterMutex);
+    std::scoped_lock lock(g_jitterMutex);
 
     // --- Tier 1: PatternScan ---
     if (std::isfinite(patternX) && std::isfinite(patternY) &&
         IsNonZero(patternX, patternY)) {
         if (Validate(patternX, patternY)) {
-            return ApplySmoothing(patternX, patternY, JitterSource::PatternScan);
+            return ApplySequenceSnapping(patternX, patternY, JitterSource::PatternScan);
         }
     }
 
@@ -126,7 +188,7 @@ JitterResult JitterEngine_Update(float patternX, float patternY,
                 prevProj8 = p8;
                 prevProj9 = p9;
                 hasPrevProj = true;
-                return ApplySmoothing(jx, jy, JitterSource::CbvExtraction);
+                return ApplySequenceSnapping(jx, jy, JitterSource::CbvExtraction);
             }
         }
 
@@ -141,7 +203,7 @@ JitterResult JitterEngine_Update(float patternX, float patternY,
                 prevProj8 = proj[8];
                 prevProj9 = proj[9];
                 if (Validate(jx, jy)) {
-                    return ApplySmoothing(jx, jy, JitterSource::MatrixDiff);
+                    return ApplySequenceSnapping(jx, jy, JitterSource::MatrixDiff);
                 }
             }
         }
@@ -159,21 +221,21 @@ JitterResult JitterEngine_Update(float patternX, float patternY,
                  kZeroFrameLimit);
     }
 
-    JitterResult stale = lastResult;
+    JitterResult stale = lastResultLocal;
     stale.valid = false;
     return stale;
 }
 
 JitterResult JitterEngine_GetLast() {
-    std::lock_guard<std::mutex> lock(g_jitterMutex);
-    return lastResult;
+    return g_lastResult.load(std::memory_order_acquire);  // Zero mutex overhead!
 }
 
 void JitterEngine_Reset() {
-    std::lock_guard<std::mutex> lock(g_jitterMutex);
-    lastResult = {};
-    emaX = 0.0f;
-    emaY = 0.0f;
+    std::scoped_lock lock(g_jitterMutex);
+    lastResultLocal = {};
+    g_lastResult.store({}, std::memory_order_release);
+    prevValidX = 0.0f;
+    prevValidY = 0.0f;
     prevProj8 = 0.0f;
     prevProj9 = 0.0f;
     hasPrevProj = false;

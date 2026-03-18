@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -19,14 +19,12 @@
 #include <dbghelp.h>
 #include <psapi.h>
 #include <ctime>
-#include <vector>
 #include <string>
-#include <sstream>
 #include <shellapi.h>
 #include <atomic>
-#include <wincrypt.h>
+#include <charconv>
 
-// Link dependencies moved to CMakeLists.txt (psapi, dbghelp, crypt32)
+// Link dependencies moved to CMakeLists.txt (psapi, dbghelp)
 
 static PVOID g_Handler = nullptr;
 static std::atomic<bool> g_LogOpened(false);
@@ -69,40 +67,52 @@ namespace {
         }
     }
 
-    bool EncryptDumpFile(const char* inputPath, const char* outputPath) {
-        HANDLE inputFile = CreateFileA(inputPath, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (inputFile == INVALID_HANDLE_VALUE) return false;
-        LARGE_INTEGER fileSize{};
-        if (!GetFileSizeEx(inputFile, &fileSize) || fileSize.QuadPart <= 0 || fileSize.QuadPart > static_cast<LONGLONG>(MAXDWORD)) {
-            CloseHandle(inputFile);
-            return false;
-        }
-        std::vector<BYTE> buffer(static_cast<size_t>(fileSize.QuadPart));
-        DWORD bytesRead = 0;
-        if (!ReadFile(inputFile, buffer.data(), static_cast<DWORD>(buffer.size()), &bytesRead, nullptr) || bytesRead != buffer.size()) {
-            CloseHandle(inputFile);
-            return false;
-        }
-        CloseHandle(inputFile);
+    // ========================================================================
+    // VEH-Safe Module Resolution via VirtualQuery
+    // ========================================================================
+    // GetModuleHandleExA is NOT safe inside a VEH handler because it acquires
+    // the OS Loader Lock (LdrpLoaderLock).  If the crash occurred during
+    // LoadLibrary/FreeLibrary, the loader lock is already held → deadlock.
+    //
+    // VirtualQuery is a safe Ring-0 kernel syscall that returns the
+    // AllocationBase, which for memory-mapped PE images is the module's HMODULE.
+    // ========================================================================
 
-        DATA_BLOB inputBlob{};
-        inputBlob.cbData = bytesRead;
-        inputBlob.pbData = buffer.data();
-        DATA_BLOB outputBlob{};
-        if (!CryptProtectData(&inputBlob, L"DLSS4 Crash Dump", nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &outputBlob)) {
-            return false;
-        }
+    HMODULE SafeGetModuleFromAddress(const void* address) noexcept {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(address, &mbi, sizeof(mbi)) == 0) return nullptr;
+        return static_cast<HMODULE>(mbi.AllocationBase);
+    }
 
-        HANDLE outputFile = CreateFileA(outputPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (outputFile == INVALID_HANDLE_VALUE) {
-            LocalFree(outputBlob.pbData);
-            return false;
+    // ========================================================================
+    // VEH-Safe formatting helpers using C++17 std::to_chars
+    // ========================================================================
+    // std::to_chars is guaranteed by the standard to be:
+    //   - allocation-free
+    //   - locale-independent
+    //   - async-signal-safe
+    // This replaces the custom UnsafeHex/UnsafeAppend bit-math helpers.
+    // ========================================================================
+
+    // Append a string literal to the buffer, return updated position.
+    int SafeAppend(char* buf, int pos, int maxLen, const char* str) noexcept {
+        while (*str && pos < maxLen - 1) buf[pos++] = *str++;
+        return pos;
+    }
+
+    // Append a hex-formatted uint64 using std::to_chars, return updated position.
+    int SafeAppendHex(char* buf, int pos, int maxLen, DWORD64 val) noexcept {
+        // Prefix with "0x" is handled by the caller.
+        if (pos >= maxLen - 1) return pos;
+        auto [ptr, ec] = std::to_chars(buf + pos, buf + maxLen - 1, val, 16);
+        if (ec == std::errc{}) {
+            // Uppercase the hex digits for consistency with original output
+            for (char* p = buf + pos; p < ptr; ++p) {
+                if (*p >= 'a' && *p <= 'f') *p -= 32; // NOLINT: ASCII math
+            }
+            return static_cast<int>(ptr - buf);
         }
-        DWORD bytesWritten = 0;
-        bool ok = WriteFile(outputFile, outputBlob.pbData, outputBlob.cbData, &bytesWritten, nullptr) && bytesWritten == outputBlob.cbData;
-        CloseHandle(outputFile);
-        LocalFree(outputBlob.pbData);
-        return ok;
+        return pos; // Conversion failed — leave buffer unchanged
     }
 }
 
@@ -116,26 +126,10 @@ void OpenMainLog() {
     ShellExecuteA(nullptr, "open", "dlss4_proxy.log", nullptr, nullptr, SW_SHOW);
 }
 
-// Pre-allocated buffer for crash log â€” avoids CRT allocations inside VEH handler
-static char g_crashBuf[4096];
-
-// Async-signal-safe int-to-hex helper â€” no CRT dependency
-static int UnsafeHex(char* buf, int maxLen, DWORD64 val) {
-    static const char hexChars[] = "0123456789ABCDEF";
-    char tmp[17];
-    int len = 0;
-    if (val == 0) { tmp[len++] = '0'; }
-    else { while (val > 0 && len < 16) { tmp[len++] = hexChars[val & 0xF]; val >>= 4; } }
-    if (len >= maxLen) len = maxLen - 1;
-    for (int i = 0; i < len && i < maxLen; i++) buf[i] = tmp[len - 1 - i];
-    return len;
-}
-
-// Async-signal-safe string append helper
-static int UnsafeAppend(char* buf, int pos, int maxLen, const char* str) {
-    while (*str && pos < maxLen - 1) buf[pos++] = *str++;
-    return pos;
-}
+// Per-thread crash buffer — prevents data corruption when multiple threads
+// crash simultaneously (e.g. GPU device-removed cascading segfaults).
+// alignas(64) ensures the buffer doesn't share a cache line with other data.
+alignas(64) thread_local char t_crashBuf[4096];
 
 LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS pExceptionInfo) {
     // Only catch serious errors
@@ -152,64 +146,63 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS pExceptionInfo) {
                                nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hFile != INVALID_HANDLE_VALUE) {
         int pos = 0;
-        constexpr int maxLen = sizeof(g_crashBuf);
+        constexpr int maxLen = sizeof(t_crashBuf);
 
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, "=== DLSS 4 PROXY CRASH REPORT ===\r\n");
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, "Exception Code: 0x");
-        pos += UnsafeHex(g_crashBuf + pos, maxLen - pos, code);
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, "\r\nAddress: 0x");
-        pos += UnsafeHex(g_crashBuf + pos, maxLen - pos,
+        pos = SafeAppend(t_crashBuf, pos, maxLen, "=== DLSS 4 PROXY CRASH REPORT ===\r\n");
+        pos = SafeAppend(t_crashBuf, pos, maxLen, "Exception Code: 0x");
+        pos = SafeAppendHex(t_crashBuf, pos, maxLen, code);
+        pos = SafeAppend(t_crashBuf, pos, maxLen, "\r\nAddress: 0x");
+        pos = SafeAppendHex(t_crashBuf, pos, maxLen,
                          reinterpret_cast<DWORD64>(pExceptionInfo->ExceptionRecord->ExceptionAddress));
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, "\r\n");
+        pos = SafeAppend(t_crashBuf, pos, maxLen, "\r\n");
 
-        // Identify module (GetModuleHandleExA is safe in VEH)
-        HMODULE hModule = nullptr;
+        // Identify module using VirtualQuery (safe — bypasses loader lock)
+        HMODULE hModule = SafeGetModuleFromAddress(pExceptionInfo->ExceptionRecord->ExceptionAddress);
         char moduleName[MAX_PATH] = {};
-        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCSTR>(pExceptionInfo->ExceptionRecord->ExceptionAddress), &hModule)) {
+        if (hModule) {
             GetModuleFileNameA(hModule, moduleName, MAX_PATH);
         }
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, "Module: ");
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, moduleName[0] ? moduleName : "Unknown");
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, "\r\n");
+        pos = SafeAppend(t_crashBuf, pos, maxLen, "Module: ");
+        pos = SafeAppend(t_crashBuf, pos, maxLen, moduleName[0] ? moduleName : "Unknown");
+        pos = SafeAppend(t_crashBuf, pos, maxLen, "\r\n");
 
         if (code == EXCEPTION_ACCESS_VIOLATION) {
-            pos = UnsafeAppend(g_crashBuf, pos, maxLen, "Access Violation: ");
-            pos = UnsafeAppend(g_crashBuf, pos, maxLen,
+            pos = SafeAppend(t_crashBuf, pos, maxLen, "Access Violation: ");
+            pos = SafeAppend(t_crashBuf, pos, maxLen,
                 pExceptionInfo->ExceptionRecord->ExceptionInformation[0] ? "Write" : "Read");
-            pos = UnsafeAppend(g_crashBuf, pos, maxLen, " at 0x");
-            pos += UnsafeHex(g_crashBuf + pos, maxLen - pos,
+            pos = SafeAppend(t_crashBuf, pos, maxLen, " at 0x");
+            pos = SafeAppendHex(t_crashBuf, pos, maxLen,
                              static_cast<DWORD64>(pExceptionInfo->ExceptionRecord->ExceptionInformation[1]));
-            pos = UnsafeAppend(g_crashBuf, pos, maxLen, "\r\n");
+            pos = SafeAppend(t_crashBuf, pos, maxLen, "\r\n");
         }
 
         #ifdef _WIN64
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, "\r\nRegisters:\r\nRIP: 0x");
-        pos += UnsafeHex(g_crashBuf + pos, maxLen - pos, pExceptionInfo->ContextRecord->Rip);
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, "\r\nRSP: 0x");
-        pos += UnsafeHex(g_crashBuf + pos, maxLen - pos, pExceptionInfo->ContextRecord->Rsp);
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, "\r\nRAX: 0x");
-        pos += UnsafeHex(g_crashBuf + pos, maxLen - pos, pExceptionInfo->ContextRecord->Rax);
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, "\r\nRBX: 0x");
-        pos += UnsafeHex(g_crashBuf + pos, maxLen - pos, pExceptionInfo->ContextRecord->Rbx);
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, "\r\nRCX: 0x");
-        pos += UnsafeHex(g_crashBuf + pos, maxLen - pos, pExceptionInfo->ContextRecord->Rcx);
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, "\r\nRDX: 0x");
-        pos += UnsafeHex(g_crashBuf + pos, maxLen - pos, pExceptionInfo->ContextRecord->Rdx);
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, "\r\n");
+        pos = SafeAppend(t_crashBuf, pos, maxLen, "\r\nRegisters:\r\nRIP: 0x");
+        pos = SafeAppendHex(t_crashBuf, pos, maxLen, pExceptionInfo->ContextRecord->Rip);
+        pos = SafeAppend(t_crashBuf, pos, maxLen, "\r\nRSP: 0x");
+        pos = SafeAppendHex(t_crashBuf, pos, maxLen, pExceptionInfo->ContextRecord->Rsp);
+        pos = SafeAppend(t_crashBuf, pos, maxLen, "\r\nRAX: 0x");
+        pos = SafeAppendHex(t_crashBuf, pos, maxLen, pExceptionInfo->ContextRecord->Rax);
+        pos = SafeAppend(t_crashBuf, pos, maxLen, "\r\nRBX: 0x");
+        pos = SafeAppendHex(t_crashBuf, pos, maxLen, pExceptionInfo->ContextRecord->Rbx);
+        pos = SafeAppend(t_crashBuf, pos, maxLen, "\r\nRCX: 0x");
+        pos = SafeAppendHex(t_crashBuf, pos, maxLen, pExceptionInfo->ContextRecord->Rcx);
+        pos = SafeAppend(t_crashBuf, pos, maxLen, "\r\nRDX: 0x");
+        pos = SafeAppendHex(t_crashBuf, pos, maxLen, pExceptionInfo->ContextRecord->Rdx);
+        pos = SafeAppend(t_crashBuf, pos, maxLen, "\r\n");
         #else
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, "\r\nRegisters:\r\nEIP: 0x");
-        pos += UnsafeHex(g_crashBuf + pos, maxLen - pos, pExceptionInfo->ContextRecord->Eip);
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, "\r\nESP: 0x");
-        pos += UnsafeHex(g_crashBuf + pos, maxLen - pos, pExceptionInfo->ContextRecord->Esp);
-        pos = UnsafeAppend(g_crashBuf, pos, maxLen, "\r\n");
+        pos = SafeAppend(t_crashBuf, pos, maxLen, "\r\nRegisters:\r\nEIP: 0x");
+        pos = SafeAppendHex(t_crashBuf, pos, maxLen, pExceptionInfo->ContextRecord->Eip);
+        pos = SafeAppend(t_crashBuf, pos, maxLen, "\r\nESP: 0x");
+        pos = SafeAppendHex(t_crashBuf, pos, maxLen, pExceptionInfo->ContextRecord->Esp);
+        pos = SafeAppend(t_crashBuf, pos, maxLen, "\r\n");
         #endif
 
         // Write pre-formatted buffer with a single WriteFile call (async-signal-safe)
         DWORD bytesWritten = 0;
-        WriteFile(hFile, g_crashBuf, static_cast<DWORD>(pos), &bytesWritten, nullptr);
+        WriteFile(hFile, t_crashBuf, static_cast<DWORD>(pos), &bytesWritten, nullptr);
 
-        // Minidump â€” MiniDumpWriteDump is explicitly documented as safe in VEH
+        // Minidump — MiniDumpWriteDump is explicitly documented as safe in VEH
         MINIDUMP_EXCEPTION_INFORMATION dumpInfo;
         dumpInfo.ThreadId = GetCurrentThreadId();
         dumpInfo.ExceptionPointers = pExceptionInfo;
@@ -218,13 +211,15 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS pExceptionInfo) {
         DumpFilterContext filterCtx{};
         HMODULE mainModule = GetModuleHandleA(nullptr);
         GetModuleRange(mainModule, filterCtx.mainBase, filterCtx.mainSize);
-        HMODULE selfModule = nullptr;
-        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCSTR>(&VectoredHandler), &selfModule)) {
+
+        // Resolve our own module using VirtualQuery (safe — no loader lock)
+        HMODULE selfModule = SafeGetModuleFromAddress(reinterpret_cast<const void*>(&VectoredHandler));
+        if (selfModule) {
             GetModuleRange(selfModule, filterCtx.selfBase, filterCtx.selfSize);
         }
 
-        // Write filtered minidump directly (skip encryption in crash path â€” CryptProtectData is not async-safe)
+        // Write filtered minidump directly (no encryption — DPAPI is not safe
+        // inside a VEH handler, and encrypted dumps can't be shared for debugging)
         HANDLE hDumpFile = CreateFileA("dlss4_crash.dmp", GENERIC_WRITE, 0, nullptr,
                                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (hDumpFile != INVALID_HANDLE_VALUE) {
@@ -254,4 +249,3 @@ void UninstallCrashHandler() {
         g_Handler = nullptr;
     }
 }
-

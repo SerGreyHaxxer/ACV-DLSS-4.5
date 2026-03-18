@@ -56,6 +56,10 @@ public:
   // Check if an object already has a shadow vtable installed.
   static bool HasShadow(void* pObject);
 
+  // Get the original function pointer at a given vtable slot.
+  // Returns nullptr if the object has no shadow vtable or index is out of bounds.
+  static void* GetOriginalEntry(void* pObject, size_t index);
+
 private:
   struct ShadowInfo {
     void* originalVPtr;      // The original vtable pointer

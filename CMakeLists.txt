@@ -120,7 +120,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     sl.interposer
     psapi
     dbghelp
-    crypt32
     d3dcompiler  # Fix 9: Runtime HLSL compilation for reactive mask compute shader
 )
 

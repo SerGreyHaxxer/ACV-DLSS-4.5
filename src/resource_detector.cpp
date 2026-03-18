@@ -237,7 +237,7 @@ void ResourceDetector::RegisterDepthFromView(ID3D12Resource* pResource, DXGI_FOR
   if (m_bestDepth.Get() == pResource) return;
   m_bestDepthScore = 2.0f;
   m_bestDepth = pResource;
-  bool quietScan = ConfigManager::Get().DataSnapshot().system.quietResourceScan;
+  bool quietScan = ConfigManager::Get().DataSnapshot()->system.quietResourceScan;
   if (!quietScan) {
     LOG_INFO("[DLSSG] Depth view bound: {}x{} Fmt:{} Ptr:{:p}", desc.Width, desc.Height, static_cast<int>(desc.Format),
              static_cast<void*>(pResource));
@@ -269,7 +269,7 @@ void ResourceDetector::RegisterDepthFromClear(ID3D12Resource* pResource, float c
   m_bestDepthScore = 3.0f; // Extremely high confidence
   m_bestDepth = pResource;
 
-  if (!ConfigManager::Get().DataSnapshot().system.quietResourceScan) {
+  if (!ConfigManager::Get().DataSnapshot()->system.quietResourceScan) {
     LOG_INFO("[DLSSG] Depth IDENTIFIED via Clear: {}x{} Fmt:{} Ptr:{:p}", desc.Width, desc.Height,
              static_cast<int>(desc.Format), static_cast<void*>(pResource));
   }
@@ -288,7 +288,7 @@ void ResourceDetector::RegisterColorFromClear(ID3D12Resource* pResource) {
   m_bestColorScore = 2.5f; // High confidence
   m_bestColor = pResource;
 
-  if (!ConfigManager::Get().DataSnapshot().system.quietResourceScan) {
+  if (!ConfigManager::Get().DataSnapshot()->system.quietResourceScan) {
     LOG_INFO("[DLSSG] Color IDENTIFIED via Clear: {}x{} Fmt:{} Ptr:{:p}", desc.Width, desc.Height,
              static_cast<int>(desc.Format), static_cast<void*>(pResource));
   }
@@ -364,7 +364,7 @@ void ResourceDetector::RegisterMotionVectorFromView(ID3D12Resource* pResource, D
   if (m_bestMotion.Get() == pResource) return;
   m_bestMotionScore = 2.0f;
   m_bestMotion = pResource;
-  bool quietScan = ConfigManager::Get().DataSnapshot().system.quietResourceScan;
+  bool quietScan = ConfigManager::Get().DataSnapshot()->system.quietResourceScan;
   if (!quietScan) {
     LOG_INFO("[DLSSG] MV view bound: {}x{} Fmt:{} Ptr:{:p}", desc.Width, desc.Height, static_cast<int>(desc.Format),
              static_cast<void*>(pResource));
@@ -468,7 +468,7 @@ void ResourceDetector::RegisterResource(ID3D12Resource* pResource, bool allowDup
   evict(m_motionCandidates);
   evict(m_depthCandidates);
 
-  bool quietScan = ConfigManager::Get().DataSnapshot().system.quietResourceScan;
+  bool quietScan = ConfigManager::Get().DataSnapshot()->system.quietResourceScan;
   if (mvScore >= 0.5f) {
     bool found = false;
     ResourceCandidate* target = nullptr;
@@ -969,7 +969,7 @@ void ResourceDetector::RegisterHUDLessCandidate(ID3D12Resource* pResource) {
     m_bestHUDLess = pResource;
     m_hudLessLastFrameSeen = currentFrame;
 
-    bool quietScan = ConfigManager::Get().DataSnapshot().system.quietResourceScan;
+    bool quietScan = ConfigManager::Get().DataSnapshot()->system.quietResourceScan;
     if (!quietScan) {
       LOG_INFO("[DLSSG] HUD-less candidate: {}x{} Fmt:{} Score:{:.2f} Ptr:{:p}", desc.Width, desc.Height,
                static_cast<int>(desc.Format), score, static_cast<void*>(pResource));

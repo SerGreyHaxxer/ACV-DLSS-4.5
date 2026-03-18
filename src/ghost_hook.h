@@ -103,6 +103,12 @@ public:
   void DisableHook(int hookId);
   void EnableHook(int hookId);
 
+  // Apply current breakpoints to the calling thread.
+  // Called from DLL_THREAD_ATTACH to ensure newly spawned threads
+  // have Dr0-Dr3 configured — fixes the lazy propagation gap where
+  // threads born after init had empty debug registers.
+  void ApplyBreakpointsToCurrentThread();
+
   // Batched slot swap for rotating hooks — updates slots and applies
   // breakpoints to all threads in a SINGLE pass instead of 4 separate
   // remove+install operations. slotA/slotB are the slot indices (2,3).

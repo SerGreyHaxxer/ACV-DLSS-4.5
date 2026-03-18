@@ -258,6 +258,17 @@ void HookManager::EnableHook(int hookId) {
   }
 }
 
+void HookManager::ApplyBreakpointsToCurrentThread() {
+  if (!m_Initialized) return;
+  HANDLE hThread = OpenThread(
+      THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME,
+      FALSE, GetCurrentThreadId());
+  if (hThread) {
+    ApplyBreakpointsToThread(hThread);
+    CloseHandle(hThread);
+  }
+}
+
 void HookManager::SwapRotatingSlots(int slotA, uintptr_t addrA, HookCallback cbA, int slotB, uintptr_t addrB,
                                     HookCallback cbB) {
   if (!m_Initialized) return;

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 acerthyracer
  *
  * This program is free software: you can redistribute it and/or modify
@@ -20,23 +20,25 @@
 #include <array>
 #include <format>
 
-// Global static for the hook procedure
-static InputHandler* g_pInputHandler = nullptr;
-// Lock hierarchy level 4 â€” same tier as Config/Input
-// (SwapChain=1 > Hooks=2 > Resources=3 > Config/Input=4 > Logging=5).
-static std::mutex g_inputHandlerMutex;
+// ============================================================================
+// OS-Level Keyboard Hook — 100% Wait-Free
+// ============================================================================
+// Windows calls WH_KEYBOARD_LL hooks synchronously on the OS message pump
+// thread for every keystroke.  If this callback blocks (e.g. on a mutex),
+// Windows will silently unhook the application after LowLevelHooksTimeout
+// (~300ms), permanently breaking hotkeys.
+//
+// Solution: Zero locks.  Zero heap allocations.  Atomically queue the vKey
+// and let the timer/render thread process it safely in ProcessInput().
+// ============================================================================
 
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
-            KBDLLHOOKSTRUCT* pKey = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
-            InputHandler* handler = nullptr;
-            {
-                std::lock_guard<std::mutex> lock(g_inputHandlerMutex);
-                handler = g_pInputHandler;
-            }
-            if (handler) {
-                handler->HandleKey(pKey->vkCode);
+            // Wait-free atomic load — no mutex, no chance of OS timeout.
+            if (auto* handler = InputHandler::s_instance.load(std::memory_order_acquire)) {
+                KBDLLHOOKSTRUCT* pKey = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+                handler->QueueKey(static_cast<int>(pKey->vkCode));
             }
         }
     }
@@ -83,10 +85,10 @@ std::string InputHandler::GetKeyName(int vKey) const {
 
 void InputHandler::InstallHook() {
     if (m_hHook) return;
-    {
-        std::lock_guard<std::mutex> lock(g_inputHandlerMutex);
-        g_pInputHandler = this;
-    }
+
+    // Atomically publish this instance (wait-free for the hook proc).
+    s_instance.store(this, std::memory_order_release);
+
     // Get a ref-counted handle to our module so it stays loaded while the hook is active
     if (!GetModuleHandleExA(
             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
@@ -94,7 +96,7 @@ void InputHandler::InstallHook() {
         DWORD err = GetLastError();
         LOG_ERROR("GetModuleHandleEx failed (error {}), keyboard hook unavailable", err);
         m_selfModule = nullptr;
-        // Fall through â€” SetWindowsHookEx can still work with a null module for
+        // Fall through — SetWindowsHookEx can still work with a null module for
         // low-level hooks, but log the warning so we know something is off.
     }
     m_hHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, m_selfModule, 0);
@@ -103,11 +105,8 @@ void InputHandler::InstallHook() {
     } else {
         DWORD err = GetLastError();
         LOG_ERROR("SetWindowsHookEx FAILED (error {}). Hotkeys will use fallback polling.", err);
-        // Clean up the global pointer so we don't leave a dangling reference
-        {
-            std::lock_guard<std::mutex> lock(g_inputHandlerMutex);
-            g_pInputHandler = nullptr;
-        }
+        // Clean up the atomic pointer so we don't leave a dangling reference
+        s_instance.store(nullptr, std::memory_order_release);
         if (m_selfModule) {
             FreeLibrary(m_selfModule);
             m_selfModule = nullptr;
@@ -120,10 +119,8 @@ void InputHandler::UninstallHook() {
         UnhookWindowsHookEx(m_hHook);
         m_hHook = nullptr;
     }
-    {
-        std::lock_guard<std::mutex> lock(g_inputHandlerMutex);
-        g_pInputHandler = nullptr;
-    }
+    // Atomically clear (wait-free).
+    s_instance.store(nullptr, std::memory_order_release);
     // Release the ref-counted module handle now that the hook is removed
     if (m_selfModule) {
         FreeLibrary(m_selfModule);
@@ -132,6 +129,7 @@ void InputHandler::UninstallHook() {
 }
 
 void InputHandler::HandleKey(int vKey) {
+    // Called from ProcessInput() on the timer thread — safe for game logic.
     StreamlineIntegration::Get().ReflexMarker(sl::PCLMarker::eControllerInputSample);
     std::vector<std::function<void()>> callbacksToRun;
     {
@@ -139,7 +137,7 @@ void InputHandler::HandleKey(int vKey) {
         for (auto& cb : m_callbacks) {
             if (cb.vKey == vKey) {
                 if (cb.wasPressed) continue;
-                LOG_DEBUG("Global Hotkey Triggered: {}", cb.name);
+                LOG_DEBUG("Hotkey Triggered: {}", cb.name);
                 if (cb.callback) callbacksToRun.push_back(cb.callback);
                 cb.wasPressed = true;
             }
@@ -151,6 +149,18 @@ void InputHandler::HandleKey(int vKey) {
 }
 
 void InputHandler::ProcessInput() {
+    // ---- Phase 1: Drain the lock-free pending key queue ----
+    // Keys queued by the OS LL hook via QueueKey() are processed here
+    // on the timer thread, safely outside the OS hook context.
+    for (int i = 0; i < 256; ++i) {
+        if (m_pendingKeys[static_cast<size_t>(i)].exchange(false, std::memory_order_acquire)) {
+            HandleKey(i);
+        }
+    }
+
+    // ---- Phase 2: GetAsyncKeyState polling fallback ----
+    // This catches keys even if the LL hook was never installed or was
+    // silently removed by Windows. It also handles key-up transitions.
     std::vector<std::function<void()>> callbacksToRun;
     bool anyPressed = false;
     {
@@ -175,4 +185,3 @@ void InputHandler::ProcessInput() {
         cb();
     }
 }
-

@@ -106,3 +106,15 @@ bool ShadowVTable::HasShadow(void* pObject) {
   std::scoped_lock lock(s_mutex);
   return s_shadows.contains(pObject);
 }
+
+void* ShadowVTable::GetOriginalEntry(void* pObject, size_t index) {
+  if (!pObject) [[unlikely]] return nullptr;
+  std::scoped_lock lock(s_mutex);
+  auto it = s_shadows.find(pObject);
+  if (it == s_shadows.end()) return nullptr;
+  auto& info = it->second;
+  if (index >= info.entryCount) return nullptr;
+  // Read from the ORIGINAL vtable, not the shadow
+  void** originalVTable = reinterpret_cast<void**>(info.originalVPtr);
+  return originalVTable[index];
+}

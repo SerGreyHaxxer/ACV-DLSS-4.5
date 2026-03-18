@@ -15,7 +15,9 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 #pragma once
+#include <atomic>
 #include <cstdint>
+#include <type_traits>
 
 enum class JitterSource : uint8_t {
     None = 0,
@@ -24,21 +26,23 @@ enum class JitterSource : uint8_t {
     MatrixDiff,       // Tier 3: frame-to-frame projection matrix delta
 };
 
-struct JitterResult {
+struct alignas(16) JitterResult {
     float x = 0.0f;
     float y = 0.0f;
     JitterSource source = JitterSource::None;
     bool valid = false;
 };
+static_assert(std::is_trivially_copyable_v<JitterResult>,
+              "JitterResult must be trivially copyable for std::atomic");
 
 // Call once per frame from hooks.cpp GhostCB_Close or similar
 // patternX/Y: jitter from pattern scan (Tier 1). Pass NaN if unavailable.
 // proj: current frame's 4x4 projection matrix (row-major). Pass nullptr if unavailable.
-JitterResult JitterEngine_Update(float patternX, float patternY,
-                                  const float* proj);
+[[nodiscard]] JitterResult JitterEngine_Update(float patternX, float patternY,
+                                                const float* proj);
 
 // Query last valid jitter
-JitterResult JitterEngine_GetLast();
+[[nodiscard]] JitterResult JitterEngine_GetLast();
 
 // Get source name for logging
 const char* JitterSource_Name(JitterSource src);

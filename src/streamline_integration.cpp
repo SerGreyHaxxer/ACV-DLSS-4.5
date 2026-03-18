@@ -53,7 +53,9 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
 
   ConfigManager::Get().Load();
   // P1 FIX: Use snapshot — Initialize is called from hook callback threads.
-  ModConfig cfg = ConfigManager::Get().DataSnapshot();
+  // RCU: DataSnapshot() returns shared_ptr<const ModConfig> — wait-free read.
+  auto cfgPtr = ConfigManager::Get().DataSnapshot();
+  const ModConfig& cfg = *cfgPtr;
 
   m_dlssMode = static_cast<sl::DLSSMode>(cfg.dlss.mode);
   m_frameGenMultiplier = cfg.fg.multiplier;

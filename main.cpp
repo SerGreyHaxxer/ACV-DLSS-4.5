@@ -38,6 +38,7 @@
 #include "src/crash_handler.h"
 #include "src/dlss4_config.h"
 #include "src/dxgi_wrappers.h" // StopFrameTimer()
+#include "src/ghost_hook.h"   // Fix 1.2: DLL_THREAD_ATTACH HWBP propagation
 #include "src/hooks.h"
 #include "src/logger.h"
 #include "src/proxy.h"
@@ -61,10 +62,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
       // MessageBoxA(NULL, "DLSS Proxy DLL Loading", "Debug", MB_OK);
       LogStartup("DLL_PROCESS_ATTACH Entry");
 
-      // Disable thread notifications FIRST â€” before any code that might spawn
-      // threads.  This avoids DLL_THREAD_ATTACH deadlocks inside the loader lock.
-      DisableThreadLibraryCalls(hModule);
-      LogStartup("Thread Library Calls Disabled");
+      // Fix 1.2: DO NOT call DisableThreadLibraryCalls(). We need
+      // DLL_THREAD_ATTACH to bootstrap HWBP debug registers on newly
+      // spawned threads. The handler below only calls thread-context
+      // Win32 APIs, which are safe under the loader lock.
+      LogStartup("Thread Library Calls NOT Disabled (HWBP propagation)");
 
       // Initialize Proxy Global State (CS)
       try {
@@ -86,6 +88,15 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
       break;
 
     case DLL_THREAD_ATTACH:
+      // Fix 1.2: Apply current HWBP breakpoints to newly spawned threads.
+      // Without this, threads born after proxy init have empty Dr0-Dr3
+      // and will execute D3D12 commands completely bypassing ghost hooks.
+      // The ghost hook VEH's lazy propagation can only fire if the thread
+      // already has at least one breakpoint set — this ensures the bootstrap.
+      if (Ghost::HookManager::Get().IsInitialized()) {
+        Ghost::HookManager::Get().ApplyBreakpointsToCurrentThread();
+      }
+      break;
     case DLL_THREAD_DETACH: break;
 
     case DLL_PROCESS_DETACH:
