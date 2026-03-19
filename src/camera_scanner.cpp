@@ -350,7 +350,7 @@ void UpdateBestCamera(const float* view, const float* proj, float jitterX, float
   g_bestCamera.valid = true;
   g_bestCamera.method = method;
   if (!g_loggedCamera.exchange(true)) {
-    LOG_INFO("Camera matrices detected (score {:.2f}, method: {})", score, ScanMethodName(method));
+    LOG_INFO("Camera matrices detected (score {:.2f}, method: {})", (float)score, (const char*)ScanMethodName(method));
   }
 }
 
@@ -532,7 +532,7 @@ bool CameraScanner::TryScanAllCbvsForCamera(float* outView, float* outProj, floa
     if (extraction.has_value()) {
       if (logCandidates && extraction->score > 0.0f) {
         LOG_INFO("[CAM] Candidate GPU:0x{:x} Size:{} Score:{:.2f} View[15]:{:.2f} Proj[15]:{:.2f} Proj[11]:{:.2f}",
-                 info.gpuBase, info.size, extraction->score, extraction->view[15], extraction->proj[15], extraction->proj[11]);
+                 (uint64_t)info.gpuBase, (uint64_t)info.size, (float)extraction->score, (float)extraction->view[15], (float)extraction->proj[15], (float)extraction->proj[11]);
       }
       if (extraction->score > bestScore) {
         bestScore = extraction->score;
@@ -549,10 +549,10 @@ bool CameraScanner::TryScanAllCbvsForCamera(float* outView, float* outProj, floa
     s_lastCameraCbv = foundGpuBase;
     if (outScore) *outScore = bestScore;
     g_lastCameraFoundFrame.store(StreamlineIntegration::Get().GetFrameCount());
-    LOG_INFO("Camera matrices detected (Score: {:.2f}) at GPU: 0x{:x} Offset: +0x{:X}", bestScore, foundGpuBase,
-             s_lastCameraOffset);
+    LOG_INFO("Camera matrices detected (Score: {:.2f}) at GPU: 0x{:x} Offset: +0x{:X}", (float)bestScore, (uint64_t)foundGpuBase,
+             (uint64_t)s_lastCameraOffset);
   } else if (logCandidates) {
-    LOG_INFO("[CAM] Scan failed. Checked {} CBVs. Best Score: {:.2f}", (uint64_t)g_cbvInfos.size(), bestScore);
+    LOG_INFO("[CAM] Scan failed. Checked {} CBVs. Best Score: {:.2f}", (uint64_t)g_cbvInfos.size(), (float)bestScore);
   }
 
   return found;
@@ -602,9 +602,9 @@ bool CameraScanner::TryScanDescriptorCbvsForCamera(float* outView, float* outPro
   }
   if (logCandidates) {
     LOG_INFO("[CAM] Descriptor scan: candidates={} scanned={} bestScore={:.2f}", (unsigned long long)addrs.size(),
-             scanned, bestScore);
+             (unsigned long long)scanned, (float)bestScore);
   }
-  if (found && outScore) *outScore = bestScore;
+  if (found && outScore) { *outScore = bestScore; }
   return found;
 }
 
@@ -644,9 +644,9 @@ bool CameraScanner::TryScanRootCbvsForCamera(float* outView, float* outProj, flo
   }
   if (logCandidates) {
     LOG_INFO("[CAM] Root CBV scan: candidates={} scanned={} bestScore={:.2f}", (unsigned long long)addrs.size(),
-             scanned, bestScore);
+             (unsigned long long)scanned, (float)bestScore);
   }
-  if (found && outScore) *outScore = bestScore;
+  if (found && outScore) { *outScore = bestScore; }
   return found;
 }
 

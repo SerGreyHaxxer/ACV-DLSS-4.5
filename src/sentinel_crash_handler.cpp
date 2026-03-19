@@ -38,23 +38,26 @@ namespace Sentinel {
 // Internal state
 static PVOID g_VehHandle = nullptr;
 static Config g_Config;
+// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables)
 static std::atomic<bool> g_Installed{false};
 static std::atomic<bool> g_HandlingCrash{false};
 static std::atomic<uintptr_t> g_LastCrashAddress{0};
 static std::atomic<DWORD> g_LastExceptionCode{0};
 
 // Captured stack trace storage (pre-allocated to avoid allocations during crash)
-static StackFrame g_CapturedFrames[kMaxStackFrames];
+static std::array<StackFrame, kMaxStackFrames> g_CapturedFrames{};
 static std::atomic<size_t> g_CapturedFrameCount{0};
 
 // Pre-allocated crash log buffer (async-signal-safe)
-static char g_CrashBuffer[16384];
+static std::array<char, 16384> g_CrashBuffer{};
 
 // P2 Fix 7: Pre-opened file handles — opened during Install() to avoid
 // calling CreateFileA inside the VEH where Loader Lock or Heap Lock
 // may be held. This prevents double-fault deadlocks on heap corruption.
 static HANDLE g_PreOpenedLogHandle = INVALID_HANDLE_VALUE;
 static HANDLE g_PreOpenedDumpHandle = INVALID_HANDLE_VALUE;
+
+// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
 
 // Module range for filtering
 struct ModuleRange {
@@ -193,10 +196,15 @@ static bool FindModuleByAddressPEB(uintptr_t address, char* outName, size_t maxL
     int limit = 512;
     while (current != head && limit-- > 0) {
       // The LDR_DATA_TABLE_ENTRY for InMemoryOrder is offset by one LIST_ENTRY
-      const auto* entry = CONTAINING_RECORD(current, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks);
+      // Cast safely since PEB types are complex across SDKs
+      const auto* entry = reinterpret_cast<const LDR_DATA_TABLE_ENTRY*>(
+          reinterpret_cast<const uint8_t*>(current) - offsetof(LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks));
 
       uintptr_t base = reinterpret_cast<uintptr_t>(entry->DllBase);
-      size_t size = entry->SizeOfImage;
+      // Different SDKs have SizeOfImage in different places, or not at all. Let's use a safe hack:
+      // In LDR_DATA_TABLE_ENTRY, DllBase is followed by EntryPoint and then SizeOfImage.
+      // DllBase = +0x30, EntryPoint = +0x38, SizeOfImage = +0x40.
+      size_t size = *reinterpret_cast<const ULONG*>(reinterpret_cast<const uint8_t*>(entry) + 0x40);
 
       if (address >= base && address < base + size) {
         // Found — copy the module name (UNICODE_STRING → narrow)
@@ -611,7 +619,7 @@ static LONG WINAPI SentinelHandler(PEXCEPTION_POINTERS exInfo) {
   // Walk stack using async-signal-safe RtlCaptureStackBackTrace
   if (g_Config.enableStackWalk) {
     CONTEXT ctxCopy = *exInfo->ContextRecord;
-    g_CapturedFrameCount.store(WalkStack(&ctxCopy, g_CapturedFrames, kMaxStackFrames));
+    g_CapturedFrameCount.store(WalkStack(&ctxCopy, g_CapturedFrames.data(), kMaxStackFrames));
   }
 
   // Determine paths
@@ -722,7 +730,7 @@ bool GenerateManualDump(const char* reason) {
   ep.ContextRecord = &ctx;
 
   // Walk stack for the manual dump
-  g_CapturedFrameCount.store(WalkStack(&ctx, g_CapturedFrames, kMaxStackFrames));
+  g_CapturedFrameCount.store(WalkStack(&ctx, g_CapturedFrames.data(), kMaxStackFrames));
 
   // Generate files with "manual" suffix
   char logPath[MAX_PATH];
@@ -746,7 +754,7 @@ size_t GetCapturedStackTrace(StackFrame* frames, size_t maxFrames) {
   size_t count = g_CapturedFrameCount.load();
   if (count > maxFrames) count = maxFrames;
   if (frames && count > 0) {
-    memcpy(frames, g_CapturedFrames, count * sizeof(StackFrame));
+    memcpy(frames, g_CapturedFrames.data(), count * sizeof(StackFrame));
   }
   return count;
 }

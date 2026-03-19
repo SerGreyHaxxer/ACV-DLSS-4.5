@@ -19,7 +19,7 @@ RayTracingPass& RayTracingPass::Get() {
 
 bool RayTracingPass::Initialize(ID3D12Device* device) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_initialized) return true;
+    if (m_initialized) { return true; }
 
     if (!CreateRootSignature(device)) {
         LOG_ERROR("Failed to create SSRT Root Signature");
@@ -162,13 +162,13 @@ bool RayTracingPass::CreateRootSignature(ID3D12Device* device) {
     
     if (!pfnSerialize) {
         HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
-        if (hD3D12) pfnSerialize = (PFN_D3D12SerializeRootSignature)GetProcAddress(hD3D12, "D3D12SerializeRootSignature");
+        if (hD3D12) { pfnSerialize = (PFN_D3D12SerializeRootSignature)GetProcAddress(hD3D12, "D3D12SerializeRootSignature"); }
     }
 
-    if (!pfnSerialize) return false;
+    if (!pfnSerialize) { return false; }
 
     if (FAILED(pfnSerialize(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error))) {
-        if (error) LOG_ERROR("Root Sig Error: {}", (char*)error->GetBufferPointer());
+        if (error) { LOG_ERROR("Root Sig Error: {}", (char*)error->GetBufferPointer()); }
         return false;
     }
 

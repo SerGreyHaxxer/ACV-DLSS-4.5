@@ -185,7 +185,7 @@ ReflexHelper(MarkerUnderlying m)
     : BaseStructure(ReflexHelper::s_structType, kStructVersion1), marker(m){};
 ReflexHelper(PCLMarker m)
     : BaseStructure(ReflexHelper::s_structType, kStructVersion1),
-      marker(to_underlying(m)){};
+      marker(static_cast<uint32_t>(m)){};
 operator MarkerUnderlying() const { return marker; };
 
 private:
