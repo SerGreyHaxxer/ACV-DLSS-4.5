@@ -134,8 +134,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
       Sentinel::Uninstall();
       LogStartup("Sentinel Crash Handler Uninstalled");
 
-      // Legacy crash handler cleanup (if any)
-      UninstallCrashHandler();
+      // Legacy crash handler cleanup (forwards to Sentinel::Uninstall — no-op)
 
       Logger::Instance().Close(false);
       LogStartup("Logger Closed");

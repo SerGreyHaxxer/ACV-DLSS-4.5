@@ -115,3 +115,6 @@ bool TryGetPatternJitter(float& jitterX, float& jitterY);
 
 // P0 Fix 1: Patch a command list's vtable with shadow hooks
 void InstallCommandListShadowVTable(ID3D12GraphicsCommandList* pList);
+
+// Item 24: Reset all hook state flags — call from CleanupHooks() or device recreation
+void ResetHookState();

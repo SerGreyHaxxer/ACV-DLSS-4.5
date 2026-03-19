@@ -44,9 +44,19 @@ bool ResourceStateTracker_GetCurrentState(ID3D12Resource* pResource,
                                           D3D12_RESOURCE_STATES& outState);
 
 // Flush all TLS batches into the active read-optimized map via RCU swap.
-// Must be called from a single point (GhostCB_ExecuteCommandLists) before
+// Must be called from a single point (Hooked_ExecuteCommandLists) before
 // any code that reads resource states (camera scanning, DLSS evaluation).
 void ResourceStateTracker_FlushTLS();
 
 void ResourceStateTracker_EvictStale(uint64_t currentFrame, uint64_t maxAge);
 void ResourceStateTracker_Clear();
+
+// Per-thread diagnostic statistics
+struct ResourceStateTrackerStats {
+    uint64_t totalPushed;   // Total transitions recorded across all threads
+    uint64_t totalDropped;  // Transitions lost due to full batches
+    uint64_t totalFlushed;  // Transitions successfully merged into state map
+    uint32_t activeThreads; // Number of live TLS batches
+    size_t   mapSize;       // Current entries in the active state map
+};
+ResourceStateTrackerStats ResourceStateTracker_GetStats();

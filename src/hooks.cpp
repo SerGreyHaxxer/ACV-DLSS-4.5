@@ -149,6 +149,11 @@ PFN_ClearDepthStencilView g_OriginalClearDSV = nullptr;
 PFN_ClearRenderTargetView g_OriginalClearRTV = nullptr;
 PFN_CreateConstantBufferView g_OriginalCreateCBV = nullptr;
 PFN_CreateSampler g_OriginalCreateSampler = nullptr;
+// Fix: Raw original CreateSampler pointer captured from pristine vtable
+// BEFORE shadow patching. g_OriginalCreateSampler points to the shadow
+// vtable slot which redirects back to Hooked_CreateSampler → infinite
+// recursion. This pointer bypasses the shadow vtable entirely.
+static PFN_CreateSampler g_RawOriginalCreateSampler = nullptr;
 PFN_CreateDescriptorHeap g_OriginalCreateDescriptorHeap = nullptr;
 PFN_CreateCommandList g_OriginalCreateCommandList = nullptr;
 PFN_ResourceMap g_OriginalResourceMap = nullptr;
@@ -163,15 +168,15 @@ typedef void(STDMETHODCALLTYPE* PFN_DrawIndexedInstanced)(ID3D12GraphicsCommandL
 static PFN_DrawIndexedInstanced g_OriginalDrawIndexedInstanced = nullptr;
 
 // ============================================================================
-// SHADOW VTABLE ARCHITECTURE Ã¢â‚¬â€ All hooks via vtable patching (no HWBP)
+// SHADOW VTABLE ARCHITECTURE — All hooks via vtable patching
 // ============================================================================
 // Every hooked COM interface (Device, CommandList, CommandQueue, SwapChain)
 // uses shadow vtables. This gives:
-//   - 100% call capture (no rotation misses)
-//   - ~2ns branch overhead per call (native speed)
-//   - Zero VEH/kernel overhead (no EXCEPTION_SINGLE_STEP)
-//   - Invisible to Denuvo (patches heap-allocated COM objects, not .text)
-// ============================================================================
+//   - Expected full call capture (all calls route through shadow vtable)
+//   - Low overhead per call (indirect branch through copied vtable)
+//   - No VEH overhead for device/cmdlist/queue/swapchain hooks
+//   - Patches heap-allocated COM objects, not .text sections
+// ==================================================================================================
 
 // ============================================================================
 // SWAPCHAIN SHADOW VTABLE HOOKS (stdcall wrappers)
@@ -252,13 +257,11 @@ static void STDMETHODCALLTYPE Hooked_ExecuteCommandLists(
 
       float jitterX = 0.0f, jitterY = 0.0f;
       TryGetPatternJitter(jitterX, jitterY);
-      // Use cached camera data if available — never null out valid matrices
-      float cachedView[16], cachedProj[16];
-      if (StreamlineIntegration::Get().GetCachedCameraData(cachedView, cachedProj)) {
-        StreamlineIntegration::Get().SetCameraData(cachedView, cachedProj, jitterX, jitterY);
-      } else {
-        StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
-      }
+      // Fix: Don't attempt cached camera fallback here — Hooked_Close already
+      // handles camera data with proper scoring and caching. Setting cached data
+      // here can override better quality data that Hooked_Close will provide.
+      // Pass nullptr as a preliminary call; Hooked_Close will fill in real matrices.
+      StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
     }
   } catch (...) {
     LOG_ERROR("[ShadowVT] Exception in ExecuteCommandLists callback");
@@ -270,7 +273,7 @@ static void STDMETHODCALLTYPE Hooked_ExecuteCommandLists(
 // ============================================================================
 // These replace the Ghost HW breakpoint rotating hooks. Each wrapper calls
 // the original vtable function, then executes hook logic.  Installed via
-// ShadowVTable::PatchEntry Ã¢â‚¬â€ 100% call capture, ~2ns overhead.
+// ShadowVTable::PatchEntry — 100% call capture, ~2ns overhead.
 // ============================================================================
 
 static void STDMETHODCALLTYPE Hooked_CreateSRV(
@@ -348,16 +351,28 @@ static void STDMETHODCALLTYPE Hooked_CreateCBV(
 static void STDMETHODCALLTYPE Hooked_CreateSampler(
     ID3D12Device* pThis, const D3D12_SAMPLER_DESC* pDesc,
     D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+  // Fix: TLS recursion guard — if we're already inside this hook (e.g. via
+  // a shadow vtable cycle), skip hook logic and call the raw original directly.
+  thread_local bool t_inCreateSampler = false;
+  if (t_inCreateSampler) {
+    if (g_RawOriginalCreateSampler) g_RawOriginalCreateSampler(pThis, pDesc, handle);
+    return;
+  }
+  t_inCreateSampler = true;
   try {
     if (pDesc && pThis && handle.ptr) {
       D3D12_SAMPLER_DESC modifiedDesc = ApplyLodBias(*pDesc);
-      if (g_OriginalCreateSampler) g_OriginalCreateSampler(pThis, &modifiedDesc, handle);
+      // Fix: Call through g_RawOriginalCreateSampler which points to the
+      // pristine vtable entry, NOT the shadow vtable slot. This prevents
+      // the infinite recursion: Hooked → shadow → Hooked → shadow → ...
+      if (g_RawOriginalCreateSampler) g_RawOriginalCreateSampler(pThis, &modifiedDesc, handle);
     } else {
-      if (g_OriginalCreateSampler) g_OriginalCreateSampler(pThis, pDesc, handle);
+      if (g_RawOriginalCreateSampler) g_RawOriginalCreateSampler(pThis, pDesc, handle);
     }
   } catch (...) {
     LOG_ERROR("[ShadowVT] Exception in CreateSampler");
   }
+  t_inCreateSampler = false;
 }
 
 static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(
@@ -372,6 +387,12 @@ static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(
       if (count < 50) {
         LOG_DEBUG("[ShadowVT] CreateDescriptorHeap: Type={}, NumDescriptors={}, Flags={}",
                   static_cast<int>(pDesc->Type), pDesc->NumDescriptors, static_cast<int>(pDesc->Flags));
+      }
+      // Item 22: Wire descriptor heap tracking for resource/descriptor resolution
+      if (SUCCEEDED(hr) && ppvHeap && *ppvHeap) {
+        auto* pHeap = static_cast<ID3D12DescriptorHeap*>(*ppvHeap);
+        UINT incSize = pThis->GetDescriptorHandleIncrementSize(pDesc->Type);
+        TrackDescriptorHeap(pHeap, incSize);
       }
     }
   } catch (...) {
@@ -487,13 +508,26 @@ static HRESULT STDMETHODCALLTYPE Hooked_CreatePlacedResource(
         }
       }
     }
+    // Item 23: Install Map hook on placed upload resources (mirrors CreateCommittedResource)
+    if (SUCCEEDED(hr) && ppvResource && *ppvResource && pHeap) {
+      D3D12_HEAP_DESC heapDesc = pHeap->GetDesc();
+      if (heapDesc.Properties.Type == D3D12_HEAP_TYPE_UPLOAD) {
+        ID3D12Resource* pRes = static_cast<ID3D12Resource*>(*ppvResource);
+        constexpr size_t kResourceVTableSize = 12;
+        ShadowVTable::Install(pRes, kResourceVTableSize);
+        if (g_OriginalResourceMap) {
+          ShadowVTable::PatchEntry(pRes, static_cast<size_t>(vtable::Resource::Map),
+                                   reinterpret_cast<void*>(Hooked_ResourceMap));
+        }
+      }
+    }
   } catch (...) {
     LOG_ERROR("[ShadowVT] Exception in CreatePlacedResource");
   }
   return hr;
 }
 
-// Resource::Map hook Ã¢â‚¬â€ captures upload buffer CPU pointers for camera scanning
+// Resource::Map hook — captures upload buffer CPU pointers for camera scanning
 static HRESULT STDMETHODCALLTYPE Hooked_ResourceMap(
     ID3D12Resource* pThis, UINT Subresource, const D3D12_RANGE* pReadRange,
     void** ppData) {
@@ -535,7 +569,7 @@ static void STDMETHODCALLTYPE Hooked_ResourceBarrier(
   // Call original first
   if (g_OriginalResourceBarrier) g_OriginalResourceBarrier(pThis, NumBarriers, pBarriers);
 
-  // Hook logic (same as GhostCB_ResourceBarrier)
+  // Hook logic — resource barrier interception
   try {
     if (pBarriers && NumBarriers > 0) {
       UINT scanCount = (std::min)(NumBarriers, static_cast<UINT>(resource_config::kBarrierScanMax));
@@ -726,7 +760,7 @@ void InstallCommandListShadowVTable(ID3D12GraphicsCommandList* pList) {
 
 
 // ============================================================================
-// DEVICE HOOK INSTALLATION Ã¢â‚¬â€ captures vtable pointers + patches shadow vtable
+// DEVICE HOOK INSTALLATION — captures vtable pointers + patches shadow vtable
 // ============================================================================
 
 static void CaptureDeviceVTablePointers(ID3D12Device* pDevice) {
@@ -752,10 +786,15 @@ static void CaptureDeviceVTablePointers(ID3D12Device* pDevice) {
       GetVTableEntry<void*, vtable::Device>(devVt, vtable::Device::CreateCommandList));
   g_OriginalCreateSampler =
       reinterpret_cast<PFN_CreateSampler>(GetVTableEntry<void*, vtable::Device>(devVt, vtable::Device::CreateSampler));
+  // Fix: Capture raw original BEFORE shadow vtable is installed.
+  // g_OriginalCreateSampler will later point to the shadow vtable slot
+  // (which redirects to Hooked_CreateSampler), causing infinite recursion.
+  // g_RawOriginalCreateSampler always points to the real D3D12 implementation.
+  g_RawOriginalCreateSampler = g_OriginalCreateSampler;
   g_OriginalCreateDescriptorHeap = reinterpret_cast<PFN_CreateDescriptorHeap>(
       GetVTableEntry<void*, vtable::Device>(devVt, vtable::Device::CreateDescriptorHeap));
 
-  // Install shadow vtable on device Ã¢â‚¬â€ all hooks fire 100% reliably.
+  // Install shadow vtable on device — all hooks fire 100% reliably.
   constexpr size_t kDeviceVTableSize = 45;
   ShadowVTable::Install(pDevice, kDeviceVTableSize);
 
@@ -793,9 +832,6 @@ static void CaptureDeviceVTablePointers(ID3D12Device* pDevice) {
 }
 
 
-
-
-
 static void CaptureCommandQueueVTable(ID3D12CommandQueue* pQueue) {
   if (s_cmdQueueHooked.exchange(true)) return;
 
@@ -803,7 +839,7 @@ static void CaptureCommandQueueVTable(ID3D12CommandQueue* pQueue) {
   g_OriginalExecuteCommandLists = reinterpret_cast<PFN_ExecuteCommandLists>(
       GetVTableEntry<void*, vtable::CommandQueue>(queueVt, vtable::CommandQueue::ExecuteCommandLists));
 
-  // Install shadow vtable on CommandQueue Ã¢â‚¬â€ ExecuteCommandLists via stdcall wrapper
+  // Install shadow vtable on CommandQueue — ExecuteCommandLists via stdcall wrapper
   constexpr size_t kQueueVTableSize = 19; // ID3D12CommandQueue has ~19 methods
   ShadowVTable::Install(pQueue, kQueueVTableSize);
   ShadowVTable::PatchEntry(pQueue, static_cast<size_t>(vtable::CommandQueue::ExecuteCommandLists),
@@ -817,7 +853,7 @@ static void CaptureCommandListVTable(ID3D12GraphicsCommandList* pList) {
   // P0 Fix 1: Install shadow vtable on the first command list. This captures
   // the original function pointers AND patches the vtable in one step.
   // All subsequent command lists will use the same shared shadow vtable.
-  // NO rotating hooks needed Ã¢â‚¬â€ 100% call capture, zero VEH overhead.
+  // NO rotating hooks needed — 100% call capture, zero VEH overhead.
   InstallCommandListShadowVTable(pList);
 
   LOG_INFO("[ShadowVT] CommandList vtable captured via shadow vtable (6 hooks, 0 rotating)");
@@ -930,60 +966,46 @@ FARPROC WINAPI Hooked_GetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
 }
 
 // ============================================================================
-// PRESENT HOOK INSTALLATION - via Ghost Hook (Dr0, pinned) with vtable fallback
+// PRESENT HOOK INSTALLATION — via Shadow VTable (unified with all other hooks)
 // ============================================================================
-
-// Fallback Present function pointer (Phase 1.6: shadow vtable approach)
-static PFN_Present g_OrigPresent_Fallback = nullptr;
-
-static HRESULT STDMETHODCALLTYPE HookedPresent_Fallback(IDXGISwapChain* pThis, UINT SyncInterval, UINT Flags) noexcept {
-  try {
-    OnPresentThread(pThis);
-  } catch (...) {
-    static std::atomic<uint32_t> s_errs{0};
-    if (s_errs.fetch_add(1) % 300 == 0) LOG_ERROR("[GHOST] Exception in fallback Present");
-  }
-  AdvanceSlotRotation();
-  if (!g_OrigPresent_Fallback) return E_FAIL;
-  return g_OrigPresent_Fallback(pThis, SyncInterval, Flags);
-}
 
 void InstallPresentGhostHook(IDXGISwapChain* pSwapChain) {
   static std::atomic<bool> installed(false);
   if (installed.exchange(true)) return;
   if (!pSwapChain) return;
 
-  auto& ghost = Ghost::HookManager::Get();
-  if (!ghost.IsInitialized()) ghost.Initialize();
-
+  // Capture original vtable pointers BEFORE installing shadow vtable
   void** vt = GetVTable(pSwapChain);
-  auto fnPresent = reinterpret_cast<uintptr_t>(vt[static_cast<size_t>(vtable::SwapChain::Present)]);
-  g_OriginalPresent = reinterpret_cast<PFN_Present>(fnPresent);
+  g_OriginalPresent = reinterpret_cast<PFN_Present>(
+      vt[static_cast<size_t>(vtable::SwapChain::Present)]);
+  g_OriginalResizeBuffers = reinterpret_cast<PFN_ResizeBuffers>(
+      vt[static_cast<size_t>(vtable::SwapChain::ResizeBuffers)]);
 
-  // Phase 3: Capture ResizeBuffers vtable pointer and register as rotating hook
-  auto fnResizeBuffers = reinterpret_cast<uintptr_t>(vt[static_cast<size_t>(vtable::SwapChain::ResizeBuffers)]);
-  g_OriginalResizeBuffers = reinterpret_cast<PFN_ResizeBuffers>(fnResizeBuffers);
-  RegisterRotatingHook(fnResizeBuffers, GhostCB_ResizeBuffers, "ResizeBuffers");
-  LOG_INFO("[GHOST] ResizeBuffers registered as rotating hook ({:p})", reinterpret_cast<void*>(fnResizeBuffers));
+  // Install shadow vtable on swap chain — same approach as Device/CmdList/CmdQueue
+  constexpr size_t kSwapChainVTableSize = 40; // IDXGISwapChain4 has ~40 methods
+  ShadowVTable::Install(pSwapChain, kSwapChainVTableSize);
 
-  g_PinnedSlot0 = ghost.InstallHook(fnPresent, GhostCB_Present);
-  if (g_PinnedSlot0 >= 0) {
-    LOG_INFO("[GHOST] Present pinned to Dr{} (address {:p})", g_PinnedSlot0, reinterpret_cast<void*>(fnPresent));
-  } else {
-    // Phase 1.6: Fallback to vtable swap if ghost hook fails
-    LOG_WARN("[GHOST] Present ghost hook failed - using vtable swap fallback");
-    void** realVt = *reinterpret_cast<void***>(pSwapChain);
-    DWORD oldProtect;
-    if (VirtualProtect(&realVt[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-      g_OrigPresent_Fallback = reinterpret_cast<PFN_Present>(realVt[8]);
-      realVt[8] = reinterpret_cast<void*>(HookedPresent_Fallback);
-      VirtualProtect(&realVt[8], sizeof(void*), oldProtect, &oldProtect);
-      LOG_WARN("[GHOST] Present installed via vtable swap fallback");
-    } else {
-      LOG_ERROR("[GHOST] Present hook failed entirely");
-      installed.store(false);
-    }
-  }
+  ShadowVTable::PatchEntry(pSwapChain,
+      static_cast<size_t>(vtable::SwapChain::Present),
+      reinterpret_cast<void*>(Hooked_Present));
+  ShadowVTable::PatchEntry(pSwapChain,
+      static_cast<size_t>(vtable::SwapChain::ResizeBuffers),
+      reinterpret_cast<void*>(Hooked_ResizeBuffers));
+
+  LOG_INFO("[ShadowVT] SwapChain Present + ResizeBuffers installed via shadow vtable");
+}
+
+// ============================================================================
+// HOOK STATE RESET — allows re-hooking after device recreation (Item 24)
+// ============================================================================
+
+void ResetHookState() {
+  s_cmdListHooked.store(false);
+  s_cmdQueueHooked.store(false);
+  s_deviceHooked.store(false);
+  s_resourceHooked.store(false);
+  g_CmdListShadowVTable = nullptr;
+  g_CmdListVTableSize = 0;
 }
 
 // ============================================================================
@@ -993,10 +1015,9 @@ void InstallPresentGhostHook(IDXGISwapChain* pSwapChain) {
 void InstallD3D12Hooks() {
   static std::atomic<bool> installed(false);
   if (installed.exchange(true)) return;
-  // Initialize Ghost Hook system (VEH + hardware breakpoints).
-  // Zero code modification. Zero vtable patching. Invisible to integrity checks.
-  Ghost::HookManager::Get().Initialize();
-  LOG_INFO("[GHOST] Hook system initialized (hardware breakpoints only - no MinHook)");
+  // Shadow vtable architecture — no Ghost HWBP needed at runtime.
+  // Ghost hook system is retained for CI testing but not initialized here.
+  LOG_INFO("[ShadowVT] Hook system ready (shadow vtable architecture)");
 }
 
 bool InitializeHooks() {
@@ -1004,16 +1025,12 @@ bool InitializeHooks() {
 }
 
 void CleanupHooks() {
-  // P0 FIX: Defense-in-depth Ã¢â‚¬â€ stop timer thread if not already stopped.
-  // Must happen before Ghost shutdown because the timer thread may be
-  // executing code that triggers ghost hook breakpoints.
+  // Stop timer thread first — it may be calling into hooked functions.
   StopFrameTimer();
 
-  {
-    std::lock_guard<std::mutex> lock(g_RotationMutex);
-    g_RotatingHooks.clear();
-  }
-  Ghost::HookManager::Get().Shutdown();
+  // Reset hook state flags so hooks can be re-installed on device recreation
+  ResetHookState();
+
   InputHandler::Get().UninstallHook();
   ImGuiOverlay::Get().Shutdown();
   StreamlineIntegration::Get().Shutdown();

@@ -77,10 +77,13 @@ std::vector<struct TLSBatch*> g_registeredBatches;
 // DLL_THREAD_DETACH. The destructor sets is_alive=false (zero locks).
 // FlushTLS reaps dead batches under its own mutex where it's safe.
 struct TLSBatch {
-    cpp26::inplace_vector<TLSEntry, kTLSBatchSize> entries[2];
-    std::atomic<int> active_idx{0};
+    cpp26::inplace_vector<TLSEntry, kTLSBatchSize> entries;
     bool registered = false;
     std::atomic<bool> is_alive{true};
+    // Per-thread diagnostic counters for observability
+    std::atomic<uint64_t> totalPushed{0};
+    std::atomic<uint64_t> totalDropped{0};
+    std::atomic<uint64_t> totalFlushed{0};
 
     ~TLSBatch() {
         // P0 Fix 2: NO MUTEX HERE! Prevents OS Loader Lock deadlock.
@@ -120,13 +123,15 @@ void ResourceStateTracker_RecordTransition(ID3D12Resource* pResource,
         g_registeredBatches.push_back(&tls_batch);
     }
 
-    // Lock-free O(1) push — no mutex, no atomic, no contention
-    int active = tls_batch.active_idx.load(std::memory_order_relaxed);
-    if (tls_batch.entries[active].size() < kTLSBatchSize) [[likely]] {
-        tls_batch.entries[active].push_back({pResource, stateAfter});
+    // Lock-free O(1) push — no mutex, no atomic, no contention.
+    // Thread-local: only the owning thread writes here, no races possible.
+    if (tls_batch.entries.size() < kTLSBatchSize) [[likely]] {
+        tls_batch.entries.push_back({pResource, stateAfter});
+        tls_batch.totalPushed.fetch_add(1, std::memory_order_relaxed);
     } else {
         // Batch full — overwrite the last entry as best-effort.
-        tls_batch.entries[active].back() = {pResource, stateAfter};
+        tls_batch.entries.back() = {pResource, stateAfter};
+        tls_batch.totalDropped.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -161,14 +166,14 @@ void ResourceStateTracker_FlushTLS() {
         // P0 Fix 2: Skip tombstoned batches (thread died between collect + merge)
         if (!batch->is_alive.load(std::memory_order_relaxed)) continue;
 
-        int active = batch->active_idx.load(std::memory_order_relaxed);
-        int inactive = (active + 1) % 2;
-        batch->active_idx.store(inactive, std::memory_order_release);
-
-        for (const auto& entry : batch->entries[active]) {
+        // Thread-local single buffer: safe to read and clear because the
+        // owning thread cannot be writing simultaneously (FlushTLS is called
+        // from the game's main render thread between frames).
+        for (const auto& entry : batch->entries) {
             g_maps[g_writeIdx].map[entry.pResource] = {entry.state, frame};
         }
-        batch->entries[active].clear();
+        batch->totalFlushed.fetch_add(batch->entries.size(), std::memory_order_relaxed);
+        batch->entries.clear();
     }
 
     // Cap enforcement (only during flush, not on hot path)
@@ -214,4 +219,19 @@ void ResourceStateTracker_Clear() {
     g_maps[1].map.clear();
     g_activeMap.store(&g_maps[0], std::memory_order_release);
     g_writeIdx = 1;
+}
+
+ResourceStateTrackerStats ResourceStateTracker_GetStats() {
+    ResourceStateTrackerStats stats{};
+    std::scoped_lock lock(g_registryMutex);
+    for (const auto* batch : g_registeredBatches) {
+        if (!batch->is_alive.load(std::memory_order_relaxed)) continue;
+        stats.totalPushed  += batch->totalPushed.load(std::memory_order_relaxed);
+        stats.totalDropped += batch->totalDropped.load(std::memory_order_relaxed);
+        stats.totalFlushed += batch->totalFlushed.load(std::memory_order_relaxed);
+        stats.activeThreads++;
+    }
+    StateMap* active = g_activeMap.load(std::memory_order_relaxed);
+    stats.mapSize = active->map.size();
+    return stats;
 }

@@ -18,7 +18,7 @@
 
 #include "dlss4_config.h"
 #include "logger.h"
-#include "streamline_integration.h"
+#include "resource_detector.h"
 
 #include <wrl/client.h>
 
@@ -92,10 +92,11 @@ struct CameraCandidate {
   ScanMethod method = ScanMethod::None;
 };
 
-// Lock hierarchy level 3 â€” same tier as Resources
+// Lock hierarchy level 3 — same tier as Resources
 // (SwapChain=1 > Hooks=2 > Resources/Camera=3 > Config=4 > Logging=5).
 std::mutex g_cameraMutex;
 CameraCandidate g_bestCamera;
+ScoreBreakdown g_lastBreakdown;  // Item 9: last accepted breakdown
 std::atomic<bool> g_loggedCamera(false);
 
 struct UploadCbvInfo {
@@ -105,10 +106,10 @@ struct UploadCbvInfo {
   uint8_t* cpuPtr = nullptr;
 };
 
-// Lock hierarchy level 3 â€” same tier as Resources
+// Item 14: CBV list kept sorted by gpuBase for O(log n) lookups.
+// Lock hierarchy level 3 — same tier as Resources
 std::mutex g_cbvMutex;
 std::vector<UploadCbvInfo> g_cbvInfos;
-alignas(std::hardware_destructive_interference_size) std::atomic<uint64_t> g_cameraFrame(0);
 alignas(std::hardware_destructive_interference_size) std::atomic<uint64_t> g_lastFullScanFrame(0);
 alignas(std::hardware_destructive_interference_size) std::atomic<uint64_t> g_lastCameraFoundFrame(0);
 
@@ -169,45 +170,44 @@ struct CameraExtraction {
   size_t offset;
 };
 
-float ScoreMatrixPair(std::span<const float, 16> viewData, std::span<const float, 16> projData) {
-  float score = 0.0f;
-  if (!LooksLikeMatrix(viewData) || !LooksLikeMatrix(projData)) return 0.0f;
+// Item 9: Explainable scoring — populates ScoreBreakdown with per-signal contributions.
+ScoreBreakdown ScoreMatrixPairWithBreakdown(std::span<const float, 16> viewData, std::span<const float, 16> projData) {
+  ScoreBreakdown bd{};
+  if (!LooksLikeMatrix(viewData) || !LooksLikeMatrix(projData)) return bd;
 
-  // Replaced mdspan with manual indexing for compatibility with GCC 15 / MinGW
-  // Access pattern: data[row * 4 + col]
   const float* view = viewData.data();
   const float* proj = projData.data();
 
   // view[3,3] should be 1.0 for an affine view matrix
-  if (std::abs(view[3 * 4 + 3] - 1.0f) > 0.1f) return 0.0f;
-  if (std::abs(view[3 * 4 + 3] - 1.0f) < 0.01f) score += 0.2f;
+  if (std::abs(view[3 * 4 + 3] - 1.0f) > 0.1f) return bd;
+  if (std::abs(view[3 * 4 + 3] - 1.0f) < 0.01f) bd.affineBonus = 0.2f;
 
   // Perspective projection detection
   bool isStrongPerspective = std::abs(proj[3 * 4 + 3]) < 0.01f && std::abs(std::abs(proj[2 * 4 + 3]) - 1.0f) < 0.1f;
   bool isWeakPerspective = std::abs(proj[3 * 4 + 3]) < 0.8f && std::abs(proj[2 * 4 + 3]) > 0.2f;
 
   if (isStrongPerspective)
-    score += 0.6f;
+    bd.perspectiveBonus = 0.6f;
   else if (isWeakPerspective)
-    score += 0.3f;
+    bd.perspectiveBonus = 0.3f;
   else
-    return 0.0f; // Reject ortho/identity — not a camera projection
+    return bd; // Reject ortho/identity
 
   // FoV validation: proj[0,0] and proj[1,1] encode focal lengths
   if (std::abs(proj[0 * 4 + 0]) > 0.3f && std::abs(proj[0 * 4 + 0]) < 5.0f &&
       std::abs(proj[1 * 4 + 1]) > 0.3f && std::abs(proj[1 * 4 + 1]) < 5.0f) {
-    score += 0.15f;
-    // Bonus for typical game FoV (60°-90°)
-    if (std::abs(proj[1 * 4 + 1]) > 0.8f && std::abs(proj[1 * 4 + 1]) < 2.2f) score += 0.05f;
+    bd.fovBonus = 0.15f;
+    if (std::abs(proj[1 * 4 + 1]) > 0.8f && std::abs(proj[1 * 4 + 1]) < 2.2f) bd.fovBonus += 0.05f;
   }
 
   // Affine view matrix: last column should be [0, 0, 0, 1]
-  if (std::abs(view[0 * 4 + 3]) < 1.0f && std::abs(view[1 * 4 + 3]) < 1.0f && std::abs(view[2 * 4 + 3]) < 1.0f) score += 0.1f;
-  // Translation vector within reasonable game-world range
+  float transBonus = 0.0f;
+  if (std::abs(view[0 * 4 + 3]) < 1.0f && std::abs(view[1 * 4 + 3]) < 1.0f && std::abs(view[2 * 4 + 3]) < 1.0f) transBonus += 0.1f;
   if (std::abs(view[3 * 4 + 0]) < camera_config::kPosTolerance &&
       std::abs(view[3 * 4 + 1]) < camera_config::kPosTolerance &&
       std::abs(view[3 * 4 + 2]) < camera_config::kPosTolerance)
-    score += 0.1f;
+    transBonus += 0.1f;
+  bd.translationBonus = transBonus;
 
   // Orthogonality check for rotation component
   float r0[3] = { view[0 * 4 + 0], view[0 * 4 + 1], view[0 * 4 + 2] };
@@ -217,21 +217,23 @@ float ScoreMatrixPair(std::span<const float, 16> viewData, std::span<const float
   float len1 = Length3(r1);
   float len2 = Length3(r2);
   if (len0 > 0.1f && len1 > 0.1f && len2 > 0.1f) {
-    float orthoScore = 0.0f;
-    float d01 = std::abs(Dot3(r0, r1) / (len0 * len1));
-    float d02 = std::abs(Dot3(r0, r2) / (len0 * len2));
-    float d12 = std::abs(Dot3(r1, r2) / (len1 * len2));
-    if (d01 < 0.2f) orthoScore += 0.1f;
-    if (d02 < 0.2f) orthoScore += 0.1f;
-    if (d12 < 0.2f) orthoScore += 0.1f;
-    score += orthoScore;
-    // Bonus: rows should be unit-length for a proper rotation matrix
+    float ortho = 0.0f;
+    if (std::abs(Dot3(r0, r1) / (len0 * len1)) < 0.2f) ortho += 0.1f;
+    if (std::abs(Dot3(r0, r2) / (len0 * len2)) < 0.2f) ortho += 0.1f;
+    if (std::abs(Dot3(r1, r2) / (len1 * len2)) < 0.2f) ortho += 0.1f;
     if (std::abs(len0 - 1.0f) < 0.15f && std::abs(len1 - 1.0f) < 0.15f && std::abs(len2 - 1.0f) < 0.15f) {
-      score += 0.1f;
+      ortho += 0.1f;
     }
+    bd.orthogonalityBonus = ortho;
   }
 
-  return score;
+  bd.total = bd.affineBonus + bd.perspectiveBonus + bd.fovBonus + bd.translationBonus + bd.orthogonalityBonus;
+  return bd;
+}
+
+// Backward-compatible wrapper — returns total score only
+float ScoreMatrixPair(std::span<const float, 16> viewData, std::span<const float, 16> projData) {
+  return ScoreMatrixPairWithBreakdown(viewData, projData).total;
 }
 
 [[nodiscard]] std::expected<CameraExtraction, std::string_view>
@@ -328,26 +330,39 @@ TryExtractCameraFromBuffer(const uint8_t* data, size_t size) {
   return result;
 }
 
+// Item 14: O(log n) lookup using sorted g_cbvInfos vector.
 bool TryGetCbvData(D3D12_GPU_VIRTUAL_ADDRESS gpuAddress, const uint8_t** outData, size_t* outSize) {
   std::scoped_lock lock(g_cbvMutex);
-  for (const auto& info : g_cbvInfos) {
-    if (!info.cpuPtr || info.gpuBase == 0 || info.size == 0) continue;
-    if (gpuAddress >= info.gpuBase && gpuAddress < info.gpuBase + info.size) {
-      size_t offset = static_cast<size_t>(gpuAddress - info.gpuBase);
-      if (offset >= info.size) return false;
-      *outData = info.cpuPtr + offset;
-      *outSize = static_cast<size_t>(info.size - offset);
-      return true;
-    }
+  if (g_cbvInfos.empty()) return false;
+  // Find the last element whose gpuBase <= gpuAddress
+  auto it = std::upper_bound(g_cbvInfos.begin(), g_cbvInfos.end(), gpuAddress,
+      [](D3D12_GPU_VIRTUAL_ADDRESS addr, const UploadCbvInfo& info) {
+        return addr < info.gpuBase;
+      });
+  if (it == g_cbvInfos.begin()) return false;
+  --it;
+  if (!it->cpuPtr || it->gpuBase == 0 || it->size == 0) return false;
+  if (gpuAddress >= it->gpuBase && gpuAddress < it->gpuBase + it->size) {
+    size_t offset = static_cast<size_t>(gpuAddress - it->gpuBase);
+    *outData = it->cpuPtr + offset;
+    *outSize = static_cast<size_t>(it->size - offset);
+    return true;
   }
   return false;
 }
 
 void UpdateBestCamera(const float* view, const float* proj, float jitterX, float jitterY,
                       ScanMethod method = ScanMethod::None) {
-  float score = ScoreMatrixPair(std::span<const float, 16>{view, 16}, std::span<const float, 16>{proj, 16});
+  ScoreBreakdown bd = ScoreMatrixPairWithBreakdown(std::span<const float, 16>{view, 16}, std::span<const float, 16>{proj, 16});
+  float score = bd.total;
   if (score < 0.6f) return;
   std::scoped_lock lock(g_cameraMutex);
+
+  // EMA smoothing — prevents single-frame glitch detections from overriding stable camera.
+  constexpr float kEmaAlpha = 0.3f;
+  static float s_smoothedScore = 0.0f;
+  s_smoothedScore = kEmaAlpha * score + (1.0f - kEmaAlpha) * s_smoothedScore;
+
   // Stability bonus: if the new camera is very similar to the last, boost its score
   float stabilityBonus = 0.0f;
   if (g_bestCamera.valid) {
@@ -362,19 +377,25 @@ void UpdateBestCamera(const float* view, const float* proj, float jitterX, float
       stabilityBonus = 0.1f;
   }
   score += stabilityBonus;
-  // Only update if the new candidate is at least as good as the current best
-  // (prevents flickering to a worse candidate)
-  if (g_bestCamera.valid && score < g_bestCamera.score - 0.1f) return;
+
+  float gatedScore = (g_bestCamera.valid && stabilityBonus < 0.1f)
+                         ? s_smoothedScore + stabilityBonus
+                         : score;
+
+  if (g_bestCamera.valid && gatedScore < g_bestCamera.score - 0.1f) return;
   g_bestCamera.score = score;
   std::copy_n(view, 16, g_bestCamera.view);
   std::copy_n(proj, 16, g_bestCamera.proj);
   g_bestCamera.jitterX = jitterX;
   g_bestCamera.jitterY = jitterY;
-  g_bestCamera.frame = ++g_cameraFrame;
+  // Item 16: Use ResourceDetector frame counter as single source of truth
+  g_bestCamera.frame = ResourceDetector::Get().GetFrameCount();
   g_bestCamera.valid = true;
   g_bestCamera.method = method;
+  g_lastBreakdown = bd;  // Item 9: store breakdown for diagnostics
   if (!g_loggedCamera.exchange(true)) {
-    LOG_INFO("Camera matrices detected (score {:.2f}, method: {})", score, ScanMethodName(method));
+    LOG_INFO("Camera matrices detected (score {:.2f}, smoothed {:.2f}, method: {})",
+             score, s_smoothedScore, ScanMethodName(method));
   }
 }
 
@@ -407,7 +428,7 @@ bool CameraScanner::GetLastCameraStats(float& outScore, uint64_t& outFrame) {
 void CameraScanner::TrackCbvDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE handle, const D3D12_CONSTANT_BUFFER_VIEW_DESC* desc) {
   if (!handle.ptr || !desc || desc->BufferLocation == 0) return;
   std::scoped_lock lock(g_cbvAddrMutex);
-  g_cbvGpuAddrs[handle.ptr] = {desc->BufferLocation, StreamlineIntegration::Get().GetFrameCount()};
+  g_cbvGpuAddrs[handle.ptr] = {desc->BufferLocation, ResourceDetector::Get().GetFrameCount()};
   g_cbvDescriptorCount++;
 }
 
@@ -433,14 +454,31 @@ void CameraScanner::GetCameraScanCounts(uint64_t& cbvCount, uint64_t& descCount,
   }
 }
 
+// Item 13: Deduplicate by (resource, gpuBase) — update in place if already registered.
+// Item 14: Maintain sorted order by gpuBase for O(log n) lookups.
 void CameraScanner::RegisterCbv(ID3D12Resource* pResource, UINT64 size, uint8_t* cpuPtr) {
   std::scoped_lock lock(g_cbvMutex);
+  D3D12_GPU_VIRTUAL_ADDRESS gpuBase = pResource->GetGPUVirtualAddress();
+
+  // Deduplicate: find existing entry with same resource + gpuBase
+  auto dup = std::find_if(g_cbvInfos.begin(), g_cbvInfos.end(),
+      [&](const UploadCbvInfo& e) { return e.resource.Get() == pResource && e.gpuBase == gpuBase; });
+  if (dup != g_cbvInfos.end()) {
+    dup->cpuPtr = cpuPtr;
+    dup->size = size;
+    return; // Updated in place, sorted order unchanged
+  }
+
+  // Insert at sorted position (by gpuBase)
   UploadCbvInfo info{};
   info.resource = pResource;
-  info.gpuBase = pResource->GetGPUVirtualAddress();
+  info.gpuBase = gpuBase;
   info.size = size;
   info.cpuPtr = cpuPtr;
-  g_cbvInfos.push_back(info);
+  auto insertPos = std::lower_bound(g_cbvInfos.begin(), g_cbvInfos.end(), gpuBase,
+      [](const UploadCbvInfo& e, D3D12_GPU_VIRTUAL_ADDRESS addr) { return e.gpuBase < addr; });
+  g_cbvInfos.insert(insertPos, std::move(info));
+
   const size_t maxCbvs = camera_config::kScanMaxCbvsPerFrame * camera_config::kScanExtendedMultiplier * 8;
   if (g_cbvInfos.size() > maxCbvs) {
     g_cbvInfos.erase(g_cbvInfos.begin(), g_cbvInfos.begin() + (g_cbvInfos.size() - maxCbvs));
@@ -473,24 +511,36 @@ uint64_t CameraScanner::GetLastFullScanFrame() {
 }
 
 bool CameraScanner::TryScanAllCbvsForCamera(float* outView, float* outProj, float* outScore, bool logCandidates, bool allowFullScan) {
-  // SEH-based validation: zero-cost on success (table-based unwinding).
-  // Replaces the old VirtualQuery syscall pattern that was burning 1-3ms/frame
-  // in Ring-0 page table walks across 1,000+ CBVs.
-  std::scoped_lock lock(g_cbvMutex);
-
-  // Prune entries whose CPU pointers are no longer readable (freed by the game).
-  // IsMemoryReadableFast uses __try/__except — 0 cycles on committed pages.
-  std::erase_if(g_cbvInfos, [](const UploadCbvInfo& info) {
-    if (!info.cpuPtr) return true;
-    return !IsMemoryReadableFast(info.cpuPtr, static_cast<size_t>(info.size));
-  });
-
-  // Fast path - check known location first
-  if (s_lastCameraCbv != 0) {
+  // Item 12: Snapshot-then-scan — lock only to snapshot metadata, then scan unlocked.
+  // This prevents holding g_cbvMutex during the expensive per-buffer extraction.
+  struct CbvSnapshot {
+    D3D12_GPU_VIRTUAL_ADDRESS gpuBase;
+    uint8_t* cpuPtr;
+    uint64_t size;
+  };
+  std::vector<CbvSnapshot> snapshot;
+  D3D12_GPU_VIRTUAL_ADDRESS cachedCbv = s_lastCameraCbv;
+  size_t cachedOffset = s_lastCameraOffset;
+  {
+    std::scoped_lock lock(g_cbvMutex);
+    // Prune entries whose CPU pointers are no longer readable
+    std::erase_if(g_cbvInfos, [](const UploadCbvInfo& info) {
+      if (!info.cpuPtr) return true;
+      return !IsMemoryReadableFast(info.cpuPtr, static_cast<size_t>(info.size));
+    });
+    snapshot.reserve(g_cbvInfos.size());
     for (const auto& info : g_cbvInfos) {
-      if (info.gpuBase == s_lastCameraCbv) {
-        if (s_lastCameraOffset + sizeof(float) * 32 <= info.size) {
-          const float* viewRaw = reinterpret_cast<const float*>(info.cpuPtr + s_lastCameraOffset);
+      snapshot.push_back({info.gpuBase, info.cpuPtr, info.size});
+    }
+  }
+  // From here on, no mutex is held. CPU pointers are val
+  // Fast path - check known location first (operates on snapshot, no lock held)
+  if (cachedCbv != 0) {
+    for (const auto& snap : snapshot) {
+      if (snap.gpuBase == cachedCbv) {
+        if (!IsMemoryReadableFast(snap.cpuPtr, static_cast<size_t>(snap.size))) continue;
+        if (cachedOffset + sizeof(float) * 32 <= snap.size) {
+          const float* viewRaw = reinterpret_cast<const float*>(snap.cpuPtr + cachedOffset);
           const float* projRaw = viewRaw + 16;
           float score = ScoreMatrixPair(std::span<const float, 16>{viewRaw, 16},
                                          std::span<const float, 16>{projRaw, 16});
@@ -500,7 +550,7 @@ bool CameraScanner::TryScanAllCbvsForCamera(float* outView, float* outProj, floa
           TransposeMatrix(viewRaw, tView);
           TransposeMatrix(projRaw, tProj);
           float tScore = ScoreMatrixPair(std::span<const float, 16>{tView, 16},
-                                          std::span<const float, 16>{tProj, 16});
+                                           std::span<const float, 16>{tProj, 16});
           if (tScore > bestScore) {
             bestScore = tScore;
             useTranspose = true;
@@ -514,18 +564,19 @@ bool CameraScanner::TryScanAllCbvsForCamera(float* outView, float* outProj, floa
               std::copy_n(projRaw, 16, outProj);
             }
             if (outScore) *outScore = bestScore;
-            g_lastCameraFoundFrame.store(StreamlineIntegration::Get().GetFrameCount());
+            // Item 16: Unified frame counter
+            g_lastCameraFoundFrame.store(ResourceDetector::Get().GetFrameCount());
             return true;
           }
         }
 
-        auto extraction = TryExtractCameraFromBuffer(info.cpuPtr, static_cast<size_t>(info.size));
+        auto extraction = TryExtractCameraFromBuffer(snap.cpuPtr, static_cast<size_t>(snap.size));
         if (extraction.has_value()) {
           s_lastCameraOffset = extraction->offset;
           std::copy_n(extraction->view.data(), 16, outView);
           std::copy_n(extraction->proj.data(), 16, outProj);
           if (outScore) *outScore = extraction->score;
-          g_lastCameraFoundFrame.store(StreamlineIntegration::Get().GetFrameCount());
+          g_lastCameraFoundFrame.store(ResourceDetector::Get().GetFrameCount());
           return true;
         }
       }
@@ -536,7 +587,7 @@ bool CameraScanner::TryScanAllCbvsForCamera(float* outView, float* outProj, floa
   bool found = false;
   D3D12_GPU_VIRTUAL_ADDRESS foundGpuBase = 0;
 
-  if (g_cbvInfos.empty() && logCandidates) {
+  if (snapshot.empty() && logCandidates) {
     LOG_INFO("{}", "[CAM] No CBVs registered! Check RegisterCbv hooks.");
     return false;
   }
@@ -544,25 +595,27 @@ bool CameraScanner::TryScanAllCbvsForCamera(float* outView, float* outProj, floa
   if (!allowFullScan) {
     return false;
   }
-  g_lastFullScanFrame.store(StreamlineIntegration::Get().GetFrameCount());
+  // Item 16: Unified frame counter
+  g_lastFullScanFrame.store(ResourceDetector::Get().GetFrameCount());
 
   uint32_t scanned = 0;
   const uint32_t maxScan = camera_config::kScanMaxCbvsPerFrame * camera_config::kScanExtendedMultiplier;
-  for (const auto& info : g_cbvInfos) {
-    if (!info.cpuPtr || info.size < camera_config::kCbvMinSize) continue;
+  for (const auto& snap : snapshot) {
+    if (!snap.cpuPtr || snap.size < camera_config::kCbvMinSize) continue;
     if (scanned++ >= maxScan) break;
+    if (!IsMemoryReadableFast(snap.cpuPtr, static_cast<size_t>(snap.size))) continue;
 
-    auto extraction = TryExtractCameraFromBuffer(info.cpuPtr, static_cast<size_t>(info.size));
+    auto extraction = TryExtractCameraFromBuffer(snap.cpuPtr, static_cast<size_t>(snap.size));
     if (extraction.has_value()) {
       if (logCandidates && extraction->score > 0.0f) {
         LOG_INFO("[CAM] Candidate GPU:0x{:x} Size:{} Score:{:.2f} View[15]:{:.2f} Proj[15]:{:.2f} Proj[11]:{:.2f}",
-                 (unsigned long long)info.gpuBase, (unsigned long long)info.size, extraction->score, extraction->view[15], extraction->proj[15], extraction->proj[11]);
+                 (unsigned long long)snap.gpuBase, (unsigned long long)snap.size, extraction->score, extraction->view[15], extraction->proj[15], extraction->proj[11]);
       }
       if (extraction->score > bestScore) {
         bestScore = extraction->score;
         std::copy_n(extraction->view.data(), 16, outView);
         std::copy_n(extraction->proj.data(), 16, outProj);
-        foundGpuBase = info.gpuBase;
+        foundGpuBase = snap.gpuBase;
         s_lastCameraOffset = extraction->offset;
         found = true;
       }
@@ -572,11 +625,11 @@ bool CameraScanner::TryScanAllCbvsForCamera(float* outView, float* outProj, floa
   if (found) {
     s_lastCameraCbv = foundGpuBase;
     if (outScore) *outScore = bestScore;
-    g_lastCameraFoundFrame.store(StreamlineIntegration::Get().GetFrameCount());
+    g_lastCameraFoundFrame.store(ResourceDetector::Get().GetFrameCount());
     LOG_INFO("Camera matrices detected (Score: {:.2f}) at GPU: 0x{:x} Offset: +0x{:X}", bestScore, (unsigned long long)foundGpuBase,
              (unsigned long long)s_lastCameraOffset);
   } else if (logCandidates) {
-    LOG_INFO("[CAM] Scan failed. Checked {} CBVs. Best Score: {:.2f}", (unsigned long long)g_cbvInfos.size(), bestScore);
+    LOG_INFO("[CAM] Scan failed. Checked {} CBVs. Best Score: {:.2f}", (unsigned long long)snapshot.size(), bestScore);
   }
 
   return found;
@@ -600,7 +653,8 @@ bool CameraScanner::TryScanDescriptorCbvsForCamera(float* outView, float* outPro
   }
   float bestScore = 0.0f;
   bool found = false;
-  uint64_t currentFrame = StreamlineIntegration::Get().GetFrameCount();
+  // Item 16: Unified frame counter
+  uint64_t currentFrame = ResourceDetector::Get().GetFrameCount();
   uint64_t lastFound = g_lastCameraFoundFrame.load();
   bool stale = lastFound == 0 || (currentFrame > lastFound + camera_config::kScanStaleFrames);
   uint32_t maxScan = stale ? (camera_config::kDescriptorScanMax * camera_config::kScanExtendedMultiplier)
@@ -646,7 +700,8 @@ bool CameraScanner::TryScanRootCbvsForCamera(float* outView, float* outProj, flo
   }
   float bestScore = 0.0f;
   bool found = false;
-  uint64_t currentFrame = StreamlineIntegration::Get().GetFrameCount();
+  // Item 16: Unified frame counter
+  uint64_t currentFrame = ResourceDetector::Get().GetFrameCount();
   uint64_t lastFound = g_lastCameraFoundFrame.load();
   bool stale = lastFound == 0 || (currentFrame > lastFound + camera_config::kScanStaleFrames);
   uint32_t maxScan = stale ? (camera_config::kDescriptorScanMax * camera_config::kScanExtendedMultiplier)
@@ -691,6 +746,7 @@ CameraDiagnostics CameraScanner::GetDiagnostics() {
     diag.lastFoundFrame = g_bestCamera.frame;
     diag.lastScanMethod = std::to_underlying(g_bestCamera.method);
     diag.cameraValid = g_bestCamera.valid;
+    diag.lastBreakdown = g_lastBreakdown;  // Item 9: score breakdown
   }
   return diag;
 }

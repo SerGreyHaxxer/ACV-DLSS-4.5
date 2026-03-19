@@ -19,6 +19,16 @@
 
 #include <cstdint>
 
+// Item 9: Per-signal score breakdown for explainable camera detection
+struct ScoreBreakdown {
+  float affineBonus = 0;       // view[3][3] ≈ 1.0 check
+  float perspectiveBonus = 0;  // proj[3][3] ≈ 0, proj[2][3] ≈ ±1
+  float fovBonus = 0;          // focal length range validation
+  float translationBonus = 0;  // affine column + position range
+  float orthogonalityBonus = 0;// rotation row orthogonality + unit length
+  float total = 0;
+};
+
 // Diagnostics
 struct CameraDiagnostics {
   uint32_t registeredCbvCount;
@@ -28,6 +38,7 @@ struct CameraDiagnostics {
   uint64_t lastFoundFrame;
   int lastScanMethod; // 0=None, 1=Cached, 2=FullScan, 3=Descriptor, 4=Root
   bool cameraValid;
+  ScoreBreakdown lastBreakdown;
 };
 
 // ============================================================================

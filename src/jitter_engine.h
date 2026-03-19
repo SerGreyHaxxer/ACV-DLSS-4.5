@@ -35,7 +35,7 @@ struct alignas(16) JitterResult {
 static_assert(std::is_trivially_copyable_v<JitterResult>,
               "JitterResult must be trivially copyable for std::atomic");
 
-// Call once per frame from hooks.cpp GhostCB_Close or similar
+// Call once per frame from hooks.cpp Hooked_Close or similar
 // patternX/Y: jitter from pattern scan (Tier 1). Pass NaN if unavailable.
 // proj: current frame's 4x4 projection matrix (row-major). Pass nullptr if unavailable.
 [[nodiscard]] JitterResult JitterEngine_Update(float patternX, float patternY,

@@ -151,6 +151,11 @@ HRESULT WINAPI Hooked_D3D12SerializeVersionedRootSignature(
     } else if (modifiedDesc.Version == D3D_ROOT_SIGNATURE_VERSION_1_1) {
         UINT numSamplers = modifiedDesc.Desc_1_1.NumStaticSamplers;
         if (numSamplers > 0 && modifiedDesc.Desc_1_1.pStaticSamplers) {
+            // Note: RS 1.0 and 1.1 both use D3D12_STATIC_SAMPLER_DESC for static
+            // samplers, so reusing modifiedSamplers_1_0 is correct here.
+            // RS 1.2+ (Agility SDK) introduces D3D12_STATIC_SAMPLER_DESC1 with
+            // additional fields — when adding RS 1.2 support, a separate
+            // std::vector<D3D12_STATIC_SAMPLER_DESC1> will be needed.
             modifiedSamplers_1_0.assign(
                 modifiedDesc.Desc_1_1.pStaticSamplers,
                 modifiedDesc.Desc_1_1.pStaticSamplers + numSamplers);

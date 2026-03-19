@@ -187,9 +187,7 @@ static bool FindModuleByAddressPEB(uintptr_t address, char* outName, size_t maxL
   if (!outName || maxLen == 0) return false;
   outName[0] = '\0';
 
-#ifdef _MSC_VER
   __try {
-#endif
     // Access PEB through the TEB (Thread Environment Block)
 #ifdef _WIN64
     const PEB* peb = reinterpret_cast<const PEB*>(__readgsqword(0x60));
@@ -231,11 +229,9 @@ static bool FindModuleByAddressPEB(uintptr_t address, char* outName, size_t maxL
 
       current = current->Flink;
     }
-#ifdef _MSC_VER
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     // PEB/LDR was corrupted — silently fail
   }
-#endif
 
   return false;
 }
@@ -633,9 +629,42 @@ static LONG WINAPI SentinelHandler(PEXCEPTION_POINTERS exInfo) {
     g_CapturedFrameCount.store(WalkStack(&ctxCopy, g_CapturedFrames.data(), kMaxStackFrames));
   }
 
-  // Determine paths
-  const char* logPath = g_Config.logPath ? g_Config.logPath : "dlss4_sentinel.log";
-  const char* dumpPath = g_Config.dumpPath ? g_Config.dumpPath : "dlss4_sentinel.dmp";
+  // Item 26: Generate timestamped filenames to avoid overwriting previous crash data.
+  // Uses GetSystemTime + manual formatting (async-signal-safe — no CRT allocations).
+  char logPath[MAX_PATH];
+  char dumpPath[MAX_PATH];
+  {
+    SYSTEMTIME st;
+    GetSystemTime(&st);
+    // Format: dlss4_crash_YYYYMMDD_HHMMSS.log / .dmp
+    auto appendInt = [](char* buf, int& pos, int maxLen, unsigned val, int width) {
+      char tmp[8];
+      int len = 0;
+      unsigned v = val;
+      do { tmp[len++] = '0' + static_cast<char>(v % 10); v /= 10; } while (v > 0 && len < 8);
+      // Pad with zeros
+      while (len < width && pos < maxLen - 1) { buf[pos++] = '0'; width--; }
+      for (int i = len - 1; i >= 0 && pos < maxLen - 1; i--) buf[pos++] = tmp[i];
+    };
+    auto appendStr = [](char* buf, int& pos, int maxLen, const char* str) {
+      while (*str && pos < maxLen - 1) buf[pos++] = *str++;
+    };
+    auto buildPath = [&](char* buf, int maxLen, const char* ext) {
+      int pos = 0;
+      appendStr(buf, pos, maxLen, "dlss4_crash_");
+      appendInt(buf, pos, maxLen, st.wYear, 4);
+      appendInt(buf, pos, maxLen, st.wMonth, 2);
+      appendInt(buf, pos, maxLen, st.wDay, 2);
+      appendStr(buf, pos, maxLen, "_");
+      appendInt(buf, pos, maxLen, st.wHour, 2);
+      appendInt(buf, pos, maxLen, st.wMinute, 2);
+      appendInt(buf, pos, maxLen, st.wSecond, 2);
+      appendStr(buf, pos, maxLen, ext);
+      buf[pos] = '\0';
+    };
+    buildPath(logPath, MAX_PATH, ".log");
+    buildPath(dumpPath, MAX_PATH, ".dmp");
+  }
 
   // Write crash log (uses pre-allocated buffer — async-safe)
   WriteCrashLog(exInfo, logPath);

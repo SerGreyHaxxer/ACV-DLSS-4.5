@@ -14,10 +14,13 @@ add_executable(acv-dlss-tests
     test_config_serialization.cpp
     test_sentinel.cpp
     test_ghost_hook.cpp
+    test_camera_scoring.cpp
+    test_sampler_interceptor.cpp
     # Source implementations needed by tests
     ${CMAKE_SOURCE_DIR}/src/pattern_scanner.cpp
     ${CMAKE_SOURCE_DIR}/src/sentinel_crash_handler.cpp
     ${CMAKE_SOURCE_DIR}/src/ghost_hook.cpp
+    ${CMAKE_SOURCE_DIR}/src/sampler_interceptor.cpp
 )
 
 target_include_directories(acv-dlss-tests PRIVATE
