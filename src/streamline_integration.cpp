@@ -53,9 +53,8 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
 
   ConfigManager::Get().Load();
   // P1 FIX: Use snapshot — Initialize is called from hook callback threads.
-  // RCU: DataSnapshot() returns shared_ptr<const ModConfig> — wait-free read.
-  auto cfgPtr = ConfigManager::Get().DataSnapshot();
-  const ModConfig& cfg = *cfgPtr;
+  // SeqLock: DataSnapshot() returns ModConfig by value — zero locks, zero allocs.
+  auto cfg = ConfigManager::Get().DataSnapshot();
 
   m_dlssMode = static_cast<sl::DLSSMode>(cfg.dlss.mode);
   m_frameGenMultiplier = cfg.fg.multiplier;
@@ -86,16 +85,21 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
   if (slFailed(slInit(pref, sl::kSDKVersion))) return false;
   if (slFailed(slSetD3DDevice(pDevice))) return false;
 
-  // Phase 1.2: Create per-feature GPU resources to eliminate 3x WaitForGpu stalling
+  // Phase 1.2: Create per-feature GPU resources — N-buffered allocators to prevent TDR
   const char* slotNames[] = {"DLSS", "FrameGen", "DeepDVC"};
   for (int i = 0; i < kFeatureSlotCount; ++i) {
     auto& gpu = m_featureGPU[i];
-    HRESULT hr = m_pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&gpu.allocator));
-    if (FAILED(hr)) {
-      LOG_ERROR("Failed to create {} command allocator (HRESULT: {:08X})", slotNames[i], static_cast<unsigned>(hr));
-      continue;
+    bool allOk = true;
+    for (int b = 0; b < kFrameBuffers; ++b) {
+      HRESULT hr = m_pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&gpu.allocators[b]));
+      if (FAILED(hr)) {
+        LOG_ERROR("Failed to create {} command allocator [{}] (HRESULT: {:08X})", slotNames[i], b, static_cast<unsigned>(hr));
+        allOk = false;
+        break;
+      }
     }
-    hr = m_pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, gpu.allocator.Get(), nullptr,
+    if (!allOk) continue;
+    HRESULT hr = m_pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, gpu.allocators[0].Get(), nullptr,
                                       IID_PPV_ARGS(&gpu.cmdList));
     if (FAILED(hr)) {
       LOG_ERROR("Failed to create {} command list (HRESULT: {:08X})", slotNames[i], static_cast<unsigned>(hr));
@@ -108,8 +112,9 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
       continue;
     }
     gpu.fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-    gpu.fenceValue = 0;
-    LOG_INFO("Per-feature GPU resources created for {}", slotNames[i]);
+    gpu.currentFenceValue = 0;
+    for (int b = 0; b < kFrameBuffers; ++b) gpu.fenceValues[b] = 0;
+    LOG_INFO("Per-feature GPU resources created for {} ({} buffered allocators)", slotNames[i], kFrameBuffers);
   }
 
   // Legacy GPU fence (kept for backward compat with EnsureCommandList)
@@ -136,17 +141,22 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
         const char* computeSlotNames[] = {"DLSS-Compute", "FG-Compute", "DVC-Compute"};
         for (int i = 0; i < kFeatureSlotCount; ++i) {
           auto& cmp = m_featureCompute[i];
-          hr = m_pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE, IID_PPV_ARGS(&cmp.allocator));
-          if (FAILED(hr)) continue;
-          hr = m_pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE, cmp.allocator.Get(), nullptr,
+          bool allOk = true;
+          for (int b = 0; b < kFrameBuffers; ++b) {
+            hr = m_pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE, IID_PPV_ARGS(&cmp.allocators[b]));
+            if (FAILED(hr)) { allOk = false; break; }
+          }
+          if (!allOk) continue;
+          hr = m_pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE, cmp.allocators[0].Get(), nullptr,
                                             IID_PPV_ARGS(&cmp.cmdList));
           if (FAILED(hr)) continue;
           cmp.cmdList->Close();
           hr = m_pDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&cmp.fence));
           if (FAILED(hr)) continue;
           cmp.fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-          cmp.fenceValue = 0;
-          LOG_DEBUG("[AsyncCompute] {} resources created", computeSlotNames[i]);
+          cmp.currentFenceValue = 0;
+          for (int b = 0; b < kFrameBuffers; ++b) cmp.fenceValues[b] = 0;
+          LOG_DEBUG("[AsyncCompute] {} resources created ({} buffers)", computeSlotNames[i], kFrameBuffers);
         }
       } else {
         LOG_WARN("[AsyncCompute] Failed to create sync fence, falling back to direct queue");
@@ -198,7 +208,7 @@ void StreamlineIntegration::Shutdown() {
     }
     gpu.fence.Reset();
     gpu.cmdList.Reset();
-    gpu.allocator.Reset();
+    for (int b = 0; b < kFrameBuffers; ++b) gpu.allocators[b].Reset();
 
     // P2 Fix 6: Clean up compute resources
     auto& cmp = m_featureCompute[i];
@@ -208,7 +218,7 @@ void StreamlineIntegration::Shutdown() {
     }
     cmp.fence.Reset();
     cmp.cmdList.Reset();
-    cmp.allocator.Reset();
+    for (int b = 0; b < kFrameBuffers; ++b) cmp.allocators[b].Reset();
   }
 
   // P2 Fix 6: Release async compute queue
@@ -307,14 +317,21 @@ void StreamlineIntegration::EvaluateDLSSFromPresent() {
   if (!EnsureFeatureCommandList(FeatureSlot::DLSS)) return;
 
   auto& gpu = m_featureGPU[static_cast<int>(FeatureSlot::DLSS)];
-  WaitForFeature(FeatureSlot::DLSS);
+  uint32_t bufferIdx = m_frameIndex % kFrameBuffers;
+  auto& alloc = gpu.allocators[bufferIdx];
 
-  HRESULT hr = gpu.allocator->Reset();
+  // CPU MUST wait for THIS SPECIFIC allocator to be free before resetting
+  if (gpu.fence && gpu.fence->GetCompletedValue() < gpu.fenceValues[bufferIdx]) {
+    gpu.fence->SetEventOnCompletion(gpu.fenceValues[bufferIdx], gpu.fenceEvent);
+    WaitForSingleObject(gpu.fenceEvent, INFINITE);
+  }
+
+  HRESULT hr = alloc->Reset();
   if (FAILED(hr)) {
     LOG_WARN("[DLSS] Command allocator reset failed");
     return;
   }
-  hr = gpu.cmdList->Reset(gpu.allocator.Get(), nullptr);
+  hr = gpu.cmdList->Reset(alloc.Get(), nullptr);
   if (FAILED(hr)) {
     LOG_WARN("[DLSS] Command list reset failed");
     return;
@@ -327,28 +344,39 @@ void StreamlineIntegration::EvaluateDLSSFromPresent() {
   ID3D12CommandList* lists[] = {gpu.cmdList.Get()};
   m_pCommandQueue->ExecuteCommandLists(1, lists);
 
-  if (gpu.fence) {
-    gpu.fenceValue++;
-    m_pCommandQueue->Signal(gpu.fence.Get(), gpu.fenceValue);
-  }
+  // Record this buffer's fence requirement so the CPU waits before reusing it
+  gpu.currentFenceValue++;
+  gpu.fenceValues[bufferIdx] = gpu.currentFenceValue;
+  m_pCommandQueue->Signal(gpu.fence.Get(), gpu.currentFenceValue);
 }
 
 void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain* /*pSwapChain*/) {
   if (!m_initialized || !m_dlssgLoaded || !m_pCommandQueue || !m_frameToken) return;
 
-  // P2 Fix 6: Use async compute queue if available (overlaps Tensor Cores + CUDA Cores)
+  // P2 Fix 5+6: Async compute with proper Direct→Compute→Direct dependency chain
   if (m_asyncComputeEnabled && m_pAsyncComputeQueue) {
     int idx = static_cast<int>(FeatureSlot::FrameGen);
     auto& cmp = m_featureCompute[idx];
-    if (cmp.allocator && cmp.cmdList && cmp.fence) {
-      // Wait for previous compute work to finish
-      if (cmp.fence->GetCompletedValue() < cmp.fenceValue) {
-        m_pAsyncComputeQueue->Wait(cmp.fence.Get(), cmp.fenceValue);
+    if (cmp.allocators[0] && cmp.cmdList && cmp.fence) {
+      uint32_t bufferIdx = m_frameIndex % kFrameBuffers;
+      auto& alloc = cmp.allocators[bufferIdx];
+
+      // CPU waits for THIS SPECIFIC compute allocator to be free
+      if (cmp.fence->GetCompletedValue() < cmp.fenceValues[bufferIdx]) {
+        cmp.fence->SetEventOnCompletion(cmp.fenceValues[bufferIdx], cmp.fenceEvent);
+        WaitForSingleObject(cmp.fenceEvent, INFINITE);
       }
 
-      HRESULT hr = cmp.allocator->Reset();
-      if (SUCCEEDED(hr)) hr = cmp.cmdList->Reset(cmp.allocator.Get(), nullptr);
+      HRESULT hr = alloc->Reset();
+      if (SUCCEEDED(hr)) hr = cmp.cmdList->Reset(alloc.Get(), nullptr);
       if (SUCCEEDED(hr)) {
+        // 1. Direct Queue signals that Color/Depth/MV buffers are rendered
+        m_pCommandQueue->Signal(m_asyncSyncFence.Get(), ++m_asyncSyncFenceValue);
+
+        // 2. Compute Queue WAITS for Direct Queue to finish rendering inputs
+        m_pAsyncComputeQueue->Wait(m_asyncSyncFence.Get(), m_asyncSyncFenceValue);
+
+        // 3. Execute DLSS-G on Tensor Cores via Compute Queue
         m_viewport = sl::ViewportHandle(0);
         const sl::BaseStructure* inputs[] = {&m_viewport};
         slEvaluateFeature(sl::kFeatureDLSS_G, *m_frameToken, inputs, 1, cmp.cmdList.Get());
@@ -356,28 +384,40 @@ void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain* /*pSwapChain*/) {
         ID3D12CommandList* lists[] = {cmp.cmdList.Get()};
         m_pAsyncComputeQueue->ExecuteCommandLists(1, lists);
 
-        cmp.fenceValue++;
-        m_pAsyncComputeQueue->Signal(cmp.fence.Get(), cmp.fenceValue);
+        // 4. Compute signals completion on per-buffer fence
+        cmp.currentFenceValue++;
+        cmp.fenceValues[bufferIdx] = cmp.currentFenceValue;
+        m_pAsyncComputeQueue->Signal(cmp.fence.Get(), cmp.currentFenceValue);
 
-        // Direct queue waits on compute to finish before Present
-        m_pCommandQueue->Wait(cmp.fence.Get(), cmp.fenceValue);
+        // 5. Direct Queue waits for compute before Present
+        //    (EvaluateFrameGen is called just before Present, so this is the
+        //     correct deferred wait point — the Direct Queue was free to
+        //     process HUD/UI work between steps 1 and 5)
+        m_pCommandQueue->Wait(cmp.fence.Get(), cmp.currentFenceValue);
         return;
       }
     }
   }
 
-  // Fallback: use direct queue (original path)
+  // Fallback: use direct queue (original path) with N-buffered allocators
   if (!EnsureFeatureCommandList(FeatureSlot::FrameGen)) return;
 
   auto& gpu = m_featureGPU[static_cast<int>(FeatureSlot::FrameGen)];
-  WaitForFeature(FeatureSlot::FrameGen);
+  uint32_t bufferIdx = m_frameIndex % kFrameBuffers;
+  auto& alloc = gpu.allocators[bufferIdx];
 
-  HRESULT hr = gpu.allocator->Reset();
+  // CPU waits for THIS SPECIFIC allocator to be free
+  if (gpu.fence && gpu.fence->GetCompletedValue() < gpu.fenceValues[bufferIdx]) {
+    gpu.fence->SetEventOnCompletion(gpu.fenceValues[bufferIdx], gpu.fenceEvent);
+    WaitForSingleObject(gpu.fenceEvent, INFINITE);
+  }
+
+  HRESULT hr = alloc->Reset();
   if (FAILED(hr)) {
     LOG_WARN("[DLSSG] Command allocator reset failed");
     return;
   }
-  hr = gpu.cmdList->Reset(gpu.allocator.Get(), nullptr);
+  hr = gpu.cmdList->Reset(alloc.Get(), nullptr);
   if (FAILED(hr)) {
     LOG_WARN("[DLSSG] Command list reset failed");
     return;
@@ -390,27 +430,35 @@ void StreamlineIntegration::EvaluateFrameGen(IDXGISwapChain* /*pSwapChain*/) {
   ID3D12CommandList* lists[] = {gpu.cmdList.Get()};
   m_pCommandQueue->ExecuteCommandLists(1, lists);
 
-  if (gpu.fence) {
-    gpu.fenceValue++;
-    m_pCommandQueue->Signal(gpu.fence.Get(), gpu.fenceValue);
-  }
+  gpu.currentFenceValue++;
+  gpu.fenceValues[bufferIdx] = gpu.currentFenceValue;
+  m_pCommandQueue->Signal(gpu.fence.Get(), gpu.currentFenceValue);
 }
 
 void StreamlineIntegration::EvaluateDeepDVC(IDXGISwapChain* /*pSwapChain*/) {
   if (!m_initialized || !m_deepDvcLoaded || !m_pCommandQueue || !m_frameToken) return;
 
-  // P2 Fix 6: Use async compute queue if available
+  // P2 Fix 5+6: Async compute with proper Direct→Compute→Direct dependency chain
   if (m_asyncComputeEnabled && m_pAsyncComputeQueue) {
     int idx = static_cast<int>(FeatureSlot::DeepDVC);
     auto& cmp = m_featureCompute[idx];
-    if (cmp.allocator && cmp.cmdList && cmp.fence) {
-      if (cmp.fence->GetCompletedValue() < cmp.fenceValue) {
-        m_pAsyncComputeQueue->Wait(cmp.fence.Get(), cmp.fenceValue);
+    if (cmp.allocators[0] && cmp.cmdList && cmp.fence) {
+      uint32_t bufferIdx = m_frameIndex % kFrameBuffers;
+      auto& alloc = cmp.allocators[bufferIdx];
+
+      // CPU waits for THIS SPECIFIC compute allocator to be free
+      if (cmp.fence->GetCompletedValue() < cmp.fenceValues[bufferIdx]) {
+        cmp.fence->SetEventOnCompletion(cmp.fenceValues[bufferIdx], cmp.fenceEvent);
+        WaitForSingleObject(cmp.fenceEvent, INFINITE);
       }
 
-      HRESULT hr = cmp.allocator->Reset();
-      if (SUCCEEDED(hr)) hr = cmp.cmdList->Reset(cmp.allocator.Get(), nullptr);
+      HRESULT hr = alloc->Reset();
+      if (SUCCEEDED(hr)) hr = cmp.cmdList->Reset(alloc.Get(), nullptr);
       if (SUCCEEDED(hr)) {
+        // Direct→Compute dependency: compute waits for direct to finish rendering
+        m_pCommandQueue->Signal(m_asyncSyncFence.Get(), ++m_asyncSyncFenceValue);
+        m_pAsyncComputeQueue->Wait(m_asyncSyncFence.Get(), m_asyncSyncFenceValue);
+
         m_viewport = sl::ViewportHandle(0);
         const sl::BaseStructure* inputs[] = {&m_viewport};
         slEvaluateFeature(sl::kFeatureDeepDVC, *m_frameToken, inputs, 1, cmp.cmdList.Get());
@@ -418,26 +466,36 @@ void StreamlineIntegration::EvaluateDeepDVC(IDXGISwapChain* /*pSwapChain*/) {
         ID3D12CommandList* lists[] = {cmp.cmdList.Get()};
         m_pAsyncComputeQueue->ExecuteCommandLists(1, lists);
 
-        cmp.fenceValue++;
-        m_pAsyncComputeQueue->Signal(cmp.fence.Get(), cmp.fenceValue);
-        m_pCommandQueue->Wait(cmp.fence.Get(), cmp.fenceValue);
+        cmp.currentFenceValue++;
+        cmp.fenceValues[bufferIdx] = cmp.currentFenceValue;
+        m_pAsyncComputeQueue->Signal(cmp.fence.Get(), cmp.currentFenceValue);
+
+        // Compute→Direct: direct queue waits for compute before Present
+        m_pCommandQueue->Wait(cmp.fence.Get(), cmp.currentFenceValue);
         return;
       }
     }
   }
 
-  // Fallback: use direct queue
+  // Fallback: use direct queue with N-buffered allocators
   if (!EnsureFeatureCommandList(FeatureSlot::DeepDVC)) return;
 
   auto& gpu = m_featureGPU[static_cast<int>(FeatureSlot::DeepDVC)];
-  WaitForFeature(FeatureSlot::DeepDVC);
+  uint32_t bufferIdx = m_frameIndex % kFrameBuffers;
+  auto& alloc = gpu.allocators[bufferIdx];
 
-  HRESULT hr = gpu.allocator->Reset();
+  // CPU waits for THIS SPECIFIC allocator to be free
+  if (gpu.fence && gpu.fence->GetCompletedValue() < gpu.fenceValues[bufferIdx]) {
+    gpu.fence->SetEventOnCompletion(gpu.fenceValues[bufferIdx], gpu.fenceEvent);
+    WaitForSingleObject(gpu.fenceEvent, INFINITE);
+  }
+
+  HRESULT hr = alloc->Reset();
   if (FAILED(hr)) {
     LOG_WARN("[DeepDVC] Command allocator reset failed");
     return;
   }
-  hr = gpu.cmdList->Reset(gpu.allocator.Get(), nullptr);
+  hr = gpu.cmdList->Reset(alloc.Get(), nullptr);
   if (FAILED(hr)) {
     LOG_WARN("[DeepDVC] Command list reset failed");
     return;
@@ -450,10 +508,9 @@ void StreamlineIntegration::EvaluateDeepDVC(IDXGISwapChain* /*pSwapChain*/) {
   ID3D12CommandList* lists[] = {gpu.cmdList.Get()};
   m_pCommandQueue->ExecuteCommandLists(1, lists);
 
-  if (gpu.fence) {
-    gpu.fenceValue++;
-    m_pCommandQueue->Signal(gpu.fence.Get(), gpu.fenceValue);
-  }
+  gpu.currentFenceValue++;
+  gpu.fenceValues[bufferIdx] = gpu.currentFenceValue;
+  m_pCommandQueue->Signal(gpu.fence.Get(), gpu.currentFenceValue);
 }
 
 void StreamlineIntegration::UpdateOptions() {
@@ -787,20 +844,22 @@ bool StreamlineIntegration::EnsureCommandList() {
   return true;
 }
 
-// Phase 1.2: Per-feature command list initialization
+// Phase 1.2: Per-feature command list initialization (N-buffered allocators)
 bool StreamlineIntegration::EnsureFeatureCommandList(FeatureSlot slot) {
   int idx = static_cast<int>(slot);
   auto& gpu = m_featureGPU[idx];
-  if (gpu.allocator && gpu.cmdList && gpu.fence) return true;
+  if (gpu.allocators[0] && gpu.cmdList && gpu.fence) return true;
 
   if (!m_pDevice) return false;
 
-  if (!gpu.allocator) {
-    HRESULT hr = m_pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&gpu.allocator));
-    if (FAILED(hr)) return false;
+  for (int b = 0; b < kFrameBuffers; ++b) {
+    if (!gpu.allocators[b]) {
+      HRESULT hr = m_pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&gpu.allocators[b]));
+      if (FAILED(hr)) return false;
+    }
   }
   if (!gpu.cmdList) {
-    HRESULT hr = m_pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, gpu.allocator.Get(), nullptr,
+    HRESULT hr = m_pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, gpu.allocators[0].Get(), nullptr,
                                               IID_PPV_ARGS(&gpu.cmdList));
     if (FAILED(hr)) return false;
     gpu.cmdList->Close();
@@ -809,21 +868,23 @@ bool StreamlineIntegration::EnsureFeatureCommandList(FeatureSlot slot) {
     HRESULT hr = m_pDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gpu.fence));
     if (FAILED(hr)) return false;
     gpu.fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-    gpu.fenceValue = 0;
+    gpu.currentFenceValue = 0;
+    for (int b = 0; b < kFrameBuffers; ++b) gpu.fenceValues[b] = 0;
   }
   return true;
 }
 
-// Phase 1.2: GPU-side async wait for specific feature's work to complete.
-// Uses CommandQueue::Wait instead of CPU-blocking WaitForSingleObject so the
-// CPU returns instantly and the GPU schedules the dependency internally.
-// This preserves pipeline parallelism and eliminates 1% low frame-time spikes.
+// Phase 1.2: CPU-side wait for a specific feature's current buffer to complete.
+// Uses WaitForSingleObject to actually block the CPU until the GPU finishes
+// with that specific allocator. This is the correct sync — the old GPU-side
+// Wait returned instantly and caused TDR by resetting in-flight allocators.
 void StreamlineIntegration::WaitForFeature(FeatureSlot slot) {
   auto& gpu = m_featureGPU[static_cast<int>(slot)];
-  if (!gpu.fence || !m_pCommandQueue) return;
-  if (gpu.fence->GetCompletedValue() < gpu.fenceValue) {
-    // GPU-side dependency: the queue waits internally, CPU returns instantly
-    m_pCommandQueue->Wait(gpu.fence.Get(), gpu.fenceValue);
+  if (!gpu.fence || !gpu.fenceEvent) return;
+  uint32_t bufferIdx = m_frameIndex % kFrameBuffers;
+  if (gpu.fence->GetCompletedValue() < gpu.fenceValues[bufferIdx]) {
+    gpu.fence->SetEventOnCompletion(gpu.fenceValues[bufferIdx], gpu.fenceEvent);
+    WaitForSingleObject(gpu.fenceEvent, INFINITE);
   }
 }
 

@@ -63,7 +63,6 @@ int GetLogVerbosity() { return ConfigManager::Get().Data().system.logVerbosity; 
 
 DXGIProxyState g_ProxyState;
 
-static std::once_flag s_ProxyInitOnce;
 static std::once_flag s_GlobalInitOnce;
 
 void InitProxyGlobal() {
@@ -81,7 +80,7 @@ void CleanupProxyGlobal() {
 
 bool InitializeProxy() {
   bool success = false;
-  std::call_once(s_ProxyInitOnce, [&]() {
+  std::call_once(g_ProxyState.initFlag, [&]() {
     LogStartup("InitializeProxy Execution");
 
     LogStartup("Setting env variables...");
@@ -194,10 +193,10 @@ bool InitializeProxy() {
     LogStartup("Installing D3D12 Hooks...");
     InstallD3D12Hooks();
     LogStartup("D3D12 Hooks installed");
-    g_ProxyState.initialized.store(true, std::memory_order_release);
+    g_ProxyState.initComplete = true;
     success = true;
   });
-  return g_ProxyState.initialized;
+  return g_ProxyState.initComplete;
 }
 
 void ShutdownProxy() {
@@ -205,7 +204,7 @@ void ShutdownProxy() {
     FreeLibrary(g_ProxyState.hOriginalDXGI);
     g_ProxyState.hOriginalDXGI = nullptr;
   }
-  g_ProxyState.initialized.store(false, std::memory_order_release);
+  g_ProxyState.initComplete = false;
   Logger::Shutdown();
 }
 
@@ -283,37 +282,37 @@ typedef HRESULT(WINAPI* PFN_1Arg)(void*);
 typedef HRESULT(WINAPI* PFN_0Arg)();
 
 HRESULT WINAPI ApplyCompatResolutionQuirking(void *a, void *b) {
-  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
+  if (!g_ProxyState.initComplete)
     InitializeProxy();
   auto fn = reinterpret_cast<PFN_2Arg>(g_ProxyState.pfnApplyCompatResolutionQuirking);
   return fn ? fn(a, b) : E_NOINTERFACE;
 }
 HRESULT WINAPI CompatString(void *a, void *b, void *c) {
-  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
+  if (!g_ProxyState.initComplete)
     InitializeProxy();
   auto fn = reinterpret_cast<PFN_3Arg>(g_ProxyState.pfnCompatString);
   return fn ? fn(a, b, c) : E_NOINTERFACE;
 }
 HRESULT WINAPI CompatValue(void *a, void *b) {
-  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
+  if (!g_ProxyState.initComplete)
     InitializeProxy();
   auto fn = reinterpret_cast<PFN_2Arg>(g_ProxyState.pfnCompatValue);
   return fn ? fn(a, b) : E_NOINTERFACE;
 }
 HRESULT WINAPI DXGIDumpJournal(void *a) {
-  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
+  if (!g_ProxyState.initComplete)
     InitializeProxy();
   auto fn = reinterpret_cast<PFN_1Arg>(g_ProxyState.pfnDXGIDumpJournal);
   return fn ? fn(a) : E_NOINTERFACE;
 }
 HRESULT WINAPI DXGIReportAdapterConfiguration(void *a) {
-  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
+  if (!g_ProxyState.initComplete)
     InitializeProxy();
   auto fn = reinterpret_cast<PFN_1Arg>(g_ProxyState.pfnDXGIReportAdapterConfiguration);
   return fn ? fn(a) : E_NOINTERFACE;
 }
 HRESULT WINAPI DXGIDisableVBlankVirtualization() {
-  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
+  if (!g_ProxyState.initComplete)
     InitializeProxy();
   auto fn = reinterpret_cast<PFN_0Arg>(g_ProxyState.pfnDXGIDisableVBlankVirtualization);
   return fn ? fn() : E_NOINTERFACE;
@@ -322,7 +321,7 @@ HRESULT WINAPI DXGIDisableVBlankVirtualization() {
 // 1-arg D3DKMT forwarding stubs — each matches exact original signature
 #define FORWARD_1ARG_SAFE(Name)                                                \
   HRESULT WINAPI Name(void *a) {                                               \
-    if (!g_ProxyState.initialized.load(std::memory_order_acquire))             \
+    if (!g_ProxyState.initComplete)             \
       InitializeProxy();                                                       \
     auto fn = reinterpret_cast<PFN_1Arg>(g_ProxyState.pfn##Name);              \
     return fn ? fn(a) : E_NOINTERFACE;                                         \
@@ -340,19 +339,19 @@ FORWARD_1ARG_SAFE(D3DKMTUnlock)
 FORWARD_1ARG_SAFE(D3DKMTWaitForSynchronizationObject)
 
 HRESULT WINAPI OpenAdapter10(void *a) {
-  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
+  if (!g_ProxyState.initComplete)
     InitializeProxy();
   auto fn = reinterpret_cast<PFN_1Arg>(g_ProxyState.pfnOpenAdapter10);
   return fn ? fn(a) : E_NOINTERFACE;
 }
 HRESULT WINAPI OpenAdapter10_2(void *a) {
-  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
+  if (!g_ProxyState.initComplete)
     InitializeProxy();
   auto fn = reinterpret_cast<PFN_1Arg>(g_ProxyState.pfnOpenAdapter10_2);
   return fn ? fn(a) : E_NOINTERFACE;
 }
 HRESULT WINAPI SetAppCompatStringPointer(void *a, void *b) {
-  if (!g_ProxyState.initialized.load(std::memory_order_acquire))
+  if (!g_ProxyState.initComplete)
     InitializeProxy();
   auto fn = reinterpret_cast<PFN_2Arg>(g_ProxyState.pfnSetAppCompatStringPointer);
   return fn ? fn(a, b) : E_NOINTERFACE;

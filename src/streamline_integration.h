@@ -257,12 +257,14 @@ private:
   // Phase 1.2: Per-feature GPU resources — eliminates 3x WaitForGpu stalling
   enum class FeatureSlot : int { DLSS = 0, FrameGen = 1, DeepDVC = 2, Count = 3 };
   static constexpr int kFeatureSlotCount = 3;
+  static constexpr int kFrameBuffers = 3; // N-buffered allocators for frames in flight
   struct PerFeatureGPU {
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocators[kFrameBuffers];
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> cmdList;
     Microsoft::WRL::ComPtr<ID3D12Fence> fence;
     HANDLE fenceEvent = nullptr;
-    UINT64 fenceValue = 0;
+    UINT64 fenceValues[kFrameBuffers] = {0}; // Per-buffer fence completion values
+    UINT64 currentFenceValue = 0;
   };
   PerFeatureGPU m_featureGPU[kFeatureSlotCount]{};
 
@@ -274,11 +276,12 @@ private:
 
   // P2 Fix 6: Per-feature compute resources (used when async compute is enabled)
   struct PerFeatureCompute {
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocators[kFrameBuffers];
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> cmdList;
     Microsoft::WRL::ComPtr<ID3D12Fence> fence;
     HANDLE fenceEvent = nullptr;
-    UINT64 fenceValue = 0;
+    UINT64 fenceValues[kFrameBuffers] = {0};
+    UINT64 currentFenceValue = 0;
   };
   PerFeatureCompute m_featureCompute[kFeatureSlotCount]{};
 

@@ -537,8 +537,33 @@ static void WriteCrashLog(PEXCEPTION_POINTERS exInfo, const char* path) {
 // ============================================================================
 
 static LONG WINAPI SentinelHandler(PEXCEPTION_POINTERS exInfo) {
-  // Only handle fatal exceptions
   DWORD code = exInfo->ExceptionRecord->ExceptionCode;
+
+  // =========================================================================
+  // ELITE FIX: Denuvo/VMProtect DRM Exception Filtering
+  // =========================================================================
+  // AC Valhalla uses Denuvo Anti-Tamper which intentionally throws thousands
+  // of exceptions per minute as part of its code integrity verification:
+  //   - STATUS_GUARD_PAGE_VIOLATION (0x80000001): JIT page guard traps
+  //   - STATUS_SINGLE_STEP (0x80000004): VMProtect single-step verification
+  //   - STATUS_BREAKPOINT (0x80000003): Software breakpoint traps
+  //   - 0x406D1388: MSVC SetThreadName (informational, non-fatal)
+  //   - 0xE06D7363: C++ SEH exception wrapper (non-fatal throw/catch)
+  //
+  // If we process ANY of these (even touching RtlCaptureStackBackTrace),
+  // Denuvo may flag us as a debugger → anti-tamper ban or deadlock.
+  // Reject them INSTANTLY with zero work.
+  // =========================================================================
+  if (code == STATUS_GUARD_PAGE_VIOLATION ||  // 0x80000001
+      code == STATUS_SINGLE_STEP ||           // 0x80000004
+      code == STATUS_BREAKPOINT ||            // 0x80000003
+      code == 0x406D1388 ||                   // MSVC SetThreadName
+      code == 0xE06D7363)                     // C++ exception (non-fatal)
+  {
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+
+  // Only handle fatal hardware exceptions — everything else passes through
   if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_STACK_OVERFLOW && code != EXCEPTION_ILLEGAL_INSTRUCTION &&
       code != EXCEPTION_PRIV_INSTRUCTION && code != EXCEPTION_INT_DIVIDE_BY_ZERO &&
       code != EXCEPTION_FLT_DIVIDE_BY_ZERO) {

@@ -54,8 +54,7 @@ static std::atomic<uint64_t> g_unifiedFrameCount(0);
 static void RegisterHotkeys() {
   // P1 FIX: Use snapshot â€” this runs on the timer thread, not the render thread.
   // RCU: DataSnapshot() returns shared_ptr<const ModConfig> â€” wait-free read.
-  auto cfgPtr = ConfigManager::Get().DataSnapshot();
-  const ModConfig& cfg = *cfgPtr;
+  auto cfg = ConfigManager::Get().DataSnapshot();
   InputHandler::Get().RegisterHotkey(
       cfg.ui.menuHotkey, []() { ImGuiOverlay::Get().ToggleVisibility(); },
       "Toggle Menu");

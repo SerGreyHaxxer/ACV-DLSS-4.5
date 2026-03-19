@@ -116,8 +116,7 @@ void ConfigManager::Load() {
       m_mutableConfig = parsed;
     }
     // Publish the new config so DataSnapshot() callers observe it immediately.
-    m_configPtr.store(std::make_shared<const ModConfig>(parsed),
-                      std::memory_order_release);
+    Publish();
 
     m_lastWriteTime = std::filesystem::last_write_time(path);
 

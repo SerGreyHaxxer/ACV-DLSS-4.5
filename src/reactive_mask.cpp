@@ -39,24 +39,28 @@ RWTexture2D<float> ReactiveMask : register(u0);
 
 [numthreads(8, 8, 1)]
 void CSMain(uint3 tid : SV_DispatchThreadID) {
-    float3 withHud    = FinalColor[tid.xy].rgb;
-    float3 withoutHud = HudLessColor[tid.xy].rgb;
-
-    // P2 Fix 5: Perceptual luminance — no sqrt (saves ALU), handles HDR > 1.0.
-    // BT.709 luma weights match the human eye's sensitivity curve.
+    // P3 Fix 4: 3x3 Dilation (Max Filter) to encompass anti-aliased UI fringes.
+    // Scaleform UI elements (compass markers, text) have semi-transparent borders
+    // that a strict 1-pixel smoothstep misses, causing Frame Gen to smear them.
     float3 lumaWeights = float3(0.2126, 0.7152, 0.0722);
-    float lumWith    = dot(withHud, lumaWeights);
-    float lumWithout = dot(withoutHud, lumaWeights);
+    float maxMask = 0.0;
 
-    // Relative diff protects against HDR values > 1.0 (scRGB/PQ).
-    // Without relative scaling, a hardcoded 0.05 threshold would trigger
-    // on the entire skybox in HDR mode, ruining DLSS-G interpolation.
-    float relDiff = abs(lumWith - lumWithout) / max(lumWith, 0.001);
+    [unroll]
+    for (int x = -1; x <= 1; ++x) {
+        [unroll]
+        for (int y = -1; y <= 1; ++y) {
+            int2 offsetCoord = tid.xy + int2(x, y);
+            float lumWith    = dot(FinalColor[offsetCoord].rgb, lumaWeights);
+            float lumWithout = dot(HudLessColor[offsetCoord].rgb, lumaWeights);
 
-    // Smoothstep feathers the mask so DLSS-G doesn't smear jagged binary
-    // drop-shadows from anti-aliased UI elements (Scaleform).
-    // Range [0.015, 0.08]: below 0.015 is FP noise, above 0.08 is definite HUD.
-    ReactiveMask[tid.xy] = smoothstep(0.015, 0.08, relDiff);
+            // Safe relative diff for HDR (scRGB/PQ)
+            float relDiff = abs(lumWith - lumWithout) / max(lumWith, 0.001);
+            float mask = smoothstep(0.015, 0.08, relDiff);
+
+            maxMask = max(maxMask, mask); // Keep highest reactivity in the 3x3 block
+        }
+    }
+    ReactiveMask[tid.xy] = maxMask;
 }
 )HLSL";
 
@@ -172,9 +176,10 @@ bool ReactiveMask::CreateComputePipeline(ID3D12Device* pDevice) {
     return false;
   }
 
-  // Create descriptor heap (3 descriptors: 2 SRVs + 1 UAV)
+  // Create descriptor heap (3 descriptors per frame × kFrameBuffers frames = ring-buffered)
+  // This prevents CPU writes from racing with GPU reads on the same descriptors.
   D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
-  heapDesc.NumDescriptors = 3;
+  heapDesc.NumDescriptors = 3 * kFrameBuffers;
   heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
   heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
   hr = pDevice->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_srvUavHeap));
@@ -214,16 +219,18 @@ bool ReactiveMask::CreateMaskTexture(ID3D12Device* pDevice, UINT width, UINT hei
     return false;
   }
 
-  // Create UAV for the mask texture (descriptor slot 2)
+  // Create UAV for the mask texture in all frame buffer slots
   D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
   uavDesc.Format = DXGI_FORMAT_R8_UNORM;
   uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 
-  D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_srvUavHeap->GetCPUDescriptorHandleForHeapStart();
-  cpuHandle.ptr += 2 * m_descriptorSize; // Slot 2
-  pDevice->CreateUnorderedAccessView(m_maskTexture.Get(), nullptr, &uavDesc, cpuHandle);
+  for (int f = 0; f < kFrameBuffers; ++f) {
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_srvUavHeap->GetCPUDescriptorHandleForHeapStart();
+    cpuHandle.ptr += static_cast<SIZE_T>((f * 3 + 2)) * m_descriptorSize; // Slot 2 of each frame
+    pDevice->CreateUnorderedAccessView(m_maskTexture.Get(), nullptr, &uavDesc, cpuHandle);
+  }
 
-  LOG_INFO("[ReactiveMask] Created {}x{} R8_UNORM mask texture (UAV-capable)", width, height);
+  LOG_INFO("[ReactiveMask] Created {}x{} R8_UNORM mask texture (UAV-capable, {} buffered)", width, height, kFrameBuffers);
   return true;
 }
 
@@ -232,12 +239,54 @@ void ReactiveMask::DispatchMask(ID3D12GraphicsCommandList* pCmdList,
                                 ID3D12Resource* hudLessColor) {
   if (!m_initialized || !pCmdList || !finalColor || !hudLessColor) return;
 
-  // Create SRV descriptors for the two input textures
+  // P3 Fix 4: D3D12 Transition Barriers — ensure inputs are readable and output is writable.
+  // Without these, GPU caches may serve stale data (causes corruption on AMD/Intel drivers).
+  D3D12_RESOURCE_BARRIER preBars[4]{};
+  int barCount = 0;
+
+  // Transition mask texture back to UAV for writing (after previous frame left it in NPS state)
+  // On first dispatch, the resource is already in UAV state — this is harmless.
+  if (m_dispatchCount.load(std::memory_order_relaxed) > 0) {
+    preBars[barCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    preBars[barCount].Transition.pResource = m_maskTexture.Get();
+    preBars[barCount].Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    preBars[barCount].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    preBars[barCount].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barCount++;
+  }
+
+  // Transition FinalColor: RENDER_TARGET → NON_PIXEL_SHADER_RESOURCE
+  preBars[barCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  preBars[barCount].Transition.pResource = finalColor;
+  preBars[barCount].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+  preBars[barCount].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+  preBars[barCount].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  barCount++;
+
+  // Transition HudLessColor: RENDER_TARGET → NON_PIXEL_SHADER_RESOURCE
+  if (hudLessColor != finalColor) {
+    preBars[barCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    preBars[barCount].Transition.pResource = hudLessColor;
+    preBars[barCount].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    preBars[barCount].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    preBars[barCount].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barCount++;
+  }
+
+  pCmdList->ResourceBarrier(barCount, preBars);
+
+  // Ring-buffered descriptors: offset by frame index to avoid
+  // writing into heap slots the GPU is actively reading from a previous frame.
+  uint64_t dispatchNum = m_dispatchCount.load(std::memory_order_relaxed);
+  uint32_t frameIdx = static_cast<uint32_t>(dispatchNum % kFrameBuffers);
+  UINT offset = frameIdx * 3 * m_descriptorSize;
+
   D3D12_CPU_DESCRIPTOR_HANDLE cpuBase = m_srvUavHeap->GetCPUDescriptorHandleForHeapStart();
+  cpuBase.ptr += offset;
 
   // Slot 0: FinalColor SRV
   D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-  srvDesc.Format = DXGI_FORMAT_UNKNOWN; // Will be inferred from resource
+  srvDesc.Format = DXGI_FORMAT_UNKNOWN;
   srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
   srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
   srvDesc.Texture2D.MipLevels = 1;
@@ -261,11 +310,12 @@ void ReactiveMask::DispatchMask(ID3D12GraphicsCommandList* pCmdList,
   pCmdList->SetDescriptorHeaps(1, heaps);
 
   D3D12_GPU_DESCRIPTOR_HANDLE gpuBase = m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
+  gpuBase.ptr += offset;
 
-  // Root param 0: SRV table (slots 0-1)
+  // Root param 0: SRV table (slots 0-1 of this frame)
   pCmdList->SetComputeRootDescriptorTable(0, gpuBase);
 
-  // Root param 1: UAV table (slot 2)
+  // Root param 1: UAV table (slot 2 of this frame)
   D3D12_GPU_DESCRIPTOR_HANDLE uavGpu = gpuBase;
   uavGpu.ptr += 2 * m_descriptorSize;
   pCmdList->SetComputeRootDescriptorTable(1, uavGpu);
@@ -275,15 +325,49 @@ void ReactiveMask::DispatchMask(ID3D12GraphicsCommandList* pCmdList,
   UINT groupsY = (m_height + 7) / 8;
   pCmdList->Dispatch(groupsX, groupsY, 1);
 
-  // UAV barrier to ensure the mask write completes before DLSS reads it
-  D3D12_RESOURCE_BARRIER uavBarrier{};
-  uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-  uavBarrier.UAV.pResource = m_maskTexture.Get();
-  pCmdList->ResourceBarrier(1, &uavBarrier);
+  // Post-dispatch barriers:
+  // 1. UAV barrier to ensure mask write completes before Streamline reads it
+  // 2. Transition mask to NON_PIXEL_SHADER_RESOURCE for SL
+  // 3. Restore input resources to RENDER_TARGET
+  D3D12_RESOURCE_BARRIER postBars[4]{};
+  int postCount = 0;
+
+  // UAV barrier on mask
+  postBars[postCount].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+  postBars[postCount].UAV.pResource = m_maskTexture.Get();
+  postCount++;
+
+  // Mask: UNORDERED_ACCESS → NON_PIXEL_SHADER_RESOURCE (for Streamline read)
+  postBars[postCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  postBars[postCount].Transition.pResource = m_maskTexture.Get();
+  postBars[postCount].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  postBars[postCount].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+  postBars[postCount].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  postCount++;
+
+  // Restore FinalColor: NON_PIXEL_SHADER_RESOURCE → RENDER_TARGET
+  postBars[postCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  postBars[postCount].Transition.pResource = finalColor;
+  postBars[postCount].Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+  postBars[postCount].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+  postBars[postCount].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  postCount++;
+
+  // Restore HudLessColor (if different from FinalColor)
+  if (hudLessColor != finalColor) {
+    postBars[postCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    postBars[postCount].Transition.pResource = hudLessColor;
+    postBars[postCount].Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    postBars[postCount].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    postBars[postCount].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    postCount++;
+  }
+
+  pCmdList->ResourceBarrier(postCount, postBars);
 
   uint64_t count = m_dispatchCount.fetch_add(1, std::memory_order_relaxed) + 1;
   if (count % 300 == 0) {
-    LOG_DEBUG("[ReactiveMask] {} compute dispatches completed ({}x{})", count, m_width, m_height);
+    LOG_DEBUG("[ReactiveMask] {} compute dispatches completed ({}x{}, dilation 3x3)", count, m_width, m_height);
   }
 }
 

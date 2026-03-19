@@ -17,6 +17,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 #include <windows.h>
 
 // Do NOT include dxgi headers here to avoid redefinition conflicts
@@ -69,9 +70,10 @@ struct DXGIProxyState {
     void* pfnOpenAdapter10_2 = nullptr;
     void* pfnSetAppCompatStringPointer = nullptr;
     
-    // Fix 11: Must be atomic — multiple DXGI threads read this concurrently
-    // during initialization. Plain bool is a data race (UB).
-    std::atomic<bool> initialized{false};
+    // Fix 6 ELITE: std::once_flag replaces atomic<bool> — guarantees
+    // execute-exactly-once initialization at the OS level. No TOCTOU.
+    std::once_flag initFlag;
+    bool initComplete = false;  // Set inside call_once, read-only after
 };
 
 // Global proxy state

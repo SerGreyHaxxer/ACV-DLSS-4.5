@@ -620,8 +620,9 @@ void ImGuiOverlay::BuildMiniMode() {
   m_renderer.DrawTextA("DLSS", barX + 24, barY, 50.0f, barH, vtheme::kTextSecondary, 11.0f,
                        ValhallaRenderer::TextAlign::Left, true);
 
-  std::string fpsStr = std::format("{:.0f}", m_smoothFPS);
-  m_renderer.DrawTextA(fpsStr.c_str(), barX + 80, barY, 50.0f, barH, vtheme::kTextPrimary, 13.0f,
+  char fpsBuf[16];
+  snprintf(fpsBuf, sizeof(fpsBuf), "%.0f", m_smoothFPS);
+  m_renderer.DrawTextA(fpsBuf, barX + 80, barY, 50.0f, barH, vtheme::kTextPrimary, 13.0f,
                        ValhallaRenderer::TextAlign::Right, true);
 
   // Click to open
@@ -685,8 +686,9 @@ void ImGuiOverlay::BuildFPSOverlay() {
         y = 16;
         break;
     }
-    std::string fpsStr = std::format("{:.0f}", m_smoothFPS);
-    m_renderer.DrawTextA(fpsStr.c_str(), x, y, textW, textH, fpsColor, fontSize, ValhallaRenderer::TextAlign::Right,
+    char fpsBuf[16];
+    snprintf(fpsBuf, sizeof(fpsBuf), "%.0f", m_smoothFPS);
+    m_renderer.DrawTextA(fpsBuf, x, y, textW, textH, fpsColor, fontSize, ValhallaRenderer::TextAlign::Right,
                          true);
     return;
   }
@@ -740,13 +742,14 @@ void ImGuiOverlay::BuildFPSOverlay() {
   float fpsNumY = y + 6.0f * scale;
   float fpsNumW = panelW - 30.0f * scale;
   float fpsNumH = 32.0f * scale;
-  std::string fpsStr = std::format("{:.0f}", m_smoothFPS);
-  m_renderer.DrawTextA(fpsStr.c_str(), fpsNumX, fpsNumY, fpsNumW, fpsNumH, fpsColor, vtheme::kFontFPS * scale,
+  char fpsBuf[16];
+  snprintf(fpsBuf, sizeof(fpsBuf), "%.0f", m_smoothFPS);
+  m_renderer.DrawTextA(fpsBuf, fpsNumX, fpsNumY, fpsNumW, fpsNumH, fpsColor, vtheme::kFontFPS * scale,
                        ValhallaRenderer::TextAlign::Left, true);
 
   // "FPS" label — muted gold, smaller
   D2D1_COLOR_F labelColor = vtheme::rgba(m_accent.r, m_accent.g, m_accent.b, 0.5f * opacity);
-  float labelX = fpsNumX + m_renderer.MeasureTextA(fpsStr, vtheme::kFontFPS * scale, true).width + 4.0f * scale;
+  float labelX = fpsNumX + m_renderer.MeasureTextA(fpsBuf, vtheme::kFontFPS * scale, true).width + 4.0f * scale;
   m_renderer.DrawTextA("FPS", labelX, fpsNumY + 10.0f * scale, 40.0f * scale, 20.0f * scale, labelColor,
                        vtheme::kFontFPSLabel * scale, ValhallaRenderer::TextAlign::Left);
 
@@ -758,17 +761,19 @@ void ImGuiOverlay::BuildFPSOverlay() {
 
     // Frame time
     float frameMs = m_smoothFPS > 0.1f ? 1000.0f / m_smoothFPS : 0.0f;
-    std::string ftStr = std::format("{:.1f} ms", frameMs);
-    m_renderer.DrawTextA(ftStr.c_str(), x + 24.0f * scale, sepY + 4.0f * scale, 80.0f * scale, 16.0f * scale,
+    char ftBuf[16];
+    snprintf(ftBuf, sizeof(ftBuf), "%.1f ms", frameMs);
+    m_renderer.DrawTextA(ftBuf, x + 24.0f * scale, sepY + 4.0f * scale, 80.0f * scale, 16.0f * scale,
                          vtheme::kTextSecondary, 11.0f * scale);
 
     // GPU usage if available
     if (g_metricsCache.gpuOk.load(std::memory_order_relaxed)) {
       uint32_t gpuPct = g_metricsCache.gpuPercent.load(std::memory_order_relaxed);
-      std::string gpuStr = std::format("GPU {}%", gpuPct);
+      char gpuBuf[16];
+      snprintf(gpuBuf, sizeof(gpuBuf), "GPU %u%%", gpuPct);
       D2D1_COLOR_F gpuColor = gpuPct > 95 ? vtheme::kStatusWarn : vtheme::kTextSecondary;
       gpuColor.a *= opacity;
-      m_renderer.DrawTextA(gpuStr.c_str(), x + 24.0f * scale, sepY + 20.0f * scale, 80.0f * scale, 16.0f * scale,
+      m_renderer.DrawTextA(gpuBuf, x + 24.0f * scale, sepY + 20.0f * scale, 80.0f * scale, 16.0f * scale,
                            gpuColor, 11.0f * scale);
     }
 
@@ -1083,9 +1088,11 @@ bool ImGuiOverlay::SliderFloat(const char* label, float* value, float vmin, floa
   float w = m_contentWidth;
   float labelH = 22.0f;
 
-  // --- Format the numeric value ---
-  std::string fmtConverted = PrintfToStdFormat(fmt);
-  std::string valStr = std::vformat(fmtConverted, std::make_format_args(*value));
+  // ELITE FIX: Zero-allocation value formatting — the printf-style format
+  // string 'fmt' (e.g. "%.2f") is used directly with snprintf into a stack
+  // buffer, eliminating the PrintfToStdFormat + std::vformat double-alloc.
+  char valBuf[32];
+  snprintf(valBuf, sizeof(valBuf), fmt, *value);
 
   // --- Label row: label on left, value in accent pill on right ---
   D2D1_COLOR_F labelColor = enabled ? vtheme::kTextSecondary : vtheme::hex(0x484F58, 1.0f);
@@ -1093,7 +1100,7 @@ bool ImGuiOverlay::SliderFloat(const char* label, float* value, float vmin, floa
 
   // Value pill badge — accent-tinted background with bold white number
   float pillFontSize = vtheme::kFontBody;
-  auto valSize = m_renderer.MeasureTextA(valStr, pillFontSize, true);
+  auto valSize = m_renderer.MeasureTextA(valBuf, pillFontSize, true);
   float pillW = valSize.width + 16.0f;
   float pillH = 20.0f;
   float pillX = x + w - pillW - 4.0f;
@@ -1108,12 +1115,12 @@ bool ImGuiOverlay::SliderFloat(const char* label, float* value, float vmin, floa
     pillBorder.a = 0.35f;
     m_renderer.OutlineRoundedRect(pillX, pillY, pillW, pillH, pillH * 0.5f, pillBorder, 1.0f);
     // Value text in bold white
-    m_renderer.DrawTextA(valStr.c_str(), pillX, pillY, pillW, pillH, vtheme::kTextPrimary, pillFontSize,
+    m_renderer.DrawTextA(valBuf, pillX, pillY, pillW, pillH, vtheme::kTextPrimary, pillFontSize,
                          ValhallaRenderer::TextAlign::Center, true);
   } else {
     // Disabled: muted pill
     m_renderer.FillRoundedRect(pillX, pillY, pillW, pillH, pillH * 0.5f, vtheme::hex(0x1C2128, 0.5f));
-    m_renderer.DrawTextA(valStr.c_str(), pillX, pillY, pillW, pillH, vtheme::hex(0x484F58, 1.0f), pillFontSize,
+    m_renderer.DrawTextA(valBuf, pillX, pillY, pillW, pillH, vtheme::hex(0x484F58, 1.0f), pillFontSize,
                          ValhallaRenderer::TextAlign::Center);
   }
   y += labelH + 2.0f;

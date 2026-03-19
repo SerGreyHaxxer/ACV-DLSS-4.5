@@ -86,7 +86,11 @@ private:
   Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
   Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pso;
 
-  // SRV/UAV descriptor heap for compute dispatch
+  // Ring-buffered descriptors: 3 descriptors × kFrameBuffers to avoid
+  // writing into SHADER_VISIBLE heap slots the GPU is actively reading.
+  static constexpr int kFrameBuffers = 3;
+
+  // SRV/UAV descriptor heap for compute dispatch (ring-buffered)
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
   UINT m_descriptorSize = 0;
 
