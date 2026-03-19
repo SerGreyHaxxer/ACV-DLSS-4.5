@@ -17,6 +17,7 @@
 
 #include "sentinel_crash_handler.h"
 
+#include <array>
 #include <atomic>
 #include <cstdio>
 #include <ctime>
@@ -90,36 +91,39 @@ static int UnsafeHex(char* buf, int maxLen, uint64_t val) { // NOLINT(bugprone-e
     }
   }
   if (len >= maxLen) len = maxLen - 1;
+  int written = 0;
   for (int i = 0; i < len && i < maxLen; i++) {
     buf[i] = tmp[static_cast<size_t>(len - 1 - i)];
+    written++;
   }
-  return len;
+  return written;
 }
 
-static int UnsafeAppend(char* buf, int pos, int maxLen, const char* str) {
+static int UnsafeAppend(char* buf, int pos, int maxLen, const char* str) { // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
   while (*str && pos < maxLen - 1) {
     buf[pos++] = *str++;
   }
   return pos;
 }
 
-static int UnsafeInt(char* buf, int maxLen, int64_t val) {
+static int UnsafeInt(char* buf, int maxLen, int64_t val) { // NOLINT(bugprone-easily-swappable-parameters)
   if (val == 0) {
     buf[0] = '0';
     return 1;
   }
-  char tmp[21];
+  constexpr int maxIntChars = 21;
+  std::array<char, maxIntChars> tmp{};
   int len = 0;
   bool neg = val < 0;
-  if (neg) val = -val;
+  if (neg) { val = -val; }
   while (val > 0 && len < 20) {
-    tmp[len++] = '0' + static_cast<char>(val % 10);
+    tmp[static_cast<size_t>(len++)] = '0' + static_cast<char>(val % 10);
     val /= 10;
   }
   int pos = 0;
-  if (neg && pos < maxLen - 1) buf[pos++] = '-';
+  if (neg && pos < maxLen - 1) { buf[pos++] = '-'; }
   for (int i = len - 1; i >= 0 && pos < maxLen - 1; i--) {
-    buf[pos++] = tmp[i];
+    buf[pos++] = tmp[static_cast<size_t>(i)];
   }
   return pos;
 }
