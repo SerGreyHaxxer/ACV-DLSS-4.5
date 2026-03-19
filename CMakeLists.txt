@@ -131,14 +131,19 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 
 # Compile Options — enable warnings
 target_compile_options(${PROJECT_NAME} PRIVATE
-    /W4
-    /permissive-
-    /Zc:__cplusplus
+    $<$<CXX_COMPILER_ID:MSVC>:/W4>
+    $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+    $<$<CXX_COMPILER_ID:MSVC>:/Zc:__cplusplus>
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall>
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wextra>
 )
 
 # Warnings-as-errors for CI builds
 if(ACV_DLSS_WERROR)
-    target_compile_options(${PROJECT_NAME} PRIVATE /WX)
+    target_compile_options(${PROJECT_NAME} PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/WX>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Werror>
+    )
     message(STATUS "Warnings-as-errors enabled (CI mode)")
 endif()
 

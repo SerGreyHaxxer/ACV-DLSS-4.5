@@ -95,10 +95,10 @@ struct LocFmt {
     std::source_location loc;
 
     // consteval ensures this is resolved at compile time at the call site
-    template <typename S>
-    consteval LocFmt(S&& s,
+    template <typename S, typename = std::enable_if_t<std::is_constructible_v<fmt::format_string<Args...>, S>>>
+    consteval LocFmt(const S& s,
                      std::source_location loc = std::source_location::current())
-        : fmt(std::forward<S>(s)), loc(loc) {}
+        : fmt(s), loc(loc) {}
 };
 
 struct Log {

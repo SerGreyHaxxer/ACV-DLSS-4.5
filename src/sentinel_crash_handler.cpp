@@ -140,7 +140,7 @@ static bool GetModuleInfo(HMODULE module, ModuleRange& out) {
   }
   out.base = reinterpret_cast<uintptr_t>(info.lpBaseOfDll);
   out.size = info.SizeOfImage;
-  GetModuleFileNameA(module, out.name, MAX_PATH);
+  GetModuleFileNameA(module, out.name.data(), MAX_PATH);
   return true;
 }
 
@@ -378,7 +378,7 @@ static void WriteCrashLog(PEXCEPTION_POINTERS exInfo, const char* path) {
   constexpr int maxLen = sizeof(g_CrashBuffer);
 
   // Header
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen,
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen,
                      "================================================================================\r\n"
                      "                      SENTINEL CRASH REPORT - DLSS 4 Proxy\r\n"
                      "================================================================================\r\n\r\n");
@@ -387,130 +387,130 @@ static void WriteCrashLog(PEXCEPTION_POINTERS exInfo, const char* path) {
   DWORD code = exInfo->ExceptionRecord->ExceptionCode;
   uintptr_t address = reinterpret_cast<uintptr_t>(exInfo->ExceptionRecord->ExceptionAddress);
 
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "Exception Code: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, code);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, " (");
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "Exception Code: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, code);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, " (");
 
   // Exception name
   switch (code) {
-    case EXCEPTION_ACCESS_VIOLATION: pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "ACCESS_VIOLATION"); break;
-    case EXCEPTION_STACK_OVERFLOW: pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "STACK_OVERFLOW"); break;
-    case EXCEPTION_ILLEGAL_INSTRUCTION: pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "ILLEGAL_INSTRUCTION"); break;
-    case EXCEPTION_PRIV_INSTRUCTION: pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "PRIVILEGED_INSTRUCTION"); break;
-    case EXCEPTION_INT_DIVIDE_BY_ZERO: pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "DIVIDE_BY_ZERO"); break;
-    case EXCEPTION_BREAKPOINT: pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "BREAKPOINT"); break;
-    default: pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "UNKNOWN"); break;
+    case EXCEPTION_ACCESS_VIOLATION: pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "ACCESS_VIOLATION"); break;
+    case EXCEPTION_STACK_OVERFLOW: pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "STACK_OVERFLOW"); break;
+    case EXCEPTION_ILLEGAL_INSTRUCTION: pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "ILLEGAL_INSTRUCTION"); break;
+    case EXCEPTION_PRIV_INSTRUCTION: pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "PRIVILEGED_INSTRUCTION"); break;
+    case EXCEPTION_INT_DIVIDE_BY_ZERO: pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "DIVIDE_BY_ZERO"); break;
+    case EXCEPTION_BREAKPOINT: pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "BREAKPOINT"); break;
+    default: pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "UNKNOWN"); break;
   }
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, ")\r\n");
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, ")\r\n");
 
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "Fault Address: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, address);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "\r\n");
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "Fault Address: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, address);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "\r\n");
 
   // Module info
   // Fix 6: Lock-free PEB walk for module name resolution
   char moduleName[MAX_PATH] = {0};
   FindModuleByAddressPEB(address, moduleName, MAX_PATH);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "Faulting Module: ");
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, moduleName[0] ? moduleName : "Unknown");
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "\r\n");
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "Faulting Module: ");
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, moduleName[0] ? moduleName : "Unknown");
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "\r\n");
 
   // Access violation details
   if (code == EXCEPTION_ACCESS_VIOLATION && exInfo->ExceptionRecord->NumberParameters >= 2) {
-    pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "\r\nAccess Violation: ");
-    pos = UnsafeAppend(g_CrashBuffer, pos, maxLen,
+    pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "\r\nAccess Violation: ");
+    pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen,
                        exInfo->ExceptionRecord->ExceptionInformation[0] ? "WRITE to 0x" : "READ from 0x");
-    pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, exInfo->ExceptionRecord->ExceptionInformation[1]);
-    pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "\r\n");
+    pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, exInfo->ExceptionRecord->ExceptionInformation[1]);
+    pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "\r\n");
   }
 
   // Registers
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen,
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen,
                      "\r\n--------------------------------------------------------------------------------\r\n"
                      "REGISTERS\r\n"
                      "--------------------------------------------------------------------------------\r\n");
 
 #ifdef _WIN64
   CONTEXT* ctx = exInfo->ContextRecord;
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "RIP: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Rip);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  RSP: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Rsp);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  RBP: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Rbp);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "\r\nRAX: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Rax);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  RBX: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Rbx);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  RCX: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Rcx);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "\r\nRDX: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Rdx);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  RSI: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Rsi);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  RDI: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Rdi);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "\r\nR8:  0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->R8);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  R9:  0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->R9);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  R10: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->R10);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "\r\nR11: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->R11);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  R12: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->R12);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  R13: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->R13);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "\r\nR14: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->R14);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  R15: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->R15);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "\r\n");
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "RIP: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Rip);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  RSP: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Rsp);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  RBP: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Rbp);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "\r\nRAX: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Rax);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  RBX: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Rbx);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  RCX: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Rcx);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "\r\nRDX: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Rdx);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  RSI: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Rsi);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  RDI: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Rdi);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "\r\nR8:  0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->R8);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  R9:  0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->R9);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  R10: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->R10);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "\r\nR11: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->R11);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  R12: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->R12);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  R13: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->R13);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "\r\nR14: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->R14);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  R15: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->R15);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "\r\n");
 #else
   CONTEXT* ctx = exInfo->ContextRecord;
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "EIP: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Eip);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  ESP: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Esp);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  EBP: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Ebp);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "\r\nEAX: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Eax);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  EBX: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Ebx);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  ECX: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Ecx);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "\r\nEDX: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Edx);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  ESI: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Esi);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "  EDI: 0x");
-  pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, ctx->Edi);
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "\r\n");
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "EIP: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Eip);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  ESP: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Esp);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  EBP: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Ebp);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "\r\nEAX: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Eax);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  EBX: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Ebx);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  ECX: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Ecx);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "\r\nEDX: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Edx);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  ESI: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Esi);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "  EDI: 0x");
+  pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, ctx->Edi);
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "\r\n");
 #endif
 
   // Stack trace
   if (g_Config.enableStackWalk && g_CapturedFrameCount > 0) {
-    pos = UnsafeAppend(g_CrashBuffer, pos, maxLen,
+    pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen,
                        "\r\n--------------------------------------------------------------------------------\r\n"
                        "STACK TRACE\r\n"
                        "--------------------------------------------------------------------------------\r\n");
 
     for (size_t i = 0; i < g_CapturedFrameCount && pos < maxLen - 256; i++) {
       const StackFrame& frame = g_CapturedFrames[i];
-      pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "[");
-      pos += UnsafeInt(g_CrashBuffer + pos, maxLen - pos, static_cast<int>(i));
-      pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "] 0x");
-      pos += UnsafeHex(g_CrashBuffer + pos, maxLen - pos, frame.address);
+      pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "[");
+      pos += UnsafeInt(g_CrashBuffer.data() + pos, maxLen - pos, static_cast<int>(i));
+      pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "] 0x");
+      pos += UnsafeHex(g_CrashBuffer.data() + pos, maxLen - pos, frame.address);
 
       if (frame.symbolName[0]) {
-        pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, " ");
-        pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, frame.symbolName);
+        pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, " ");
+        pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, frame.symbolName);
       }
 
       if (frame.moduleName[0]) {
-        pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, " in ");
+        pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, " in ");
         // Extract just filename from path
         const char* name = frame.moduleName;
         const char* lastSlash = name;
@@ -518,27 +518,27 @@ static void WriteCrashLog(PEXCEPTION_POINTERS exInfo, const char* path) {
           if (*name == '\\' || *name == '/') lastSlash = name + 1;
           name++;
         }
-        pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, lastSlash);
+        pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, lastSlash);
       }
 
       if (frame.lineNumber > 0) {
-        pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, " (line ");
-        pos += UnsafeInt(g_CrashBuffer + pos, maxLen - pos, frame.lineNumber);
-        pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, ")");
+        pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, " (line ");
+        pos += UnsafeInt(g_CrashBuffer.data() + pos, maxLen - pos, frame.lineNumber);
+        pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, ")");
       }
 
-      pos = UnsafeAppend(g_CrashBuffer, pos, maxLen, "\r\n");
+      pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen, "\r\n");
     }
   }
 
-  pos = UnsafeAppend(g_CrashBuffer, pos, maxLen,
+  pos = UnsafeAppend(g_CrashBuffer.data(), pos, maxLen,
                      "\r\n================================================================================\r\n"
                      "END OF CRASH REPORT\r\n"
                      "================================================================================\r\n");
 
   // Write with single call (async-signal-safe)
   DWORD bytesWritten = 0;
-  WriteFile(hFile, g_CrashBuffer, static_cast<DWORD>(pos), &bytesWritten, nullptr);
+  WriteFile(hFile, g_CrashBuffer.data(), static_cast<DWORD>(pos), &bytesWritten, nullptr);
   FlushFileBuffers(hFile); // Ensure data hits disk even during crash
 
   // Only close if we created the handle ourselves (not pre-opened)
