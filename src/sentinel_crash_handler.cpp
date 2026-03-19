@@ -187,7 +187,9 @@ static bool FindModuleByAddressPEB(uintptr_t address, char* outName, size_t maxL
   if (!outName || maxLen == 0) return false;
   outName[0] = '\0';
 
+#ifdef _MSC_VER
   __try {
+#endif
     // Access PEB through the TEB (Thread Environment Block)
 #ifdef _WIN64
     const PEB* peb = reinterpret_cast<const PEB*>(__readgsqword(0x60));
@@ -229,9 +231,11 @@ static bool FindModuleByAddressPEB(uintptr_t address, char* outName, size_t maxL
 
       current = current->Flink;
     }
+#ifdef _MSC_VER
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     // PEB/LDR was corrupted — silently fail
   }
+#endif
 
   return false;
 }

@@ -194,9 +194,9 @@ bool RayTracingPass::CreatePipelineState(ID3D12Device* device) {
 }
 
 void RayTracingPass::Execute(ID3D12GraphicsCommandList* cmdList, 
-                             ID3D12Resource* color, 
-                             ID3D12Resource* depth, 
-                             ID3D12Resource* mvecs,
+                             [[maybe_unused]] ID3D12Resource* color,
+                             [[maybe_unused]] ID3D12Resource* depth,
+                             [[maybe_unused]] ID3D12Resource* mvecs,
                              const float* viewProjInv,
                              const float* viewProj,
                              const float* camPos,

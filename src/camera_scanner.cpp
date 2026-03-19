@@ -29,7 +29,6 @@
 #include <cmath>
 #include <expected>
 #include <immintrin.h>
-#include <mdspan>
 #include <mutex>
 #include <new>
 #include <span>
@@ -174,17 +173,18 @@ float ScoreMatrixPair(std::span<const float, 16> viewData, std::span<const float
   float score = 0.0f;
   if (!LooksLikeMatrix(viewData) || !LooksLikeMatrix(projData)) return 0.0f;
 
-  // C++23 mdspan: treat flat memory as 4x4 2D matrix view (zero overhead)
-  auto view = std::mdspan<const float, std::extents<size_t, 4, 4>>(viewData.data());
-  auto proj = std::mdspan<const float, std::extents<size_t, 4, 4>>(projData.data());
+  // Replaced mdspan with manual indexing for compatibility with GCC 15 / MinGW
+  // Access pattern: data[row * 4 + col]
+  const float* view = viewData.data();
+  const float* proj = projData.data();
 
   // view[3,3] should be 1.0 for an affine view matrix
-  if (std::abs(view[3, 3] - 1.0f) > 0.1f) return 0.0f;
-  if (std::abs(view[3, 3] - 1.0f) < 0.01f) score += 0.2f;
+  if (std::abs(view[3 * 4 + 3] - 1.0f) > 0.1f) return 0.0f;
+  if (std::abs(view[3 * 4 + 3] - 1.0f) < 0.01f) score += 0.2f;
 
   // Perspective projection detection
-  bool isStrongPerspective = std::abs(proj[3, 3]) < 0.01f && std::abs(std::abs(proj[2, 3]) - 1.0f) < 0.1f;
-  bool isWeakPerspective = std::abs(proj[3, 3]) < 0.8f && std::abs(proj[2, 3]) > 0.2f;
+  bool isStrongPerspective = std::abs(proj[3 * 4 + 3]) < 0.01f && std::abs(std::abs(proj[2 * 4 + 3]) - 1.0f) < 0.1f;
+  bool isWeakPerspective = std::abs(proj[3 * 4 + 3]) < 0.8f && std::abs(proj[2 * 4 + 3]) > 0.2f;
 
   if (isStrongPerspective)
     score += 0.6f;
@@ -194,25 +194,25 @@ float ScoreMatrixPair(std::span<const float, 16> viewData, std::span<const float
     return 0.0f; // Reject ortho/identity — not a camera projection
 
   // FoV validation: proj[0,0] and proj[1,1] encode focal lengths
-  if (std::abs(proj[0, 0]) > 0.3f && std::abs(proj[0, 0]) < 5.0f &&
-      std::abs(proj[1, 1]) > 0.3f && std::abs(proj[1, 1]) < 5.0f) {
+  if (std::abs(proj[0 * 4 + 0]) > 0.3f && std::abs(proj[0 * 4 + 0]) < 5.0f &&
+      std::abs(proj[1 * 4 + 1]) > 0.3f && std::abs(proj[1 * 4 + 1]) < 5.0f) {
     score += 0.15f;
     // Bonus for typical game FoV (60°-90°)
-    if (std::abs(proj[1, 1]) > 0.8f && std::abs(proj[1, 1]) < 2.2f) score += 0.05f;
+    if (std::abs(proj[1 * 4 + 1]) > 0.8f && std::abs(proj[1 * 4 + 1]) < 2.2f) score += 0.05f;
   }
 
   // Affine view matrix: last column should be [0, 0, 0, 1]
-  if (std::abs(view[0, 3]) < 1.0f && std::abs(view[1, 3]) < 1.0f && std::abs(view[2, 3]) < 1.0f) score += 0.1f;
+  if (std::abs(view[0 * 4 + 3]) < 1.0f && std::abs(view[1 * 4 + 3]) < 1.0f && std::abs(view[2 * 4 + 3]) < 1.0f) score += 0.1f;
   // Translation vector within reasonable game-world range
-  if (std::abs(view[3, 0]) < camera_config::kPosTolerance &&
-      std::abs(view[3, 1]) < camera_config::kPosTolerance &&
-      std::abs(view[3, 2]) < camera_config::kPosTolerance)
+  if (std::abs(view[3 * 4 + 0]) < camera_config::kPosTolerance &&
+      std::abs(view[3 * 4 + 1]) < camera_config::kPosTolerance &&
+      std::abs(view[3 * 4 + 2]) < camera_config::kPosTolerance)
     score += 0.1f;
 
   // Orthogonality check for rotation component
-  float r0[3] = { view[0, 0], view[0, 1], view[0, 2] };
-  float r1[3] = { view[1, 0], view[1, 1], view[1, 2] };
-  float r2[3] = { view[2, 0], view[2, 1], view[2, 2] };
+  float r0[3] = { view[0 * 4 + 0], view[0 * 4 + 1], view[0 * 4 + 2] };
+  float r1[3] = { view[1 * 4 + 0], view[1 * 4 + 1], view[1 * 4 + 2] };
+  float r2[3] = { view[2 * 4 + 0], view[2 * 4 + 1], view[2 * 4 + 2] };
   float len0 = Length3(r0);
   float len1 = Length3(r1);
   float len2 = Length3(r2);

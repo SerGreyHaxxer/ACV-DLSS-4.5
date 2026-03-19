@@ -24,6 +24,7 @@
 
 #include "sl_struct.h"
 #include <cassert>
+#include <utility>
 
 namespace sl {
 
