@@ -17,6 +17,7 @@
 
 #include "sentinel_crash_handler.h"
 
+#include <array>
 #include <atomic>
 #include <cstdio>
 #include <ctime>
@@ -38,17 +39,18 @@ namespace Sentinel {
 // Internal state
 static PVOID g_VehHandle = nullptr;
 static Config g_Config;
+// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables)
 static std::atomic<bool> g_Installed{false};
 static std::atomic<bool> g_HandlingCrash{false};
 static std::atomic<uintptr_t> g_LastCrashAddress{0};
 static std::atomic<DWORD> g_LastExceptionCode{0};
 
 // Captured stack trace storage (pre-allocated to avoid allocations during crash)
-static StackFrame g_CapturedFrames[kMaxStackFrames];
+static std::array<StackFrame, kMaxStackFrames> g_CapturedFrames{};
 static std::atomic<size_t> g_CapturedFrameCount{0};
 
 // Pre-allocated crash log buffer (async-signal-safe)
-static char g_CrashBuffer[16384];
+static std::array<char, 16384> g_CrashBuffer{};
 
 // P2 Fix 7: Pre-opened file handles — opened during Install() to avoid
 // calling CreateFileA inside the VEH where Loader Lock or Heap Lock
@@ -56,14 +58,18 @@ static char g_CrashBuffer[16384];
 static HANDLE g_PreOpenedLogHandle = INVALID_HANDLE_VALUE;
 static HANDLE g_PreOpenedDumpHandle = INVALID_HANDLE_VALUE;
 
+// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
+
 // Module range for filtering
 struct ModuleRange {
   uintptr_t base;
   size_t size;
-  char name[MAX_PATH];
+  std::array<char, MAX_PATH> name;
 };
+// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables)
 static ModuleRange g_MainModule{};
 static ModuleRange g_SelfModule{};
+// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
 
 // ============================================================================
 // ASYNC-SIGNAL-SAFE HELPERS
@@ -71,49 +77,53 @@ static ModuleRange g_SelfModule{};
 
 // These functions avoid CRT allocations and are safe to call from VEH context
 
-static int UnsafeHex(char* buf, int maxLen, uint64_t val) {
-  static const char hexChars[] = "0123456789ABCDEF";
-  char tmp[17];
+static int UnsafeHex(char* buf, int maxLen, uint64_t val) { // NOLINT(bugprone-easily-swappable-parameters)
+  static const char hexChars[] = "0123456789ABCDEF"; // NOLINT(modernize-avoid-c-arrays)
+  constexpr int maxHexChars = 17;
+  std::array<char, maxHexChars> tmp{};
   int len = 0;
   if (val == 0) {
-    tmp[len++] = '0';
+    tmp[static_cast<size_t>(len++)] = '0';
   } else {
     while (val > 0 && len < 16) {
-      tmp[len++] = hexChars[val & 0xF];
+      tmp[static_cast<size_t>(len++)] = hexChars[val & 0xF];
       val >>= 4;
     }
   }
   if (len >= maxLen) len = maxLen - 1;
+  int written = 0;
   for (int i = 0; i < len && i < maxLen; i++) {
-    buf[i] = tmp[len - 1 - i];
+    buf[i] = tmp[static_cast<size_t>(len - 1 - i)];
+    written++;
   }
-  return len;
+  return written;
 }
 
-static int UnsafeAppend(char* buf, int pos, int maxLen, const char* str) {
+static int UnsafeAppend(char* buf, int pos, int maxLen, const char* str) { // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
   while (*str && pos < maxLen - 1) {
     buf[pos++] = *str++;
   }
   return pos;
 }
 
-static int UnsafeInt(char* buf, int maxLen, int64_t val) {
+static int UnsafeInt(char* buf, int maxLen, int64_t val) { // NOLINT(bugprone-easily-swappable-parameters)
   if (val == 0) {
     buf[0] = '0';
     return 1;
   }
-  char tmp[21];
+  constexpr int maxIntChars = 21;
+  std::array<char, maxIntChars> tmp{};
   int len = 0;
   bool neg = val < 0;
-  if (neg) val = -val;
+  if (neg) { val = -val; }
   while (val > 0 && len < 20) {
-    tmp[len++] = '0' + static_cast<char>(val % 10);
+    tmp[static_cast<size_t>(len++)] = '0' + static_cast<char>(val % 10);
     val /= 10;
   }
   int pos = 0;
-  if (neg && pos < maxLen - 1) buf[pos++] = '-';
+  if (neg && pos < maxLen - 1) { buf[pos++] = '-'; }
   for (int i = len - 1; i >= 0 && pos < maxLen - 1; i--) {
-    buf[pos++] = tmp[i];
+    buf[pos++] = tmp[static_cast<size_t>(i)];
   }
   return pos;
 }
@@ -193,10 +203,15 @@ static bool FindModuleByAddressPEB(uintptr_t address, char* outName, size_t maxL
     int limit = 512;
     while (current != head && limit-- > 0) {
       // The LDR_DATA_TABLE_ENTRY for InMemoryOrder is offset by one LIST_ENTRY
-      const auto* entry = CONTAINING_RECORD(current, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks);
+      // Cast safely since PEB types are complex across SDKs
+      const auto* entry = reinterpret_cast<const LDR_DATA_TABLE_ENTRY*>(
+          reinterpret_cast<const uint8_t*>(current) - offsetof(LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks));
 
       uintptr_t base = reinterpret_cast<uintptr_t>(entry->DllBase);
-      size_t size = entry->SizeOfImage;
+      // Different SDKs have SizeOfImage in different places, or not at all. Let's use a safe hack:
+      // In LDR_DATA_TABLE_ENTRY, DllBase is followed by EntryPoint and then SizeOfImage.
+      // DllBase = +0x30, EntryPoint = +0x38, SizeOfImage = +0x40.
+      size_t size = *reinterpret_cast<const ULONG*>(reinterpret_cast<const uint8_t*>(entry) + 0x40);
 
       if (address >= base && address < base + size) {
         // Found — copy the module name (UNICODE_STRING → narrow)
@@ -239,17 +254,17 @@ static size_t WalkStack(CONTEXT* ctx, StackFrame* frames, size_t maxFrames) {
   if (!ctx || !frames || maxFrames == 0) return 0;
 
   // Capture raw return addresses using the async-signal-safe API
-  void* rawAddresses[kMaxStackFrames];
+  std::array<void*, kMaxStackFrames> rawAddresses{}; // NOLINT(modernize-avoid-c-arrays)
   USHORT captured = RtlCaptureStackBackTrace(
       0, // Skip 0 frames
       static_cast<DWORD>(maxFrames < kMaxStackFrames ? maxFrames : kMaxStackFrames),
-      rawAddresses,
+      rawAddresses.data(),
       nullptr);
 
   size_t frameCount = 0;
   for (USHORT i = 0; i < captured && frameCount < maxFrames; i++) {
     StackFrame& frame = frames[frameCount];
-    frame.address = reinterpret_cast<uintptr_t>(rawAddresses[i]);
+    frame.address = reinterpret_cast<uintptr_t>(rawAddresses[static_cast<size_t>(i)]);
     frame.returnAddress = 0;
     frame.framePointer = 0;
     frame.moduleName[0] = '\0';
@@ -611,7 +626,7 @@ static LONG WINAPI SentinelHandler(PEXCEPTION_POINTERS exInfo) {
   // Walk stack using async-signal-safe RtlCaptureStackBackTrace
   if (g_Config.enableStackWalk) {
     CONTEXT ctxCopy = *exInfo->ContextRecord;
-    g_CapturedFrameCount.store(WalkStack(&ctxCopy, g_CapturedFrames, kMaxStackFrames));
+    g_CapturedFrameCount.store(WalkStack(&ctxCopy, g_CapturedFrames.data(), kMaxStackFrames));
   }
 
   // Determine paths
@@ -722,7 +737,7 @@ bool GenerateManualDump(const char* reason) {
   ep.ContextRecord = &ctx;
 
   // Walk stack for the manual dump
-  g_CapturedFrameCount.store(WalkStack(&ctx, g_CapturedFrames, kMaxStackFrames));
+  g_CapturedFrameCount.store(WalkStack(&ctx, g_CapturedFrames.data(), kMaxStackFrames));
 
   // Generate files with "manual" suffix
   char logPath[MAX_PATH];
@@ -746,7 +761,7 @@ size_t GetCapturedStackTrace(StackFrame* frames, size_t maxFrames) {
   size_t count = g_CapturedFrameCount.load();
   if (count > maxFrames) count = maxFrames;
   if (frames && count > 0) {
-    memcpy(frames, g_CapturedFrames, count * sizeof(StackFrame));
+    memcpy(frames, g_CapturedFrames.data(), count * sizeof(StackFrame));
   }
   return count;
 }

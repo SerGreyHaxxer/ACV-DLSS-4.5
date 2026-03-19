@@ -88,7 +88,6 @@ typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateCommandList)(ID3D12Device*, UINT, D
 
 // Extern declarations for captured original function pointers
 extern PFN_ExecuteCommandLists g_OriginalExecuteCommandLists;
-extern PFN_CreateCommandQueue g_OriginalCreateCommandQueue;
 extern PFN_CreateCommittedResource g_OriginalCreateCommittedResource;
 extern PFN_D3D12CreateDevice g_OriginalD3D12CreateDevice;
 extern PFN_CreatePlacedResource g_OriginalCreatePlacedResource;
@@ -102,6 +101,7 @@ extern PFN_CreateConstantBufferView g_OriginalCreateCBV;
 extern PFN_CreateSampler g_OriginalCreateSampler;
 extern PFN_CreateDescriptorHeap g_OriginalCreateDescriptorHeap;
 extern PFN_CreateCommandList g_OriginalCreateCommandList;
+extern PFN_CreateCommandQueue g_OriginalCreateCommandQueue;
 
 void WrapCreatedD3D12Device(REFIID riid, void** ppDevice, bool takeOwnership = true);
 void InstallD3D12Hooks();

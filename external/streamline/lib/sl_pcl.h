@@ -92,7 +92,7 @@ enum class PCLMarker : uint32_t {
 };
 
 // c++23 has to_underlying implementation
-#if __cplusplus == 202302L
+#if __cplusplus > 202002L && defined(__cpp_lib_to_underlying)
 using to_underlying = std::to_underlying;
 #else
 // Return `enum class` member as value of underlying type (i.e. an int).

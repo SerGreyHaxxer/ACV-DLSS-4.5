@@ -397,8 +397,63 @@ static HRESULT STDMETHODCALLTYPE Hooked_CreateCommittedResource(
         }
       }
     }
+
+    // Install Resource shadow vtable if it's an upload buffer (for Map tracking)
+    if (SUCCEEDED(hr) && ppvResource && *ppvResource && pHeapProperties && pHeapProperties->Type == D3D12_HEAP_TYPE_UPLOAD) {
+      ID3D12Resource* pRes = static_cast<ID3D12Resource*>(*ppvResource);
+      constexpr size_t kResourceVTableSize = 12;
+      ShadowVTable::Install(pRes, kResourceVTableSize);
+      if (g_OriginalResourceMap) {
+        ShadowVTable::PatchEntry(pRes, static_cast<size_t>(vtable::Resource::Map),
+                                 reinterpret_cast<void*>(Hooked_ResourceMap));
+      }
+    }
   } catch (...) {
     LOG_ERROR("[ShadowVT] Exception in CreateCommittedResource");
+  }
+  return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE Hooked_CreateCommandQueue(
+    ID3D12Device* pThis, const D3D12_COMMAND_QUEUE_DESC* pDesc, REFIID riid, void** ppCommandQueue) {
+  HRESULT hr = E_FAIL;
+  if (g_OriginalCreateCommandQueue) {
+    hr = g_OriginalCreateCommandQueue(pThis, pDesc, riid, ppCommandQueue);
+  }
+  try {
+    if (SUCCEEDED(hr) && ppCommandQueue && *ppCommandQueue) {
+      ID3D12CommandQueue* pQueue = static_cast<ID3D12CommandQueue*>(*ppCommandQueue);
+      if (pDesc && pDesc->Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
+        constexpr size_t kQueueVTableSize = 19;
+        ShadowVTable::Install(pQueue, kQueueVTableSize);
+        ShadowVTable::PatchEntry(pQueue, static_cast<size_t>(vtable::CommandQueue::ExecuteCommandLists),
+                                 reinterpret_cast<void*>(Hooked_ExecuteCommandLists));
+        LOG_INFO("[ShadowVT] CommandQueue ExecuteCommandLists installed on newly created queue");
+      }
+    }
+  } catch (...) {
+    LOG_ERROR("[ShadowVT] Exception in CreateCommandQueue");
+  }
+  return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE Hooked_CreateCommandList(
+    ID3D12Device* pThis, UINT nodeMask, D3D12_COMMAND_LIST_TYPE type,
+    ID3D12CommandAllocator* pCommandAllocator, ID3D12PipelineState* pInitialState,
+    REFIID riid, void** ppCommandList) {
+  HRESULT hr = E_FAIL;
+  if (g_OriginalCreateCommandList) {
+    hr = g_OriginalCreateCommandList(pThis, nodeMask, type, pCommandAllocator, pInitialState, riid, ppCommandList);
+  }
+  try {
+    if (SUCCEEDED(hr) && ppCommandList && *ppCommandList) {
+      ID3D12GraphicsCommandList* pList = static_cast<ID3D12GraphicsCommandList*>(*ppCommandList);
+      if (type == D3D12_COMMAND_LIST_TYPE_DIRECT || type == D3D12_COMMAND_LIST_TYPE_COMPUTE) {
+        InstallCommandListShadowVTable(pList);
+      }
+    }
+  } catch (...) {
+    LOG_ERROR("[ShadowVT] Exception in CreateCommandList");
   }
   return hr;
 }
@@ -580,7 +635,7 @@ static void STDMETHODCALLTYPE Hooked_ClearDSV(
     ID3D12Resource* pResource = nullptr;
     DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
     if (TryResolveDescriptorResource(DepthStencilView, &pResource, &fmt) && pResource) {
-      ResourceDetector::Get().RegisterDepthFromClear(pResource, 1.0f);
+      ResourceDetector::Get().RegisterDepthFromClear(pResource, Depth);
     }
   } catch (...) {
     LOG_ERROR("[ShadowVT] Exception in Hooked_ClearDSV");
@@ -722,6 +777,10 @@ static void CaptureDeviceVTablePointers(ID3D12Device* pDevice) {
               reinterpret_cast<void*>(Hooked_CreateCommittedResource), "CreateCommitted");
   patchDevice(vtable::Device::CreatePlacedResource,
               reinterpret_cast<void*>(Hooked_CreatePlacedResource), "CreatePlaced");
+  patchDevice(vtable::Device::CreateCommandQueue,
+              reinterpret_cast<void*>(Hooked_CreateCommandQueue), "CreateCommandQueue");
+  patchDevice(vtable::Device::CreateCommandList,
+              reinterpret_cast<void*>(Hooked_CreateCommandList), "CreateCommandList");
 
 }
 
