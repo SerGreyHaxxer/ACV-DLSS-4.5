@@ -38,8 +38,19 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <intrin.h>
 
 namespace {
+
+static bool g_hasAVX2 = []{
+  int cpuInfo[4];
+  __cpuid(cpuInfo, 0);
+  if (cpuInfo[0] >= 7) {
+    __cpuidex(cpuInfo, 7, 0);
+    return (cpuInfo[1] & (1 << 5)) != 0;
+  }
+  return false;
+}();
 
 // ============================================================================
 // SEH-based memory validation — replaces VirtualQuery syscalls.
@@ -239,12 +250,25 @@ TryExtractCameraFromBuffer(const uint8_t* data, size_t size) {
     for (size_t offset = 0; offset + matrixBytes <= scanLimit; offset += stride) {
       alignas(32) float localMatrix[32];
       const uint8_t* src = data + offset;
-      // Stream 32 floats (128 bytes = two 4x4 matrices) in 32-byte chunks
-      for (int i = 0; i < 32; i += 8) {
-        __m256i chunk = _mm256_stream_load_si256(
-            reinterpret_cast<const __m256i*>(src + i * sizeof(float)));
-        _mm256_store_ps(&localMatrix[i], _mm256_castsi256_ps(chunk));
+
+      if (g_hasAVX2) {
+        if ((reinterpret_cast<uintptr_t>(src) & 31) == 0) {
+          for (int i = 0; i < 32; i += 8) {
+            __m256i chunk = _mm256_stream_load_si256(
+                reinterpret_cast<const __m256i*>(src + i * sizeof(float)));
+            _mm256_store_ps(&localMatrix[i], _mm256_castsi256_ps(chunk));
+          }
+        } else {
+          for (int i = 0; i < 32; i += 8) {
+            __m256i chunk = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(src + i * sizeof(float)));
+            _mm256_store_ps(&localMatrix[i], _mm256_castsi256_ps(chunk));
+          }
+        }
+      } else {
+        std::memcpy(localMatrix, src, sizeof(localMatrix));
       }
+
       std::span<const float, 16> viewSpan{localMatrix, 16};
       std::span<const float, 16> projSpan{localMatrix + 16, 16};
       float score = ScoreMatrixPair(viewSpan, projSpan);

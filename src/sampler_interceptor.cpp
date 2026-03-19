@@ -56,9 +56,7 @@ float SamplerInterceptor_GetTargetLODBias() {
     return g_targetLODBias.load(std::memory_order_relaxed);
 }
 
-void RegisterSampler(const D3D12_SAMPLER_DESC& desc, D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Device* device) {
-    if (!device || handle.ptr == 0) return;
-
+D3D12_SAMPLER_DESC ApplyLodBias(const D3D12_SAMPLER_DESC& desc) {
     // Fix 8: Apply LOD bias at creation time — the ONLY point where it matters.
     // Once the game copies this CPU descriptor to a shader-visible GPU heap,
     // overwriting the original CPU handle does nothing.
@@ -70,15 +68,12 @@ void RegisterSampler(const D3D12_SAMPLER_DESC& desc, D3D12_CPU_DESCRIPTOR_HANDLE
         modifiedDesc.MipLODBias = std::clamp(modifiedDesc.MipLODBias, -16.0f, 15.99f);
     }
 
-    // Create the sampler with the biased descriptor.
-    // This is called FROM the CreateSampler hook, so we're intercepting
-    // the game's original call and modifying the desc before it lands.
-    device->CreateSampler(&modifiedDesc, handle);
-
     uint64_t count = g_samplersCreated.fetch_add(1, std::memory_order_relaxed) + 1;
     if (count % 200 == 0) {
         LOG_DEBUG("[Sampler] {} samplers created with LOD bias {:.3f}", count, bias);
     }
+
+    return modifiedDesc;
 }
 
 void ClearSamplers() {
@@ -100,6 +95,10 @@ using PFN_D3D12SerializeVersionedRootSignature =
     HRESULT (WINAPI*)(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC*, ID3DBlob**, ID3DBlob**);
 static PFN_D3D12SerializeVersionedRootSignature g_OrigSerializeRootSig = nullptr;
 
+bool IsRootSigHookReady() {
+    return g_OrigSerializeRootSig != nullptr;
+}
+
 static bool IsFilterAnisotropicOrLinear(D3D12_FILTER filter) {
     // Match anisotropic and all linear variants
     switch (filter) {
@@ -116,7 +115,7 @@ static bool IsFilterAnisotropicOrLinear(D3D12_FILTER filter) {
     }
 }
 
-static HRESULT WINAPI Hooked_D3D12SerializeVersionedRootSignature(
+HRESULT WINAPI Hooked_D3D12SerializeVersionedRootSignature(
     const D3D12_VERSIONED_ROOT_SIGNATURE_DESC* pRootSignature,
     ID3DBlob** ppBlob, ID3DBlob** ppErrorBlob) {
 
@@ -134,7 +133,6 @@ static HRESULT WINAPI Hooked_D3D12SerializeVersionedRootSignature(
 
     // Determine which version we have and get static sampler array
     std::vector<D3D12_STATIC_SAMPLER_DESC> modifiedSamplers_1_0;
-    std::vector<D3D12_STATIC_SAMPLER_DESC1> modifiedSamplers_1_1;
 
     if (modifiedDesc.Version == D3D_ROOT_SIGNATURE_VERSION_1_0) {
         UINT numSamplers = modifiedDesc.Desc_1_0.NumStaticSamplers;
@@ -191,5 +189,5 @@ void SamplerInterceptor_InstallRootSigHook() {
     }
 
     g_OrigSerializeRootSig = realFunc;
-    LOG_INFO("[Sampler] Root signature hook ready — static sampler LOD bias interception active");
+    LOG_INFO("[Sampler] Root signature hook prepared — awaiting GetProcAddress interception");
 }

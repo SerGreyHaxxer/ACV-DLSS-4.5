@@ -41,10 +41,14 @@ void SamplerInterceptor_SetTargetLODBias(float bias);
 float SamplerInterceptor_GetTargetLODBias();
 
 // Register a sampler — applies the current LOD bias to the desc at creation time
-void RegisterSampler(const D3D12_SAMPLER_DESC& desc, D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Device* device);
+D3D12_SAMPLER_DESC ApplyLodBias(const D3D12_SAMPLER_DESC& desc);
 
 void ClearSamplers();
 
 // P1 Fix 4: Hook D3D12SerializeVersionedRootSignature to apply LOD bias
 // to static samplers baked into root signatures (~85% of ACV textures).
 void SamplerInterceptor_InstallRootSigHook();
+bool IsRootSigHookReady();
+HRESULT WINAPI Hooked_D3D12SerializeVersionedRootSignature(
+    const D3D12_VERSIONED_ROOT_SIGNATURE_DESC* pRootSignature,
+    ID3DBlob** ppBlob, ID3DBlob** ppErrorBlob);

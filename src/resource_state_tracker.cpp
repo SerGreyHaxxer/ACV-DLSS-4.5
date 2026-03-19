@@ -77,7 +77,8 @@ std::vector<struct TLSBatch*> g_registeredBatches;
 // DLL_THREAD_DETACH. The destructor sets is_alive=false (zero locks).
 // FlushTLS reaps dead batches under its own mutex where it's safe.
 struct TLSBatch {
-    cpp26::inplace_vector<TLSEntry, kTLSBatchSize> entries;
+    cpp26::inplace_vector<TLSEntry, kTLSBatchSize> entries[2];
+    std::atomic<int> active_idx{0};
     bool registered = false;
     std::atomic<bool> is_alive{true};
 
@@ -120,11 +121,12 @@ void ResourceStateTracker_RecordTransition(ID3D12Resource* pResource,
     }
 
     // Lock-free O(1) push — no mutex, no atomic, no contention
-    if (tls_batch.entries.size() < kTLSBatchSize) [[likely]] {
-        tls_batch.entries.push_back({pResource, stateAfter});
+    int active = tls_batch.active_idx.load(std::memory_order_relaxed);
+    if (tls_batch.entries[active].size() < kTLSBatchSize) [[likely]] {
+        tls_batch.entries[active].push_back({pResource, stateAfter});
     } else {
         // Batch full — overwrite the last entry as best-effort.
-        tls_batch.entries.back() = {pResource, stateAfter};
+        tls_batch.entries[active].back() = {pResource, stateAfter};
     }
 }
 
@@ -159,10 +161,14 @@ void ResourceStateTracker_FlushTLS() {
         // P0 Fix 2: Skip tombstoned batches (thread died between collect + merge)
         if (!batch->is_alive.load(std::memory_order_relaxed)) continue;
 
-        for (const auto& entry : batch->entries) {
+        int active = batch->active_idx.load(std::memory_order_relaxed);
+        int inactive = (active + 1) % 2;
+        batch->active_idx.store(inactive, std::memory_order_release);
+
+        for (const auto& entry : batch->entries[active]) {
             g_maps[g_writeIdx].map[entry.pResource] = {entry.state, frame};
         }
-        batch->entries.clear();
+        batch->entries[active].clear();
     }
 
     // Cap enforcement (only during flush, not on hot path)

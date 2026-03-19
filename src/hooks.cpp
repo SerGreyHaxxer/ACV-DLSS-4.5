@@ -252,7 +252,13 @@ static void STDMETHODCALLTYPE Hooked_ExecuteCommandLists(
 
       float jitterX = 0.0f, jitterY = 0.0f;
       TryGetPatternJitter(jitterX, jitterY);
-      StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
+      // Use cached camera data if available — never null out valid matrices
+      float cachedView[16], cachedProj[16];
+      if (StreamlineIntegration::Get().GetCachedCameraData(cachedView, cachedProj)) {
+        StreamlineIntegration::Get().SetCameraData(cachedView, cachedProj, jitterX, jitterY);
+      } else {
+        StreamlineIntegration::Get().SetCameraData(nullptr, nullptr, jitterX, jitterY);
+      }
     }
   } catch (...) {
     LOG_ERROR("[ShadowVT] Exception in ExecuteCommandLists callback");
@@ -342,10 +348,12 @@ static void STDMETHODCALLTYPE Hooked_CreateCBV(
 static void STDMETHODCALLTYPE Hooked_CreateSampler(
     ID3D12Device* pThis, const D3D12_SAMPLER_DESC* pDesc,
     D3D12_CPU_DESCRIPTOR_HANDLE handle) {
-  if (g_OriginalCreateSampler) g_OriginalCreateSampler(pThis, pDesc, handle);
   try {
     if (pDesc && pThis && handle.ptr) {
-      RegisterSampler(*pDesc, handle, pThis);
+      D3D12_SAMPLER_DESC modifiedDesc = ApplyLodBias(*pDesc);
+      if (g_OriginalCreateSampler) g_OriginalCreateSampler(pThis, &modifiedDesc, handle);
+    } else {
+      if (g_OriginalCreateSampler) g_OriginalCreateSampler(pThis, pDesc, handle);
     }
   } catch (...) {
     LOG_ERROR("[ShadowVT] Exception in CreateSampler");
@@ -915,6 +923,8 @@ PFN_GetProcAddress g_OriginalGetProcAddress = nullptr;
 FARPROC WINAPI Hooked_GetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
   if (HIWORD(lpProcName) != 0) {
     if (strcmp(lpProcName, "D3D12CreateDevice") == 0) return reinterpret_cast<FARPROC>(Hooked_D3D12CreateDevice);
+    if (strcmp(lpProcName, "D3D12SerializeVersionedRootSignature") == 0 && IsRootSigHookReady())
+      return reinterpret_cast<FARPROC>(Hooked_D3D12SerializeVersionedRootSignature);
   }
   return g_OriginalGetProcAddress(hModule, lpProcName);
 }
