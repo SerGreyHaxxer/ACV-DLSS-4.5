@@ -284,6 +284,7 @@ public:
   void MarkDirty();
   void SaveIfDirty();
   void CheckHotReload();
+  bool IsDirty() const { return m_dirty.load(std::memory_order_acquire); }
 
   // Returns a mutable reference to the render-thread's working copy.
   // Safe ONLY when called from the render / Present thread (the "owning"

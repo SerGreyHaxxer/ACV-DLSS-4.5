@@ -72,6 +72,8 @@ private:
   // --- Build sections ---
   void BuildMainPanel();
   void BuildCustomization();
+
+  void CommitUIChanges();
   void BuildSetupWizard();
   void BuildFPSOverlay();
   void BuildVignette();

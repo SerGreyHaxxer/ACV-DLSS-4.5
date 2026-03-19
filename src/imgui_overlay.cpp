@@ -414,6 +414,16 @@ void ImGuiOverlay::Render() {
   }
 
   m_renderer.EndFrame();
+
+  CommitUIChanges();
+}
+
+void ImGuiOverlay::CommitUIChanges() {
+  if (ConfigManager::Get().IsDirty()) {
+    ConfigManager::Get().Publish();
+    // SaveIfDirty debounces implicitly based on update frequency
+    ConfigManager::Get().SaveIfDirty();
+  }
 }
 
 void ImGuiOverlay::SetFPS(float gameFps, float totalFps) {

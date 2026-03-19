@@ -175,10 +175,22 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
   m_deepDvcSupported = (slIsFeatureSupported(sl::kFeatureDeepDVC, sl::AdapterInfo{}) == sl::Result::eOk);
   m_hdrSupported = true; // HDR support is handled via output format check
 
+  // Check loaded flags
+  sl::AdapterInfo adapterInfo{};
+  bool dlssLoaded = false;
+  slIsFeatureLoaded(sl::kFeatureDLSS, adapterInfo, dlssLoaded);
+  slIsFeatureLoaded(sl::kFeatureDLSS_G, adapterInfo, m_dlssgLoaded);
+  slIsFeatureLoaded(sl::kFeatureReflex, adapterInfo, m_reflexLoaded);
+  slIsFeatureLoaded(sl::kFeatureDLSS_RR, adapterInfo, m_rrLoaded);
+  slIsFeatureLoaded(sl::kFeatureDeepDVC, adapterInfo, m_deepDvcLoaded);
+
   // Log support status
   LOG_INFO("Feature Support: DLSS={} DLSS-G={} RR={} DeepDVC={} HDR={}", m_dlssSupported ? "YES" : "NO",
            m_dlssgSupported ? "YES" : "NO", m_rayReconstructionSupported ? "YES" : "NO",
            m_deepDvcSupported ? "YES" : "NO", m_hdrSupported ? "YES" : "NO");
+  LOG_INFO("Feature Loaded: DLSS={} DLSS-G={} Reflex={} RR={} DeepDVC={}", dlssLoaded ? "YES" : "NO",
+           m_dlssgLoaded ? "YES" : "NO", m_reflexLoaded ? "YES" : "NO", m_rrLoaded ? "YES" : "NO",
+           m_deepDvcLoaded ? "YES" : "NO");
 
   m_initialized = true;
   LOG_INFO("Streamline Integration initialized (per-feature GPU pipeline active)");
@@ -694,7 +706,7 @@ void StreamlineIntegration::UpdateSmartFrameGen() {
 }
 
 void StreamlineIntegration::UpdateSwapChain(IDXGISwapChain* pSwapChain) {
-  if (!pSwapChain || m_pSwapChain.Get() == pSwapChain) return;
+  if (!pSwapChain) return;
   m_pSwapChain = pSwapChain;
   Microsoft::WRL::ComPtr<IDXGISwapChain3> sc3;
   if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3)))) {
