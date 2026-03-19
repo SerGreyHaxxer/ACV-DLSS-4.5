@@ -16,7 +16,6 @@
  */
 #include "valhalla_gui.h"
 #include "logger.h"
-#include "config_manager.h"
 #include <cstring>
 #include <string_view>
 
@@ -197,14 +196,6 @@ void ValhallaRenderer::EndFrame() {
   // Flush D3D11 context to submit all D2D commands
   m_d3d11Context->Flush();
   m_currentBuffer = -1;
-}
-
-void CommitUIChanges() {
-  if (ConfigManager::Get().IsDirty()) {
-    ConfigManager::Get().Publish();
-    // SaveIfDirty debounces implicitly based on update frequency
-    ConfigManager::Get().SaveIfDirty();
-  }
 }
 
 // ============================================================================

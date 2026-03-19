@@ -176,13 +176,12 @@ bool StreamlineIntegration::Initialize(ID3D12Device* pDevice) {
   m_hdrSupported = true; // HDR support is handled via output format check
 
   // Check loaded flags
-  sl::AdapterInfo adapterInfo{};
   bool dlssLoaded = false;
-  slIsFeatureLoaded(sl::kFeatureDLSS, adapterInfo, dlssLoaded);
-  slIsFeatureLoaded(sl::kFeatureDLSS_G, adapterInfo, m_dlssgLoaded);
-  slIsFeatureLoaded(sl::kFeatureReflex, adapterInfo, m_reflexLoaded);
-  slIsFeatureLoaded(sl::kFeatureDLSS_RR, adapterInfo, m_rrLoaded);
-  slIsFeatureLoaded(sl::kFeatureDeepDVC, adapterInfo, m_deepDvcLoaded);
+  slIsFeatureLoaded(sl::kFeatureDLSS, dlssLoaded);
+  slIsFeatureLoaded(sl::kFeatureDLSS_G, m_dlssgLoaded);
+  slIsFeatureLoaded(sl::kFeatureReflex, m_reflexLoaded);
+  slIsFeatureLoaded(sl::kFeatureDLSS_RR, m_rrLoaded);
+  slIsFeatureLoaded(sl::kFeatureDeepDVC, m_deepDvcLoaded);
 
   // Log support status
   LOG_INFO("Feature Support: DLSS={} DLSS-G={} RR={} DeepDVC={} HDR={}", m_dlssSupported ? "YES" : "NO",
