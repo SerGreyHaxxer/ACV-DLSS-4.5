@@ -63,10 +63,12 @@ static HANDLE g_PreOpenedDumpHandle = INVALID_HANDLE_VALUE;
 struct ModuleRange {
   uintptr_t base;
   size_t size;
-  char name[MAX_PATH];
+  std::array<char, MAX_PATH> name;
 };
+// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables)
 static ModuleRange g_MainModule{};
 static ModuleRange g_SelfModule{};
+// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
 
 // ============================================================================
 // ASYNC-SIGNAL-SAFE HELPERS
@@ -74,21 +76,22 @@ static ModuleRange g_SelfModule{};
 
 // These functions avoid CRT allocations and are safe to call from VEH context
 
-static int UnsafeHex(char* buf, int maxLen, uint64_t val) {
-  static const char hexChars[] = "0123456789ABCDEF";
-  char tmp[17];
+static int UnsafeHex(char* buf, int maxLen, uint64_t val) { // NOLINT(bugprone-easily-swappable-parameters)
+  static const char hexChars[] = "0123456789ABCDEF"; // NOLINT(modernize-avoid-c-arrays)
+  constexpr int maxHexChars = 17;
+  std::array<char, maxHexChars> tmp{};
   int len = 0;
   if (val == 0) {
-    tmp[len++] = '0';
+    tmp[static_cast<size_t>(len++)] = '0';
   } else {
     while (val > 0 && len < 16) {
-      tmp[len++] = hexChars[val & 0xF];
+      tmp[static_cast<size_t>(len++)] = hexChars[val & 0xF];
       val >>= 4;
     }
   }
   if (len >= maxLen) len = maxLen - 1;
   for (int i = 0; i < len && i < maxLen; i++) {
-    buf[i] = tmp[len - 1 - i];
+    buf[i] = tmp[static_cast<size_t>(len - 1 - i)];
   }
   return len;
 }
@@ -247,17 +250,17 @@ static size_t WalkStack(CONTEXT* ctx, StackFrame* frames, size_t maxFrames) {
   if (!ctx || !frames || maxFrames == 0) return 0;
 
   // Capture raw return addresses using the async-signal-safe API
-  void* rawAddresses[kMaxStackFrames];
+  std::array<void*, kMaxStackFrames> rawAddresses{}; // NOLINT(modernize-avoid-c-arrays)
   USHORT captured = RtlCaptureStackBackTrace(
       0, // Skip 0 frames
       static_cast<DWORD>(maxFrames < kMaxStackFrames ? maxFrames : kMaxStackFrames),
-      rawAddresses,
+      rawAddresses.data(),
       nullptr);
 
   size_t frameCount = 0;
   for (USHORT i = 0; i < captured && frameCount < maxFrames; i++) {
     StackFrame& frame = frames[frameCount];
-    frame.address = reinterpret_cast<uintptr_t>(rawAddresses[i]);
+    frame.address = reinterpret_cast<uintptr_t>(rawAddresses[static_cast<size_t>(i)]);
     frame.returnAddress = 0;
     frame.framePointer = 0;
     frame.moduleName[0] = '\0';
